@@ -17,6 +17,8 @@ import { TouchControls } from './input/touch';
 import { WeaponRack } from './game/weapons';
 import { createEntity, type Entity } from './game/entities';
 import { traceHit, falloffFactor, applyDamage, updateRespawn, HEADSHOT_MULT, type Ray } from './game/damage';
+import { createMatch } from './game/match';
+import { Menu } from './render/menu';
 import { PALETTE } from './render/palette';
 import { createSfx } from './audio/sfx';
 
@@ -26,6 +28,13 @@ declare global {
     __sfx: { counts: Record<string, number>; muted: boolean; unlocked: boolean };
     __fx: { hits: number; kills: number; flashOpacity: number; lowHpPulse: number };
     __test: { hurt(dmg: number): void };
+    __match: {
+      phase: string;
+      killsA: number;
+      killsB: number;
+      timeLeftMs: number;
+      winner: string | null;
+    };
   }
 }
 
@@ -69,6 +78,35 @@ const playerEnt = createEntity('player', player.position, 100, PLAYER_RADIUS, MO
 const entities: Entity[] = []; // enemy bots arrive in a later milestone
 let spawnIdx = 1;
 
+const match = createMatch();
+const menu = new Menu(document.body, {
+  onStart: () => {
+    match.start(performance.now());
+    menu.hide();
+    // fresh round: revive and re-arm the player at spawn
+    const [rx, ry, rz] = spawnPoint('A', 0);
+    playerEnt.alive = true;
+    playerEnt.hp = playerEnt.maxHp;
+    playerEnt.deadUntil = 0;
+    playerEnt.invincibleUntil = 0;
+    player.position.x = rx;
+    player.position.y = ry;
+    player.position.z = rz;
+    player.velocity.x = 0;
+    player.velocity.y = 0;
+    player.velocity.z = 0;
+    player.drowned = false;
+    player.yaw = 0;
+    player.pitch = 0;
+    view.snap(player);
+    for (const w of rack.list) {
+      w.ammo = w.spec.mag;
+      w.cancelReload();
+    }
+  },
+});
+menu.show();
+
 const scratchMuzzle = new THREE.Vector3();
 const rayEnd = (ray: Ray, dist: number): Vec3 => ({
   x: ray.origin.x + ray.dir.x * dist,
@@ -103,9 +141,17 @@ engine.camera = view.camera;
 engine.onResize = (w, h) => view.setAspect(w / h);
 engine.onFrame = (dt) => {
   const now = performance.now();
+  const prevPhase = match.phase;
+  match.tick(now);
+  const acting = match.canAct(now);
   const inp = mergeInputs(kb.snapshot(), touch.snapshot());
 
-  if (playerEnt.alive) {
+  menu.setCountdown(match.phase === 'countdown' ? match.countdownLeftMs : null);
+  if (match.phase === 'over' && prevPhase !== 'over') {
+    menu.showResult({ winner: match.winner, killsA: match.killsA, killsB: match.killsB });
+  }
+
+  if (acting && playerEnt.alive) {
     player.update(dt, inp, { collider: world });
     if (player.drowned && playerEnt.alive) hurtPlayer(9999, Math.PI);
 
@@ -121,7 +167,7 @@ engine.onFrame = (dt) => {
       stepAcc = 0;
     }
   }
-  if (!playerEnt.alive) {
+  if (acting && !playerEnt.alive) {
     const [rx, ry, rz] = spawnPoint('A', spawnIdx);
     if (updateRespawn(playerEnt, now, { x: rx, y: ry, z: rz })) {
       spawnIdx++;
@@ -138,7 +184,7 @@ engine.onFrame = (dt) => {
   view.update(player, dt);
 
   const w = rack.current;
-  if (playerEnt.alive) {
+  if (acting && playerEnt.alive) {
     if (inp.swap) weaponView.setWeapon(rack.swap().spec.id);
     if (inp.reload && w.reload(now)) sfx.play('reload');
     if (inp.fire && player.onGround) {
@@ -196,6 +242,12 @@ engine.onFrame = (dt) => {
   dbg.dead = !playerEnt.alive;
   dbgSfx.muted = sfx.muted;
   dbgSfx.unlocked = sfx.unlocked;
+
+  mdbg.phase = match.phase;
+  mdbg.killsA = match.killsA;
+  mdbg.killsB = match.killsB;
+  mdbg.timeLeftMs = match.timeLeftMs;
+  mdbg.winner = match.winner;
 };
 
 /** persistent debug handles (no per-frame alloc) — e2e tests read these */
@@ -205,6 +257,14 @@ const dbgSfx = { counts: sfx.counts, muted: false, unlocked: false };
 window.__sfx = dbgSfx;
 window.__fx = hud.fx;
 window.__test = { hurt: (dmg: number) => hurtPlayer(dmg) };
+const mdbg = {
+  phase: 'menu',
+  killsA: 0,
+  killsB: 0,
+  timeLeftMs: 0,
+  winner: null as string | null,
+};
+window.__match = mdbg;
 
 view.snap(player);
 engine.start();
