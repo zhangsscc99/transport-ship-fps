@@ -15,7 +15,7 @@ const { firefox } = await import('playwright');
 const { mkdirSync, statSync } = await import('node:fs');
 const { default: assert } = await import('node:assert/strict');
 
-const URL = 'http://127.0.0.1:3028/transport/';
+const URL = process.env.TSF_URL ?? 'http://127.0.0.1:3028/transport/';
 const errors = [];
 
 const browser = await firefox.launch({
