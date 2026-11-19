@@ -341,6 +341,78 @@ function buildCranes(group: THREE.Group): void {
   group.add(mesh);
 }
 
+/**
+ * Self-lit anchors so the frame always has bright reference points:
+ * red bow beacons ×2 on the mast yard ends, warm work lamps ×2 under tower
+ * platforms, small corner markers ×2 on the spawn-side containers. Every bulb
+ * pairs with a modest point light (1.5–3 / 8–15m) so it pools on geometry
+ * instead of floating as a sprite.
+ */
+function buildLightAnchors(group: THREE.Group): void {
+  const bulbGeo = new THREE.SphereGeometry(0.13, 8, 6);
+  const warm = new THREE.InstancedMesh(bulbGeo, getMaterial('lamp'), 4);
+  warm.name = 'anchor-warm';
+  const warmSpots: [number, number, number][] = [
+    [23.65, 2.9, -11.65], // under the SE tower platform lip
+    [-23.65, 2.9, 11.65], // NW tower, 180° mirror
+    [3.05, 2.72, 5.32], // container (6,4) top corner facing spawn A
+    [-3.05, 2.72, -5.32], // container (-6,-4) mirror corner
+  ];
+  warmSpots.forEach(([x, y, z], i) => setInst(warm, i, x, y, z, 1, 1, 1));
+  group.add(warm);
+  const warmLight: [number, number, number, number][] = [
+    // x, y, z, intensity — distance folded in below
+    [23.65, 2.8, -11.65, 2.6],
+    [-23.65, 2.8, 11.65, 2.6],
+    [3.05, 2.72, 5.45, 1.8],
+    [-3.05, 2.72, -5.45, 1.8],
+  ];
+  for (const [x, y, z, i] of warmLight) {
+    const l = new THREE.PointLight(PALETTE.lampWarm, i, 13, 2);
+    l.position.set(x, y, z);
+    group.add(l);
+  }
+
+  const red = new THREE.InstancedMesh(bulbGeo, getMaterial('lampRed'), 2);
+  red.name = 'anchor-red';
+  for (const z of [1.6, -1.6]) {
+    setInst(red, z > 0 ? 0 : 1, 33.8, 8.2, z, 1, 1, 1);
+    const l = new THREE.PointLight(PALETTE.lampRed, 2, 10, 2);
+    l.position.set(33.8, 8.2, z);
+    group.add(l);
+  }
+  group.add(red);
+}
+
+/** Standing-water films — thin mirror planes that catch the sky env map. */
+function buildPuddles(group: THREE.Group): void {
+  const geo = new THREE.PlaneGeometry(1, 1);
+  const mesh = new THREE.InstancedMesh(geo, getMaterial('puddle'), 4);
+  mesh.name = 'puddles';
+  // (x, z, sx, sz, in-plane yaw) — rz spins the flat plane about its own normal
+  const spots: [number, number, number, number, number][] = [
+    [-8.5, 12.8, 2.4, 3.4, 0.35],
+    [-0.5, 8.2, 2.0, 2.8, -0.5],
+    [7.0, 13.8, 2.8, 2.0, 0.9],
+    [-14.5, 5.5, 2.2, 3.0, 0.2],
+  ];
+  spots.forEach(([x, z, sx, sz, yaw], i) =>
+    setInst(mesh, i, x, 0.025, z, sx, sz, 1, 0, -Math.PI / 2, yaw),
+  );
+  mesh.receiveShadow = true;
+  group.add(mesh);
+}
+
+/** Two lit openings far off — stern-pedestal hatch + a harbour-crane cab. */
+function buildWindows(group: THREE.Group): void {
+  const geo = new THREE.PlaneGeometry(1, 1);
+  const mesh = new THREE.InstancedMesh(geo, getMaterial('window'), 2);
+  mesh.name = 'windows';
+  setInst(mesh, 0, -33.52, 0.95, 0, 0.55, 1.35, 1, Math.PI / 2); // hatch faces +x
+  setInst(mesh, 1, 73.55, 18.7, -43.75, 1.5, 1.05, 1, -1.03); // cab faces the map
+  group.add(mesh);
+}
+
 /** Two work lamps — point light + a small self-lit bulb at each mast. */
 function buildWorkLamps(group: THREE.Group): void {
   const geo = new THREE.SphereGeometry(0.22, 8, 6);
@@ -403,6 +475,9 @@ export function buildMap(scene: THREE.Scene): MapMeshes {
   buildRails(group);
   buildCranes(group);
   buildWorkLamps(group);
+  buildLightAnchors(group);
+  buildPuddles(group);
+  buildWindows(group);
 
   // Sea — a standard material now so the sun leaves a glint on the swell.
   const sea = new THREE.Mesh(new THREE.PlaneGeometry(600, 600), getMaterial('sea'));

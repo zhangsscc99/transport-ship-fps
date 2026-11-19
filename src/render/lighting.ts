@@ -17,11 +17,11 @@ export interface Lights {
 export function configureRenderer(renderer: THREE.WebGLRenderer): void {
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.25;
+  renderer.toneMappingExposure = 1.42;
 }
 
 export function addLights(scene: THREE.Scene): Lights {
-  const sun = new THREE.DirectionalLight(PALETTE.uiText, 2.6);
+  const sun = new THREE.DirectionalLight(PALETTE.sun, 1.5);
   sun.position.set(24, 38, 18);
   sun.castShadow = true;
   sun.shadow.mapSize.set(2048, 2048);
@@ -39,7 +39,7 @@ export function addLights(scene: THREE.Scene): Lights {
 
   // weak counter-fill from the opposite azimuth — lifts the shadowed faces
   // out of pure black without flattening the sun's key
-  const fill = new THREE.DirectionalLight(PALETTE.fill, 0.25);
+  const fill = new THREE.DirectionalLight(PALETTE.fill, 0.4);
   fill.position.set(-24, 18, -16);
   scene.add(fill);
   scene.add(fill.target);
