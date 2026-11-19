@@ -34,6 +34,8 @@ declare global {
       ammo: number;
       dead: boolean;
       yaw: number;
+      pitch: number;
+      firing: boolean;
     };
     __sfx: { counts: Record<string, number>; muted: boolean; unlocked: boolean };
     __fx: { hits: number; kills: number; flashOpacity: number; lowHpPulse: number };
@@ -253,6 +255,8 @@ engine.onFrame = (dt) => {
   dbg.ammo = w.ammo;
   dbg.dead = !playerEnt.alive;
   dbg.yaw = player.yaw;
+  dbg.pitch = player.pitch;
+  dbg.firing = inp.fire;
   dbgSfx.muted = sfx.muted;
   dbgSfx.unlocked = sfx.unlocked;
 
@@ -264,7 +268,7 @@ engine.onFrame = (dt) => {
 };
 
 /** persistent debug handles (no per-frame alloc) — e2e tests read these */
-const dbg = { x: 0, y: 0, z: 0, hp: 0, ammo: 0, dead: false, yaw: 0 };
+const dbg = { x: 0, y: 0, z: 0, hp: 0, ammo: 0, dead: false, yaw: 0, pitch: 0, firing: false };
 window.__state = dbg;
 const dbgSfx = { counts: sfx.counts, muted: false, unlocked: false };
 window.__sfx = dbgSfx;
