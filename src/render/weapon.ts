@@ -86,6 +86,7 @@ export class WeaponView {
   private flash = new THREE.Group();
   private kick = 0;
   private flashT = 0;
+  private time = 0;
   private current: GunId = 'rifle';
   private readonly basePos = new THREE.Vector3(0.27, -0.25, -0.5);
   private readonly baseRot = new THREE.Euler(0, 0, 0); // models are built muzzle-forward (-z)
@@ -136,10 +137,22 @@ export class WeaponView {
   }
 
   update(dt: number): void {
+    this.time += dt;
     if (this.kick > 0) this.kick = Math.max(0, this.kick - dt * 7);
     const k = this.kick * this.kick; // ease-out feel
-    this.group.position.set(this.basePos.x, this.basePos.y - k * 0.02, this.basePos.z + k * 0.07);
-    this.group.rotation.set(this.baseRot.x + k * 0.09, this.baseRot.y, this.baseRot.z); // muzzle rises
+    // idle breathing — a few mm of drift so the gun doesn't look frozen
+    const breathe = Math.sin(this.time * 1.7) * 0.002;
+    const sway = Math.sin(this.time * 1.15) * 0.0015;
+    this.group.position.set(
+      this.basePos.x + sway,
+      this.basePos.y - k * 0.02 + breathe,
+      this.basePos.z + k * 0.07,
+    );
+    this.group.rotation.set(
+      this.baseRot.x + k * 0.09 + breathe * 0.6,
+      this.baseRot.y + sway * 0.5,
+      this.baseRot.z,
+    ); // muzzle rises
     if (this.flashT > 0) {
       this.flashT -= dt;
       const t = Math.max(0, this.flashT / 0.055);
