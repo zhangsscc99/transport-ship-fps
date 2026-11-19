@@ -6,6 +6,14 @@
 import * as THREE from 'three';
 import { PALETTE } from './palette';
 
+const SUN_POS = new THREE.Vector3(24, 38, 18);
+/** Direction toward the sun in world space — shared by the sky dome and the
+ * sea glitter so the visuals and the light stay aligned. */
+export const SUN_DIR = SUN_POS.clone().normalize();
+/** Sun colour (linear) — shared by the directional light, sky aureole and sea
+ * glint. Clone it; don't mutate the shared constant. */
+export const SUN_COLOR = new THREE.Color(PALETTE.sun);
+
 export interface Lights {
   sun: THREE.DirectionalLight;
   bow: THREE.PointLight;
@@ -17,12 +25,12 @@ export interface Lights {
 export function configureRenderer(renderer: THREE.WebGLRenderer): void {
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.42;
+  renderer.toneMappingExposure = 1.48;
 }
 
 export function addLights(scene: THREE.Scene): Lights {
-  const sun = new THREE.DirectionalLight(PALETTE.sun, 1.5);
-  sun.position.set(24, 38, 18);
+  const sun = new THREE.DirectionalLight(SUN_COLOR.clone(), 1.8);
+  sun.position.copy(SUN_POS);
   sun.castShadow = true;
   sun.shadow.mapSize.set(2048, 2048);
   const cam = sun.shadow.camera;
