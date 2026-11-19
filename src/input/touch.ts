@@ -128,6 +128,12 @@ export class TouchControls implements InputSource {
         if (b.act === 'hold') {
           this.fireIds.add(e.pointerId);
           this.flags.fire = true;
+          // hold-fire doubles as the look pointer: if no finger already owns
+          // the camera, this one steers it — drag on the fire button turns.
+          if (b.id === 'fire' && this.lookId < 0) {
+            this.lookId = e.pointerId;
+            this.lookLast = { x: e.clientX, y: e.clientY };
+          }
         } else if (b.act === 'edge') {
           this.flags[b.id as 'reload' | 'swap' | 'jump'] = true;
         } else {

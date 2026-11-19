@@ -299,6 +299,47 @@ function buildAoBlobs(group: THREE.Group): void {
 }
 
 /**
+ * Contact-shadow band — a crisp 0.85m alpha-gradient strip hugging each side
+ * of every grounded collider's base (four instances per box, one draw call).
+ * Sits above the soft ao blob: the rim where hull meets deck.
+ */
+function buildAoEdges(group: THREE.Group): void {
+  // plane baked flat: normal +y, texture's dark edge along local -z
+  const geo = new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2);
+  const BAND = 0.85;
+  const list = MAP.boxes.filter(
+    (b) =>
+      b.y === 0 &&
+      (((b.kind === 'container' || b.kind === 'tower') && b.w >= 1.5 && b.d >= 1.5) ||
+        b.kind === 'pipe'),
+  );
+  // the two ground-level decorative containers (not in MAP.boxes)
+  const spots: { x: number; z: number; w: number; d: number }[] = list.map((b) => ({
+    x: b.x,
+    z: b.z,
+    w: b.w,
+    d: b.d,
+  }));
+  spots.push({ x: 29.8, z: 18, w: 4, d: 2.2 }, { x: -29.8, z: -18, w: 4, d: 2.2 });
+
+  const mesh = new THREE.InstancedMesh(geo, getMaterial('aoEdge'), spots.length * 4);
+  mesh.name = 'ao-edges';
+  let i = 0;
+  for (const b of spots) {
+    const hw = b.w / 2;
+    const hd = b.d / 2;
+    // each strip: length covers the side + both corners; gradient dark edge
+    // faces the box. ry turns the baked -z dark edge toward the box.
+    setInst(mesh, i++, b.x + hw + BAND / 2, 0.016, b.z, b.d + 2 * BAND, 1, BAND, Math.PI / 2);
+    setInst(mesh, i++, b.x - hw - BAND / 2, 0.016, b.z, b.d + 2 * BAND, 1, BAND, -Math.PI / 2);
+    setInst(mesh, i++, b.x, 0.016, b.z + hd + BAND / 2, b.w + 2 * BAND, 1, BAND, 0);
+    setInst(mesh, i++, b.x, 0.016, b.z - hd - BAND / 2, b.w + 2 * BAND, 1, BAND, Math.PI);
+  }
+  mesh.renderOrder = 2;
+  group.add(mesh);
+}
+
+/**
  * Silhouette layer: two distant harbour cranes across the water, a bow mast
  * on the +x tip and a stern crane arm on -x. All share one unlit material —
  * fog fades them into the sky. 14 + 4 + 3 = 21 instances, one draw call.
@@ -473,6 +514,7 @@ export function buildMap(scene: THREE.Scene): MapMeshes {
   buildStackedContainers(group);
   buildGrates(group);
   buildAoBlobs(group);
+  buildAoEdges(group);
   buildRails(group);
   buildCranes(group);
   buildWorkLamps(group);

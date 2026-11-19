@@ -19,7 +19,7 @@ export const PALETTE = {
   skyHorAway: [0.16, 0.22, 0.3],
   fill: '#8899aa', // 反向补光（冷灰蓝）
   fog: '#5b6b78', // 雾色必须贴近天空，不许是黑
-  sun: '#ffd9b0', // 主方向光：雨后天光暖白
+  sun: '#ffb36b', // 主方向光：黄昏低角度暖阳（Saltline 1.0/0.72/0.42 附近）
   teamA: '#4fa4f1', // 我方：蓝
   teamB: '#d9534f', // 敌方：红
   hpFull: '#5fd35f',
@@ -31,6 +31,7 @@ export const PALETTE = {
   uiDim: '#8fa0ad',
   accent: '#ff8b3d', // 开火/命中/危险提示
   gun: ['#23282d', '#2b2f33', '#5a6570'], // 枪体：暗/中/亮
+  gunDark: '#191d22', // 弹匣/小件：偏暗哑光
   gunHi: '#7a8a99', // 枪身高光条 emissive
   glove: '#4a4c50', // 手臂——比枪身亮，分出层次
   flashCore: '#ffd9a0', // 枪口焰心

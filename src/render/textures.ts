@@ -13,7 +13,8 @@ export type TextureKey =
   | 'containerRough'
   | 'metal'
   | 'grate'
-  | 'ao';
+  | 'ao'
+  | 'aoEdge';
 
 const cache = new Map<TextureKey, THREE.Texture>();
 
@@ -302,6 +303,19 @@ function genAo(): HTMLCanvasElement {
   return c;
 }
 
+// --- 64² linear falloff strip: contact-shadow band, alpha fades away from the base ---
+function genAoEdge(): HTMLCanvasElement {
+  const size = 64;
+  const [c, ctx] = makeCanvas(size);
+  const g = ctx.createLinearGradient(0, 0, 0, size);
+  g.addColorStop(0, 'rgba(0,0,0,0.55)');
+  g.addColorStop(0.5, 'rgba(0,0,0,0.22)');
+  g.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, size, size);
+  return c;
+}
+
 const GEN: Record<TextureKey, () => HTMLCanvasElement> = {
   deck: genDeck,
   deckRough: genDeckRough,
@@ -311,6 +325,7 @@ const GEN: Record<TextureKey, () => HTMLCanvasElement> = {
   metal: genMetal,
   grate: genGrate,
   ao: genAo,
+  aoEdge: genAoEdge,
 };
 
 const SRGB_KEYS: ReadonlySet<TextureKey> = new Set(['deck', 'container', 'metal', 'grate']);
