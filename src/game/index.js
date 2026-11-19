@@ -4,5 +4,6 @@
 import "./collision.test.js";
 import "./damage.test.js";
 import "./map.test.js";
+import "./match.test.js";
 import "./player.test.js";
 import "./weapons.test.js";

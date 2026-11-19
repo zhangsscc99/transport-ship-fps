@@ -15,7 +15,7 @@ const { firefox } = await import('playwright');
 const { mkdirSync, statSync } = await import('node:fs');
 const { default: assert } = await import('node:assert/strict');
 
-const URL = 'http://127.0.0.1:3028/transport/';
+const URL = process.env.TSF_URL ?? 'http://127.0.0.1:3028/transport/';
 const errors = [];
 
 const browser = await firefox.launch({
@@ -46,7 +46,20 @@ page.on('console', (m) => {
 
 await page.goto(URL, { waitUntil: 'domcontentloaded', timeout: 20000 });
 await page.waitForSelector('canvas#game', { timeout: 10000 });
-await page.waitForFunction(() => window.__frames > 90, null, { timeout: 30000 });
+await page.waitForFunction(() => window.__match, null, { timeout: 10000 });
+
+// drive to playing: poll-click the menu start button, then wait out the countdown
+for (let i = 0; i < 10; i++) {
+  const phase = await page.evaluate(() => window.__match.phase);
+  if (phase !== 'menu') break;
+  await page.click('[data-btn="start"]').catch(() => {});
+  await page.waitForTimeout(200);
+}
+await page.waitForFunction(
+  () => window.__match.phase === 'playing' && window.__frames > 90,
+  null,
+  { timeout: 30000 },
+);
 
 const fps = await page.evaluate(() => window.__fps);
 const canvasBox = await page.locator('canvas#game').boundingBox();
