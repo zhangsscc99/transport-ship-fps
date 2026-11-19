@@ -22,7 +22,10 @@ export type MaterialKind =
   | 'gunMetal'
   | 'gunPoly'
   | 'gunEdge'
-  | 'glove';
+  | 'glove'
+  | 'puddle'
+  | 'lampRed'
+  | 'window';
 
 const cache = new Map<MaterialKind, THREE.Material>();
 
@@ -138,11 +141,14 @@ function build(kind: Exclude<MaterialKind, 'deck'>): THREE.Material {
       // work-light bulb — self-lit dot at the lamp head
       return new THREE.MeshBasicMaterial({ color: PALETTE.lampWarm });
     case 'gunMetal':
+      // receiver / barrel — mid-metal that catches the sky env so the outline
+      // separates from dark cover without glowing
       return new THREE.MeshStandardMaterial({
         color: PALETTE.gun[1],
         map: getTexture('metal'),
-        metalness: 0.75,
+        metalness: 0.8,
         roughness: 0.35,
+        envMapIntensity: 1.2,
       });
     case 'gunPoly':
       return new THREE.MeshStandardMaterial({
@@ -152,21 +158,39 @@ function build(kind: Exclude<MaterialKind, 'deck'>): THREE.Material {
         roughness: 0.7,
       });
     case 'gunEdge':
-      // highlight band — faint emissive keeps the outline readable in gloom
+      // highlight band — emissive strip keeps the silhouette readable in gloom
       return new THREE.MeshStandardMaterial({
         color: PALETTE.gun[2],
-        emissive: PALETTE.gun[2],
-        emissiveIntensity: 0.32,
+        emissive: PALETTE.gunHi,
+        emissiveIntensity: 0.55,
         metalness: 0.6,
         roughness: 0.4,
       });
     case 'glove':
+      // hands/forearms — a step brighter than the receiver so the two read apart
       return new THREE.MeshStandardMaterial({
-        color: PALETTE.pipe,
+        color: PALETTE.glove,
         map: getTexture('metal'),
         metalness: 0.05,
         roughness: 0.9,
       });
+    case 'puddle':
+      // standing water film — near-mirror that steals the sky from the env map
+      return new THREE.MeshStandardMaterial({
+        color: PALETTE.skyHorizon,
+        metalness: 0.9,
+        roughness: 0.05,
+        envMapIntensity: 1.4,
+      });
+    case 'lampRed':
+      // warning-beacon bulb — self-lit dot
+      return new THREE.MeshBasicMaterial({ color: PALETTE.lampRed });
+    case 'window': {
+      // lit cabin window / hatch — stays crisp through the mist
+      const m = new THREE.MeshBasicMaterial({ color: PALETTE.lampWarm });
+      m.fog = false;
+      return m;
+    }
   }
 }
 

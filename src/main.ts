@@ -44,7 +44,7 @@ const canvas = document.getElementById('game') as HTMLCanvasElement;
 
 const engine = new Engine(canvas);
 configureRenderer(engine.renderer);
-const atmo = applyAtmosphere(engine.scene);
+const atmo = applyAtmosphere(engine.scene, engine.renderer);
 const lights = addLights(engine.scene);
 buildMap(engine.scene);
 setAnisotropyCap(engine.renderer.capabilities.getMaxAnisotropy());
