@@ -18,10 +18,14 @@ import { WeaponRack } from './game/weapons';
 import { createEntity, type Entity } from './game/entities';
 import { traceHit, falloffFactor, applyDamage, updateRespawn, HEADSHOT_MULT, type Ray } from './game/damage';
 import { PALETTE } from './render/palette';
+import { createSfx } from './audio/sfx';
 
 declare global {
   interface Window {
     __state: { x: number; y: number; z: number; hp: number; ammo: number; dead: boolean };
+    __sfx: { counts: Record<string, number>; muted: boolean; unlocked: boolean };
+    __fx: { hits: number; kills: number; flashOpacity: number; lowHpPulse: number };
+    __test: { hurt(dmg: number): void };
   }
 }
 
@@ -48,6 +52,19 @@ engine.scene.add(view.camera);
 const tracers = new TracerPool(engine.scene);
 const hud = new Hud(document.body, touch.enabled);
 
+const sfx = createSfx();
+hud.setMuted(sfx.muted);
+hud.onMuteToggle = (m) => sfx.setMuted(m);
+// AudioContext unlock must happen inside a real user gesture (autoplay policy)
+const onFirstGesture = () => void sfx.unlock();
+window.addEventListener('pointerdown', onFirstGesture, { once: true });
+window.addEventListener('keydown', onFirstGesture, { once: true });
+
+const SHOT_SFX = { rifle: 'shotRifle', sniper: 'shotSniper', shotgun: 'shotShotgun' } as const;
+/** stride length per footstep — interval scales with move speed via distance */
+const STEP_STRIDE = 2.1;
+let stepAcc = 0;
+
 const playerEnt = createEntity('player', player.position, 100, PLAYER_RADIUS, MOVE.eyeHeight);
 const entities: Entity[] = []; // enemy bots arrive in a later milestone
 let spawnIdx = 1;
@@ -69,6 +86,19 @@ function aimDir(): Vec3 {
   };
 }
 
+/**
+ * Shared hurt path — real damage events and window.__test.hurt() both go
+ * through here: damage → edge flash + direction arc + hurt sfx.
+ * `angleRad` is the attacker's screen-relative bearing (0 = ahead).
+ */
+function hurtPlayer(dmg: number, angleRad?: number): void {
+  const now = performance.now();
+  if (!playerEnt.alive || now < playerEnt.invincibleUntil) return;
+  applyDamage(playerEnt, dmg, now);
+  hud.hitFrom(angleRad ?? Math.random() * Math.PI * 2, now);
+  sfx.play('hurt');
+}
+
 engine.camera = view.camera;
 engine.onResize = (w, h) => view.setAspect(w / h);
 engine.onFrame = (dt) => {
@@ -77,7 +107,19 @@ engine.onFrame = (dt) => {
 
   if (playerEnt.alive) {
     player.update(dt, inp, { collider: world });
-    if (player.drowned) applyDamage(playerEnt, 9999, now);
+    if (player.drowned && playerEnt.alive) hurtPlayer(9999, Math.PI);
+
+    // footsteps — throttled by distance travelled, so interval follows speed
+    const hSpeed = Math.hypot(player.velocity.x, player.velocity.z);
+    if (player.onGround && hSpeed > 0.5) {
+      stepAcc += hSpeed * dt;
+      if (stepAcc >= STEP_STRIDE) {
+        stepAcc = 0;
+        sfx.play('footstep');
+      }
+    } else {
+      stepAcc = 0;
+    }
   }
   if (!playerEnt.alive) {
     const [rx, ry, rz] = spawnPoint('A', spawnIdx);
@@ -98,7 +140,7 @@ engine.onFrame = (dt) => {
   const w = rack.current;
   if (playerEnt.alive) {
     if (inp.swap) weaponView.setWeapon(rack.swap().spec.id);
-    if (inp.reload) w.reload(now);
+    if (inp.reload && w.reload(now)) sfx.play('reload');
     if (inp.fire && player.onGround) {
       const eye: Vec3 = {
         x: player.position.x,
@@ -108,6 +150,7 @@ engine.onFrame = (dt) => {
       const shots = w.tryFire(now, eye, aimDir());
       if (shots) {
         weaponView.onFire();
+        sfx.play(SHOT_SFX[w.spec.id]);
         weaponView.muzzleWorld(scratchMuzzle);
         for (const ray of shots) {
           const hit = traceHit(ray, MAP.boxes, entities);
@@ -117,7 +160,11 @@ engine.onFrame = (dt) => {
               w.spec.dmg *
               falloffFactor(w.spec, hit.dist) *
               (hit.headshot ? HEADSHOT_MULT : 1);
-            applyDamage(hit.entity, dmg, now);
+            sfx.play('hit');
+            if (applyDamage(hit.entity, dmg, now)) {
+              sfx.play('kill');
+              hud.notifyKill(now);
+            }
           }
         }
       }
@@ -147,11 +194,17 @@ engine.onFrame = (dt) => {
   dbg.hp = playerEnt.hp;
   dbg.ammo = w.ammo;
   dbg.dead = !playerEnt.alive;
+  dbgSfx.muted = sfx.muted;
+  dbgSfx.unlocked = sfx.unlocked;
 };
 
-/** persistent debug handle (no per-frame alloc) — e2e tests read this */
+/** persistent debug handles (no per-frame alloc) — e2e tests read these */
 const dbg = { x: 0, y: 0, z: 0, hp: 0, ammo: 0, dead: false };
 window.__state = dbg;
+const dbgSfx = { counts: sfx.counts, muted: false, unlocked: false };
+window.__sfx = dbgSfx;
+window.__fx = hud.fx;
+window.__test = { hurt: (dmg: number) => hurtPlayer(dmg) };
 
 view.snap(player);
 engine.start();

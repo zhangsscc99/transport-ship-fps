@@ -1,6 +1,7 @@
 // DOM HUD: hp bar (bottom-left), ammo (bottom-right), spread-aware crosshair
-// (center), fps (top-right, toggleable), death overlay, portrait rotate hint.
-// All colors from palette.ts; display-only (pointer-events: none).
+// (center), fps (top-right, toggleable), death overlay, portrait rotate hint,
+// hit feedback (edge vignette + direction arc), kill hint, low-hp pulse and a
+// mute toggle. All colors from palette.ts; overlays are pointer-events:none.
 
 import { PALETTE } from './palette';
 
@@ -19,6 +20,14 @@ export interface HudState {
 }
 
 const FONT = `system-ui,-apple-system,'PingFang SC','Microsoft YaHei',sans-serif`;
+/** edge vignette shared by the hurt flash and the low-hp pulse */
+const HURT_BG = `radial-gradient(ellipse 115% 90% at 50% 50%, transparent 55%, ${PALETTE.hurtVeil} 100%)`;
+
+const HURT_MS = 120; // ART-SPEC §3: flash fades back inside 120ms
+const ARC_MS = 600;
+const KILL_MS = 700;
+const PULSE_MS = 1200;
+const PULSE_PEAK = 0.25;
 
 function div(style: string, parent: HTMLElement, hudTag?: string): HTMLDivElement {
   const el = document.createElement('div');
@@ -39,6 +48,22 @@ export class Hud {
   private deadEl: HTMLDivElement;
   private rotateEl: HTMLDivElement;
   private fpsVisible = true;
+
+  private hurtEl: HTMLDivElement;
+  private lowHpEl: HTMLDivElement;
+  private arcEl: HTMLDivElement;
+  private killEl: HTMLDivElement;
+  private muteBtn: HTMLDivElement;
+  private hurtAt = -1;
+  private arcAt = -1;
+  private arcAngle = 0;
+  private killAt = -1;
+  private mutedFlag = false;
+
+  /** counters/values for the e2e feedback hooks — persistent object */
+  readonly fx = { hits: 0, kills: 0, flashOpacity: 0, lowHpPulse: 0 };
+  /** wired by main.ts to the sfx bus */
+  onMuteToggle: ((muted: boolean) => void) | null = null;
 
   constructor(parent: HTMLElement, touchMode: boolean) {
     this.root = div(
@@ -125,6 +150,72 @@ export class Hud {
       'rotate',
     );
     this.rotateEl.textContent = '建议横屏游玩（竖屏也可玩）';
+
+    // --- feedback layer (F109): all elements prebuilt, opacity animated only ---
+    this.hurtEl = div(`position:absolute;inset:0;background:${HURT_BG};opacity:0;`, this.root);
+    this.hurtEl.dataset.fx = 'hurt';
+    this.lowHpEl = div(`position:absolute;inset:0;background:${HURT_BG};opacity:0;`, this.root);
+    this.lowHpEl.dataset.fx = 'lowhp';
+
+    this.arcEl = div(
+      `position:absolute;left:50%;top:50%;width:44vmin;height:44vmin;` +
+        `transform:translate(-50%,-50%);opacity:0;`,
+      this.root,
+    );
+    this.arcEl.dataset.fx = 'arc';
+    this.arcEl.innerHTML =
+      `<svg viewBox="0 0 100 100" width="100%" height="100%">` +
+      `<path d="M16 53 A35 35 0 0 1 84 53" fill="none" stroke="${PALETTE.hpLow}" ` +
+      `stroke-width="5" stroke-linecap="round"/></svg>`;
+
+    this.killEl = div(
+      `position:absolute;left:50%;top:30%;transform:translateX(-50%);` +
+        `font-size:20px;font-weight:700;color:${PALETTE.accent};` +
+        `text-shadow:0 0 4px ${PALETTE.crosshairEdge};opacity:0;`,
+      this.root,
+    );
+    this.killEl.dataset.fx = 'kill';
+    this.killEl.textContent = '击倒';
+
+    // mute toggle — own fixed layer above the touch UI (z 10) so it stays
+    // clickable on mobile; hit rect 48×48 sits inside the 44–120px budget.
+    this.muteBtn = document.createElement('div');
+    this.muteBtn.dataset.btn = 'mute';
+    this.muteBtn.textContent = '声';
+    this.muteBtn.style.cssText =
+      `position:fixed;right:calc(12px + env(safe-area-inset-right, 0px));` +
+      `top:calc(30px + env(safe-area-inset-top, 0px));width:48px;height:48px;` +
+      `display:flex;align-items:center;justify-content:center;border-radius:10px;` +
+      `background:${PALETTE.uiPanel};border:2px solid ${PALETTE.uiBorder};` +
+      `color:${PALETTE.uiText};font:600 15px/1 ${FONT};z-index:30;` +
+      `pointer-events:auto;touch-action:none;user-select:none;-webkit-user-select:none;` +
+      `cursor:pointer;box-sizing:border-box;`;
+    parent.appendChild(this.muteBtn);
+    this.muteBtn.addEventListener('click', () => {
+      this.setMuted(!this.mutedFlag);
+      this.onMuteToggle?.(this.mutedFlag);
+    });
+  }
+
+  /** damage feedback: edge flash + a direction arc rotated to the attack
+   *  bearing (screen-relative radians, 0 = straight ahead). */
+  hitFrom(angleRad: number, now: number): void {
+    this.hurtAt = now;
+    this.arcAt = now;
+    this.arcAngle = angleRad;
+    this.fx.hits++;
+  }
+
+  notifyKill(now: number): void {
+    this.killAt = now;
+    this.fx.kills++;
+  }
+
+  setMuted(m: boolean): void {
+    this.mutedFlag = m;
+    this.muteBtn.textContent = m ? '静' : '声';
+    this.muteBtn.style.borderColor = m ? PALETTE.accent : PALETTE.uiBorder;
+    this.muteBtn.style.color = m ? PALETTE.accent : PALETTE.uiText;
   }
 
   setFpsVisible(v: boolean): void {
@@ -154,5 +245,29 @@ export class Hud {
     if (s.dead) this.deadEl.textContent = `阵亡 · ${Math.max(0, s.respawnIn).toFixed(1)}s 后重生`;
     this.rotateEl.style.display =
       window.innerHeight > window.innerWidth ? 'block' : 'none';
+
+    // --- feedback decay (values only; elements and gradients prebuilt) ---
+    const now = performance.now();
+    const flash =
+      this.hurtAt < 0 ? 0 : Math.max(0, 0.35 * (1 - (now - this.hurtAt) / HURT_MS));
+    this.hurtEl.style.opacity = `${flash}`;
+    this.fx.flashOpacity = flash;
+
+    const arcO =
+      this.arcAt < 0 ? 0 : Math.max(0, 0.9 * (1 - (now - this.arcAt) / ARC_MS));
+    this.arcEl.style.opacity = `${arcO}`;
+    if (arcO > 0)
+      this.arcEl.style.transform = `translate(-50%,-50%) rotate(${this.arcAngle}rad)`;
+
+    const killO =
+      this.killAt < 0 ? 0 : Math.max(0, 1 - (now - this.killAt) / KILL_MS);
+    this.killEl.style.opacity = `${killO}`;
+
+    const lowHp = frac <= 0.3 && !s.dead;
+    const pulse = lowHp
+      ? PULSE_PEAK * (0.5 - 0.5 * Math.cos((now / PULSE_MS) * 2 * Math.PI))
+      : 0;
+    this.lowHpEl.style.opacity = `${pulse}`;
+    if (lowHp) this.fx.lowHpPulse++;
   }
 }

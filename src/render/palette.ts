@@ -28,4 +28,5 @@ export const PALETTE = {
   crosshair: '#eef4fa',
   crosshairEdge: 'rgba(4,8,12,0.85)',
   deadVeil: 'rgba(80,16,14,0.35)',
+  hurtVeil: 'rgba(178,44,38,0.85)', // 受击/低血 屏幕边缘红晕外缘
 } as const;
