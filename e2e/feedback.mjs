@@ -46,12 +46,22 @@ await page.goto(URL, { waitUntil: 'domcontentloaded', timeout: 20000 });
 await page.waitForSelector('canvas#game', { timeout: 10000 });
 await page.waitForFunction(() => window.__frames > 90, null, { timeout: 30000 });
 
-// ① audio stays locked until a real user gesture, then unlocks
-assert.strictEqual(
-  await page.evaluate(() => window.__sfx.unlocked),
-  false,
-  'sfx unlocked before any gesture',
-);
+// ①a audio is still locked on load — no user gesture has happened yet.
+// (read this before clicking start: that click is itself a real gesture)
+const unlockedAtLoad = await page.evaluate(() => window.__sfx.unlocked);
+assert.strictEqual(unlockedAtLoad, false, 'sfx unlocked before any gesture');
+
+// drive to playing: poll-click the menu start button, then wait out the countdown
+await page.waitForFunction(() => window.__match, null, { timeout: 10000 });
+for (let i = 0; i < 10; i++) {
+  const phase = await page.evaluate(() => window.__match.phase);
+  if (phase !== 'menu') break;
+  await page.click('[data-btn="start"]').catch(() => {});
+  await page.waitForTimeout(200);
+}
+await page.waitForFunction(() => window.__match?.phase === 'playing', null, { timeout: 15000 });
+
+// ①b a real gesture (the start click, or this one) unlocks the audio ctx
 await page.mouse.move(640, 360);
 await page.mouse.down();
 await page.mouse.up();
