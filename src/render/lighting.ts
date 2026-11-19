@@ -6,7 +6,10 @@
 import * as THREE from 'three';
 import { PALETTE } from './palette';
 
-const SUN_POS = new THREE.Vector3(24, 38, 18);
+// Dusk sun like Saltline's: ~10° above the horizon, azimuth ~20° off +x
+// toward +z, so it rakes along the deck's long axis and sits inside the
+// cloud deck's burning gap (see sky.ts).
+const SUN_POS = new THREE.Vector3(46.3, 8.7, 16.75);
 /** Direction toward the sun in world space — shared by the sky dome and the
  * sea glitter so the visuals and the light stay aligned. */
 export const SUN_DIR = SUN_POS.clone().normalize();
@@ -29,7 +32,8 @@ export function configureRenderer(renderer: THREE.WebGLRenderer): void {
 }
 
 export function addLights(scene: THREE.Scene): Lights {
-  const sun = new THREE.DirectionalLight(SUN_COLOR.clone(), 1.8);
+  // grazing incidence on the deck (~sin 10°) needs more raw intensity
+  const sun = new THREE.DirectionalLight(SUN_COLOR.clone(), 3.0);
   sun.position.copy(SUN_POS);
   sun.castShadow = true;
   sun.shadow.mapSize.set(2048, 2048);

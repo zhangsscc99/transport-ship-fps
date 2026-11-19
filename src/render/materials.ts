@@ -17,9 +17,11 @@ export type MaterialKind =
   | 'barrel'
   | 'grate'
   | 'ao'
+  | 'aoEdge'
   | 'lamp'
   | 'gunMetal'
   | 'gunPoly'
+  | 'gunMag'
   | 'gunEdge'
   | 'glove'
   | 'puddle'
@@ -130,6 +132,13 @@ function build(kind: Exclude<MaterialKind, 'deck'>): THREE.Material {
         transparent: true,
         depthWrite: false,
       });
+    case 'aoEdge':
+      // crisp contact-shadow band at a prop's base — fades outward, no depth
+      return new THREE.MeshBasicMaterial({
+        map: getTexture('aoEdge'),
+        transparent: true,
+        depthWrite: false,
+      });
     case 'lamp':
       // work-light bulb — self-lit dot at the lamp head
       return new THREE.MeshBasicMaterial({ color: PALETTE.lampWarm });
@@ -139,8 +148,8 @@ function build(kind: Exclude<MaterialKind, 'deck'>): THREE.Material {
       return new THREE.MeshStandardMaterial({
         color: PALETTE.gun[1],
         map: getTexture('metal'),
-        metalness: 0.8,
-        roughness: 0.35,
+        metalness: 0.85,
+        roughness: 0.3,
         envMapIntensity: 1.2,
       });
     case 'gunPoly':
@@ -148,7 +157,15 @@ function build(kind: Exclude<MaterialKind, 'deck'>): THREE.Material {
         color: PALETTE.gun[0],
         map: getTexture('metal'),
         metalness: 0.05,
-        roughness: 0.7,
+        roughness: 0.75,
+      });
+    case 'gunMag':
+      // magazine + small dark fittings — darker, near-matte
+      return new THREE.MeshStandardMaterial({
+        color: PALETTE.gunDark,
+        map: getTexture('metal'),
+        metalness: 0.5,
+        roughness: 0.62,
       });
     case 'gunEdge':
       // highlight band — emissive strip keeps the silhouette readable in gloom

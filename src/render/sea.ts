@@ -91,8 +91,8 @@ ${IR}
   float de = length(max(hq, 0.0)) + min(max(hq.x, hq.y), 0.0);
   vec4 fn = texture2D(uDetail, sxz * 0.41 + uTime * vec2(-0.012, 0.007));
   vec4 fn2 = texture2D(uDetail, sxz * 0.093 + uTime * vec2(0.004, 0.003));
-  float band = 1.0 - smoothstep(0.0, 0.2 + fn2.g * fn2.g * 2.2, de);
-  float foam = clamp(band * smoothstep(0.5, 0.68, fn.a * 0.55 + fn.r * 0.25 + fn2.g * 0.3 + band * 0.2), 0.0, 1.0) * step(-0.3, de);
+  float band = 1.0 - smoothstep(0.0, 0.35 + fn2.g * fn2.g * 2.6, de);
+  float foam = clamp(band * smoothstep(0.45, 0.64, fn.a * 0.55 + fn.r * 0.25 + fn2.g * 0.3 + band * 0.2), 0.0, 1.0) * step(-0.3, de);
   float scum = (1.0 - smoothstep(0.0, 5.0, de)) * smoothstep(0.4, 0.7, fn2.g);
   vec3 alb = vec3(0.0045, 0.013, 0.017);
   alb = mix(alb, vec3(0.03, 0.04, 0.034), scum * 0.6);
@@ -179,6 +179,10 @@ ${CR}
     vec3 wn = normalize(vec3(-gNxz.x, 1.0, -gNxz.y));
     float glint = pow(max(dot(reflect(sv, wn), uSunDirW), 0.0), 300.0);
     reflectedLight.directSpecular += uSunColW * glint * 2.0 * gSpark;
+    // sun road — the low sun's mirror path on the water: flat-normal
+    // reflection stretched along the sun azimuth, fading in with distance
+    float road = pow(max(dot(reflect(sv, vec3(0.0, 1.0, 0.0)), uSunDirW), 0.0), 200.0);
+    reflectedLight.directSpecular += uSunColW * road * 2.8 * smoothstep(25.0, 140.0, gSDist) * gSpark;
   }`,
       )
       .replace('#include <opaque_fragment>', LR + `\n#include <opaque_fragment>`);
