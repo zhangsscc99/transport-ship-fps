@@ -11,6 +11,7 @@ export const PALETTE = {
   pipe: '#20262c',
   sea: ['#13212b', '#1b2f3c', '#27414f'],
   sky: ['#0e1620', '#1a2a38'],
+  skyHorizon: '#2a3038', // 地平线暖灰
   fog: '#16222c',
   teamA: '#4fa4f1', // 我方：蓝
   teamB: '#d9534f', // 敌方：红
@@ -29,4 +30,8 @@ export const PALETTE = {
   crosshairEdge: 'rgba(4,8,12,0.85)',
   deadVeil: 'rgba(80,16,14,0.35)',
   hurtVeil: 'rgba(178,44,38,0.85)', // 受击/低血 屏幕边缘红晕外缘
+  lampRed: '#d94336', // 船头红色警示灯
+  lampWarm: '#e8a04c', // 哨塔暖黄工作灯
+  wood: '#6d5637', // 木托盘
+  crane: '#151c23', // 远处起重机剪影
 } as const;

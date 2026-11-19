@@ -4,7 +4,9 @@
 
 import * as THREE from 'three';
 import { Engine } from './render/engine';
-import { addLights } from './render/lighting';
+import { addLights, configureRenderer } from './render/lighting';
+import { applyAtmosphere } from './render/atmosphere';
+import { setAnisotropyCap } from './render/textures';
 import { buildMap } from './render/map';
 import { PlayerCamera } from './render/camera';
 import { WeaponView, TracerPool } from './render/weapon';
@@ -17,7 +19,6 @@ import { TouchControls } from './input/touch';
 import { WeaponRack } from './game/weapons';
 import { createEntity, type Entity } from './game/entities';
 import { traceHit, falloffFactor, applyDamage, updateRespawn, HEADSHOT_MULT, type Ray } from './game/damage';
-import { PALETTE } from './render/palette';
 import { createSfx } from './audio/sfx';
 
 declare global {
@@ -32,11 +33,11 @@ declare global {
 const canvas = document.getElementById('game') as HTMLCanvasElement;
 
 const engine = new Engine(canvas);
-engine.scene.background = new THREE.Color(PALETTE.sky[0]);
-engine.scene.fog = new THREE.Fog(PALETTE.fog, 45, 190);
-
-addLights(engine.scene);
+configureRenderer(engine.renderer);
+const atmo = applyAtmosphere(engine.scene);
+const lights = addLights(engine.scene);
 buildMap(engine.scene);
+setAnisotropyCap(engine.renderer.capabilities.getMaxAnisotropy());
 
 const world = new CollisionWorld(MAP.boxes, MAP.bounds, MAP.waterY);
 const [sx, sy, sz] = spawnPoint('A', 0);
@@ -136,6 +137,8 @@ engine.onFrame = (dt) => {
   }
 
   view.update(player, dt);
+  lights.update(now * 0.001);
+  atmo.update(view.camera.position);
 
   const w = rack.current;
   if (playerEnt.alive) {
