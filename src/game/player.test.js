@@ -2,6 +2,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
+// src/game/collision.ts
+var PLAYER_RADIUS = 0.35;
+
 // src/game/player.ts
 var MOVE = {
   walkSpeed: 4.2,
@@ -23,7 +26,8 @@ function emptyInput() {
     yawDelta: 0,
     pitchDelta: 0,
     fire: false,
-    reload: false
+    reload: false,
+    swap: false
   };
 }
 function wrapPi(a) {
@@ -39,6 +43,8 @@ var Player = class {
   pitch = 0;
   crouch = false;
   onGround = true;
+  /** Set by the collider when the body leaves the ship / hits water. */
+  drowned = false;
   constructor(spawn = { x: 0, y: 0, z: 0 }, yaw = 0) {
     this.position = { ...spawn };
     this.velocity = { x: 0, y: 0, z: 0 };
@@ -54,7 +60,12 @@ var Player = class {
   update(dt, input2, world = {}) {
     this.yaw = wrapPi(this.yaw + input2.yawDelta);
     this.pitch = Math.max(-MOVE.pitchLimit, Math.min(MOVE.pitchLimit, this.pitch + input2.pitchDelta));
-    this.crouch = input2.crouch;
+    if (!input2.crouch && this.crouch && world.collider) {
+      const p2 = this.position;
+      this.crouch = world.collider.hits(p2.x, p2.y, p2.z, PLAYER_RADIUS, MOVE.eyeHeight);
+    } else {
+      this.crouch = input2.crouch;
+    }
     const speed = this.crouch ? MOVE.crouchSpeed : input2.run ? MOVE.runSpeed : MOVE.walkSpeed;
     const fwd = this.forward();
     const right = { x: -fwd.z, z: fwd.x };
@@ -72,6 +83,26 @@ var Player = class {
       this.onGround = false;
     }
     this.velocity.y += MOVE.gravity * dt;
+    if (world.collider) {
+      const res = world.collider.move(
+        this.position,
+        this.velocity,
+        PLAYER_RADIUS,
+        this.eyeHeight,
+        dt,
+        this.onGround
+      );
+      const p2 = this.position;
+      p2.x = res.pos.x;
+      p2.y = res.pos.y;
+      p2.z = res.pos.z;
+      this.velocity.x = res.vel.x;
+      this.velocity.y = res.vel.y;
+      this.velocity.z = res.vel.z;
+      this.onGround = res.onGround;
+      if (res.drowned) this.drowned = true;
+      return;
+    }
     const inside = world.isInside ?? (() => true);
     const p = this.position;
     let nx = p.x + this.velocity.x * dt;

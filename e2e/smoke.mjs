@@ -1,12 +1,11 @@
-// M1 smoke test: load the deployed build, screenshot, assert render health.
+// M2 smoke test: load the deployed build, hold mouse1 to fire, screenshot,
+// assert render health + combat loop (ammo drops), zero JS errors.
 // Usage: node e2e/smoke.mjs  (server must be running on 127.0.0.1:3028)
 //
 // Chromium's WebGL hangs in this WSL (no working GPU path), so the test runs
 // Playwright Firefox with software rendering under xvfb when DISPLAY is unset.
-
 // A display is required: firefox must run headed (headless builds get no GL
-// here). Spawning Xvfb from inside this script proved unreliable — the
-// browser launch hangs — so we run under xvfb-run instead.
+// here) — we run under xvfb-run instead.
 if (!process.env.DISPLAY) {
   console.error('no DISPLAY — run:  xvfb-run -a node e2e/smoke.mjs');
   process.exit(1);
@@ -16,12 +15,21 @@ const { firefox } = await import('playwright');
 const { mkdirSync, statSync } = await import('node:fs');
 const { default: assert } = await import('node:assert/strict');
 
-const URL = 'http://127.0.0.1:3028/';
+const URL = 'http://127.0.0.1:3028/transport/';
 const errors = [];
 
 const browser = await firefox.launch({
   headless: false,
   timeout: 90000,
+  // WSL2 blocks firefox's sandbox namespaces — the browser hangs at startup
+  // without these. (See: MOZ sandbox + unprivileged userns.)
+  env: {
+    ...process.env,
+    MOZ_DISABLE_CONTENT_SANDBOX: '1',
+    MOZ_DISABLE_GMP_SANDBOX: '1',
+    MOZ_DISABLE_RDD_SANDBOX: '1',
+    MOZ_DISABLE_SOCKET_PROCESS_SANDBOX: '1',
+  },
   firefoxUserPrefs: {
     'webgl.force-enabled': true,
     'webgl.disabled': false,
@@ -44,16 +52,25 @@ const fps = await page.evaluate(() => window.__fps);
 const canvasBox = await page.locator('canvas#game').boundingBox();
 assert.ok(canvasBox && canvasBox.width > 0 && canvasBox.height > 0, 'canvas has no layout box');
 
+// combat loop: hold LMB → the rifle fires and the mag drains
+const ammo0 = await page.evaluate(() => window.__state?.ammo ?? 30);
+await page.mouse.move(640, 360);
+await page.mouse.down();
+await page.waitForTimeout(400);
+await page.mouse.up();
+const ammo1 = await page.evaluate(() => window.__state.ammo);
+assert.ok(ammo1 < ammo0, `ammo did not drop on desktop fire (${ammo0} → ${ammo1})`);
+
 mkdirSync('e2e/shots', { recursive: true });
-await page.screenshot({ path: 'e2e/shots/m1.png' });
-const shotSize = statSync('e2e/shots/m1.png').size;
+await page.screenshot({ path: 'e2e/shots/m2-desktop.png' });
+const shotSize = statSync('e2e/shots/m2-desktop.png').size;
 
 await browser.close();
 
 assert.ok(errors.length === 0, `JS errors on page:\n${errors.join('\n')}`);
 assert.ok(fps > 30, `fps too low: ${fps}`);
-// A uniform-color 1280×720 PNG compresses to ~2-5KB; the (intentionally dark)
-// rendered scene lands ~14KB. Threshold sits between the two.
 assert.ok(shotSize > 8000, `screenshot looks blank (${shotSize} bytes)`);
 
-console.log(`SMOKE OK — fps=${fps.toFixed(1)}, shot=${(shotSize / 1024).toFixed(0)}KB, errors=0`);
+console.log(
+  `SMOKE OK — fps=${fps.toFixed(1)}, ammo ${ammo0}→${ammo1}, shot=${(shotSize / 1024).toFixed(0)}KB, errors=0`,
+);

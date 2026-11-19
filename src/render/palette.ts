@@ -22,4 +22,10 @@ export const PALETTE = {
   uiText: '#dfe7ee',
   uiDim: '#8fa0ad',
   accent: '#ff8b3d', // 开火/命中/危险提示
+  gun: ['#242a31', '#363f48', '#4a545f'], // 枪体：暗/中/亮
+  flashCore: '#ffd9a0', // 枪口焰心
+  tracer: '#c9a227', // 曳光（同警示黄）
+  crosshair: '#eef4fa',
+  crosshairEdge: 'rgba(4,8,12,0.85)',
+  deadVeil: 'rgba(80,16,14,0.35)',
 } as const;

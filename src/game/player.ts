@@ -2,6 +2,8 @@
 // Spec numbers from docs/SPEC.md §移动: walk 4.2 / run 6.0 / crouch 1.9,
 // jump initial velocity 4.8, gravity -18.
 
+import { PLAYER_RADIUS } from './collision';
+
 export const MOVE = {
   walkSpeed: 4.2,
   runSpeed: 6.0,
@@ -30,6 +32,7 @@ export interface InputState {
   pitchDelta: number; // radians to add to pitch this frame
   fire: boolean;
   reload: boolean;
+  swap: boolean; // edge-triggered: cycle to the next weapon
 }
 
 export function emptyInput(): InputState {
@@ -43,6 +46,7 @@ export function emptyInput(): InputState {
     pitchDelta: 0,
     fire: false,
     reload: false,
+    swap: false,
   };
 }
 
@@ -52,6 +56,21 @@ export interface WorldQuery {
   isInside?: (x: number, z: number) => boolean;
   /** Ground surface height at (x,z); defaults to 0 (flat deck). */
   groundHeight?: (x: number, z: number) => number;
+  /** Full cylinder-vs-AABB world (CollisionWorld); takes precedence when set. */
+  collider?: Collider;
+}
+
+/** Structural type of CollisionWorld — keeps player.ts free of the import. */
+export interface Collider {
+  move(
+    pos: Vec3,
+    vel: Vec3,
+    radius: number,
+    height: number,
+    dt: number,
+    wasOnGround: boolean,
+  ): { pos: Vec3; vel: Vec3; onGround: boolean; drowned: boolean };
+  hits(x: number, y: number, z: number, r: number, h: number): boolean;
 }
 
 /** Wrap angle to (-PI, PI]. */
@@ -69,6 +88,8 @@ export class Player {
   pitch = 0;
   crouch = false;
   onGround = true;
+  /** Set by the collider when the body leaves the ship / hits water. */
+  drowned = false;
 
   constructor(spawn: Vec3 = { x: 0, y: 0, z: 0 }, yaw = 0) {
     this.position = { ...spawn };
@@ -91,7 +112,13 @@ export class Player {
     this.pitch = Math.max(-MOVE.pitchLimit, Math.min(MOVE.pitchLimit, this.pitch + input.pitchDelta));
 
     // --- move ---
-    this.crouch = input.crouch;
+    if (!input.crouch && this.crouch && world.collider) {
+      // standing up needs headroom for the full-height body
+      const p = this.position;
+      this.crouch = world.collider.hits(p.x, p.y, p.z, PLAYER_RADIUS, MOVE.eyeHeight);
+    } else {
+      this.crouch = input.crouch;
+    }
     const speed = this.crouch ? MOVE.crouchSpeed : input.run ? MOVE.runSpeed : MOVE.walkSpeed;
 
     const fwd = this.forward();
@@ -113,7 +140,29 @@ export class Player {
     }
     this.velocity.y += MOVE.gravity * dt;
 
-    // --- integrate with bounds check (slide along edges) ---
+    // --- integrate: full collision world when provided ---
+    if (world.collider) {
+      const res = world.collider.move(
+        this.position,
+        this.velocity,
+        PLAYER_RADIUS,
+        this.eyeHeight,
+        dt,
+        this.onGround,
+      );
+      const p = this.position;
+      p.x = res.pos.x;
+      p.y = res.pos.y;
+      p.z = res.pos.z;
+      this.velocity.x = res.vel.x;
+      this.velocity.y = res.vel.y;
+      this.velocity.z = res.vel.z;
+      this.onGround = res.onGround;
+      if (res.drowned) this.drowned = true;
+      return;
+    }
+
+    // --- fallback: bounds check + flat ground (slide along edges) ---
     const inside = world.isInside ?? (() => true);
     const p = this.position;
     let nx = p.x + this.velocity.x * dt;
