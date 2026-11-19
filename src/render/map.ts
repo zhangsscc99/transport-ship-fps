@@ -120,10 +120,10 @@ function buildDeckLines(group: THREE.Group): void {
   group.add(mesh);
 }
 
-/** Wooden pallets ×10 scattered between the lanes. */
+/** Wooden pallets ×14 scattered between the lanes. */
 function buildPallets(group: THREE.Group): void {
   const geo = new THREE.BoxGeometry(1.1, 0.12, 0.9);
-  const mesh = new THREE.InstancedMesh(geo, getMaterial('wood'), 10);
+  const mesh = new THREE.InstancedMesh(geo, getMaterial('wood'), 14);
   mesh.name = 'pallets';
   const spots: [number, number, number][] = [
     [-18, 6, 0.4],
@@ -136,6 +136,10 @@ function buildPallets(group: THREE.Group): void {
     [22, 10, 0.9],
     [0, -15, 0.5],
     [10, 1, 1.9],
+    [-14, -13, 0.7],
+    [24, 4, 1.5],
+    [-24, -6, 0.9],
+    [16, 16.5, 0.2],
   ];
   spots.forEach(([x, z, ry], i) => setInst(mesh, i, x, 0.06, z, 1, 1, 1, ry));
   mesh.castShadow = true;
@@ -143,10 +147,164 @@ function buildPallets(group: THREE.Group): void {
   group.add(mesh);
 }
 
-/** Two distant harbour-crane silhouettes across the water — fog does the rest. */
+/** Oil drums ×12 in small clusters, per-instance rust/paint tints. */
+function buildBarrels(group: THREE.Group): void {
+  const geo = new THREE.CylinderGeometry(0.3, 0.3, 0.85, 12);
+  const mesh = new THREE.InstancedMesh(geo, getMaterial('barrel'), 12);
+  mesh.name = 'barrels';
+  const spots: [number, number, number][] = [
+    [-24, 4, 0.2],
+    [-24.6, 3.1, 1.1],
+    [-23.4, 3.4, 0.7],
+    [24, -6, 0.4],
+    [24.7, -5.3, 1.5],
+    [23.3, -5.5, 0.9],
+    [10, 9.4, 0.1],
+    [10.8, 10, 1.9],
+    [-12.4, -0.6, 0.5],
+    [-11.8, -1.4, 1.2],
+    [26, 10.6, 0.3],
+    [26.8, 10, 1.4],
+  ];
+  const tints = [PALETTE.rust, PALETTE.rust, PALETTE.container[0], PALETTE.container[3], PALETTE.tower[1]];
+  const c = new THREE.Color();
+  spots.forEach(([x, z, ry], i) => {
+    setInst(mesh, i, x, 0.425, z, 1, 1, 1, ry);
+    mesh.setColorAt(i, c.set(tints[i % tints.length]));
+  });
+  mesh.instanceColor!.needsUpdate = true;
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  group.add(mesh);
+}
+
+/** Cable reels ×4 — fat drum on its side + a protruding steel axle. */
+function buildReels(group: THREE.Group): void {
+  const drum = new THREE.InstancedMesh(
+    new THREE.CylinderGeometry(0.55, 0.55, 0.5, 14),
+    getMaterial('wood'),
+    4,
+  );
+  const hub = new THREE.InstancedMesh(
+    new THREE.CylinderGeometry(0.15, 0.15, 0.66, 10),
+    getMaterial('pipe'),
+    4,
+  );
+  drum.name = 'reel-drums';
+  hub.name = 'reel-hubs';
+  const spots: [number, number, number][] = [
+    [-20, -2.5, 0.3],
+    [21, 12, 1.2],
+    [13.5, -14.5, 0.8],
+    [-13.5, 17, 0.5],
+  ];
+  // rz 90° lays the cylinder's Y axis onto X; ry spins the drum's facing
+  spots.forEach(([x, z, ry], i) => {
+    setInst(drum, i, x, 0.55, z, 1, 1, 1, ry, 0, Math.PI / 2);
+    setInst(hub, i, x, 0.55, z, 1, 1, 1, ry, 0, Math.PI / 2);
+  });
+  drum.castShadow = hub.castShadow = true;
+  drum.receiveShadow = hub.receiveShadow = true;
+  group.add(drum, hub);
+}
+
+/** Wooden crates ×10, varied footprints — unit cube scaled per instance. */
+function buildCrates(group: THREE.Group): void {
+  const geo = new THREE.BoxGeometry(1, 1, 1);
+  const mesh = new THREE.InstancedMesh(geo, getMaterial('wood'), 10);
+  mesh.name = 'crates';
+  // (x, z, sx, sy, sz, ry)
+  const spots: [number, number, number, number, number, number][] = [
+    [-19, 9.5, 0.9, 0.9, 0.9, 0.2],
+    [-18.5, 8.6, 0.55, 0.55, 0.55, 0.9],
+    [13, -4, 0.8, 0.7, 0.8, 0.4],
+    [-3, -12.5, 0.7, 0.7, 0.7, 1.1],
+    [17, 6.5, 1.0, 0.8, 0.7, 0.6],
+    [23, -12, 0.75, 0.75, 0.75, 0.2],
+    [-25, -9, 0.85, 0.6, 0.85, 0.8],
+    [8, 14.5, 0.7, 0.7, 0.7, 1.4],
+    [-15, -6.5, 0.9, 0.55, 0.9, 0.3],
+    [3, 8.5, 0.65, 0.65, 0.65, 1.8],
+  ];
+  spots.forEach(([x, z, sx, sy, sz, ry], i) =>
+    setInst(mesh, i, x, sy / 2, z, sx, sy, sz, ry),
+  );
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  group.add(mesh);
+}
+
+/**
+ * Extra containers beyond MAP's colliders — visual only. Three second-layer
+ * stacks sit on the inner containers (their tops are unreachable, so nobody
+ * can clip into these); one of them is askew. Two more squat at the deck ends.
+ */
+function buildStackedContainers(group: THREE.Group): void {
+  const geo = new THREE.BoxGeometry(1, 1, 1);
+  const mesh = new THREE.InstancedMesh(geo, getMaterial('container'), 5);
+  mesh.name = 'containers-stacked';
+  const c = new THREE.Color();
+  // (x, yCenter, z, sx, sy, sz, ry, rz, paletteIdx)
+  const boxes: [number, number, number, number, number, number, number, number, number][] = [
+    [-6, 3.9, -4, 6, 2.6, 2.5, 0.05, 0, 2], // level stack on (-6,-4)
+    [6, 3.9, 4, 6, 2.6, 2.5, -0.04, 0, 0], // level stack on (6,4)
+    [16, 4.0, -2, 6, 2.6, 2.5, 0.62, 0.1, 3], // askew on the (16,-2) top
+    [29.8, 1.3, 18, 4, 2.6, 2.2, 0.1, 0, 1], // bow-side ground box
+    [-29.8, 1.3, -18, 4, 2.6, 2.2, -0.08, 0, 0], // stern-side ground box
+  ];
+  boxes.forEach(([x, y, z, sx, sy, sz, ry, rz, ci], i) => {
+    setInst(mesh, i, x, y, z, sx, sy, sz, ry, 0, rz);
+    mesh.setColorAt(i, c.set(PALETTE.container[ci]));
+  });
+  mesh.instanceColor!.needsUpdate = true;
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  group.add(mesh);
+}
+
+/** Deck drainage grates ×2 — flat textured planes just above the deck. */
+function buildGrates(group: THREE.Group): void {
+  const geo = new THREE.PlaneGeometry(1.4, 1.4);
+  const mesh = new THREE.InstancedMesh(geo, getMaterial('grate'), 2);
+  mesh.name = 'grates';
+  setInst(mesh, 0, 1, 0.015, 7.5, 1, 1, 1, 0, -Math.PI / 2);
+  setInst(mesh, 1, -9, 0.015, -6.5, 1, 1, 1, 0, -Math.PI / 2);
+  mesh.receiveShadow = true;
+  group.add(mesh);
+}
+
+/**
+ * Fake contact shadows — unlit alpha blobs tucked under every tall collider.
+ * One instanced draw call; cheap stand-in for baked AO.
+ */
+function buildAoBlobs(group: THREE.Group): void {
+  const geo = new THREE.PlaneGeometry(1, 1);
+  // grounded big boxes only — skips stair steps, crate stairs and platforms;
+  // pipe walls count too (their long bases get a shadow strip)
+  const list = MAP.boxes.filter(
+    (b) =>
+      b.y === 0 &&
+      ((b.w >= 1.5 && b.d >= 1.5 && (b.kind === 'container' || b.kind === 'tower')) ||
+        b.kind === 'pipe'),
+  );
+  // one blob per collider, footprint padded outward so the rim reads
+  const mesh = new THREE.InstancedMesh(geo, getMaterial('ao'), list.length);
+  mesh.name = 'ao-blobs';
+  list.forEach((b, i) =>
+    setInst(mesh, i, b.x, 0.012, b.z, b.w + 1.1, b.d + 1.1, 1, 0, -Math.PI / 2),
+  );
+  mesh.renderOrder = 1; // over the deck, under nothing transparent
+  group.add(mesh);
+}
+
+/**
+ * Silhouette layer: two distant harbour cranes across the water, a bow mast
+ * on the +x tip and a stern crane arm on -x. All share one unlit material —
+ * fog fades them into the sky. 14 + 4 + 3 = 21 instances, one draw call.
+ */
 function buildCranes(group: THREE.Group): void {
   const geo = new THREE.BoxGeometry(1, 1, 1);
-  const mesh = new THREE.InstancedMesh(geo, getMaterial('crane'), 14);
+  const mesh = new THREE.InstancedMesh(geo, getMaterial('crane'), 21);
   mesh.name = 'cranes';
 
   const crane = (base: number, cx: number, cz: number, s: number, ry: number): number => {
@@ -169,7 +327,37 @@ function buildCranes(group: THREE.Group): void {
   };
   crane(0, 74, -46, 1.25, 0.35);
   crane(7, -82, 28, 0.9, -0.7);
+
+  // bow mast on the +x tip: pole + yard + antenna whip + platform
+  setInst(mesh, 14, 33.8, 5.5, 0, 0.4, 14, 0.4); // pole, base sinks below deck edge
+  setInst(mesh, 15, 33.8, 8.2, 0, 0.22, 0.22, 3.4); // yard (horizontal, along z)
+  setInst(mesh, 16, 33.8, 10.6, 0, 0.08, 4.4, 0.08); // antenna whip
+  setInst(mesh, 17, 33.8, 7.2, 0, 1.2, 0.14, 1.2); // watch platform
+
+  // stern crane arm on the -x tip: pedestal + tilted jib + counterweight
+  setInst(mesh, 18, -34, 0.8, 0, 0.9, 3.2, 0.9); // pedestal
+  setInst(mesh, 19, -34.6, 4.6, 0, 0.45, 8.5, 0.45, 0.2, 0, -0.52); // jib, leaning outboard
+  setInst(mesh, 20, -33.4, 2.2, 0, 1.5, 1.2, 1.2); // counterweight block
   group.add(mesh);
+}
+
+/** Two work lamps — point light + a small self-lit bulb at each mast. */
+function buildWorkLamps(group: THREE.Group): void {
+  const geo = new THREE.SphereGeometry(0.22, 8, 6);
+  const bulbs = new THREE.InstancedMesh(geo, getMaterial('lamp'), 2);
+  bulbs.name = 'lamp-bulbs';
+  const heads: [number, number, number][] = [
+    [33.6, 8.6, 0.5], // bow mast head
+    [-34.4, 7.6, -0.4], // stern crane head
+  ];
+  heads.forEach(([x, y, z], i) => setInst(bulbs, i, x, y, z, 1, 1, 1));
+  group.add(bulbs);
+
+  for (const [x, y, z] of heads) {
+    const l = new THREE.PointLight(PALETTE.lampWarm, 40, 30, 2);
+    l.position.set(x, y, z);
+    group.add(l);
+  }
 }
 
 export function buildMap(scene: THREE.Scene): MapMeshes {
@@ -206,8 +394,15 @@ export function buildMap(scene: THREE.Scene): MapMeshes {
   buildBollards(group);
   buildDeckLines(group);
   buildPallets(group);
+  buildBarrels(group);
+  buildReels(group);
+  buildCrates(group);
+  buildStackedContainers(group);
+  buildGrates(group);
+  buildAoBlobs(group);
   buildRails(group);
   buildCranes(group);
+  buildWorkLamps(group);
 
   // Sea — a standard material now so the sun leaves a glint on the swell.
   const sea = new THREE.Mesh(new THREE.PlaneGeometry(600, 600), getMaterial('sea'));

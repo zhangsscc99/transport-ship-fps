@@ -39,7 +39,7 @@ void main() {
 `;
 
 export function applyAtmosphere(scene: THREE.Scene): Atmosphere {
-  scene.fog = new THREE.FogExp2(PALETTE.fog, 0.012);
+  scene.fog = new THREE.FogExp2(PALETTE.fog, 0.018);
 
   const sky = new THREE.Mesh(
     new THREE.SphereGeometry(240, 24, 12),
@@ -60,7 +60,7 @@ export function applyAtmosphere(scene: THREE.Scene): Atmosphere {
   sky.frustumCulled = false; // dome must render even when the sphere origin is off-screen
   scene.add(sky);
 
-  const hemi = new THREE.HemisphereLight(PALETTE.sky[1], PALETTE.sea[0], 0.6);
+  const hemi = new THREE.HemisphereLight(PALETTE.sky[1], PALETTE.sea[0], 0.9);
   scene.add(hemi);
 
   return {

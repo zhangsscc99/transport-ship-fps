@@ -90,9 +90,10 @@ export class Hud {
     );
     this.hpFill = div(`height:100%;width:100%;background:${PALETTE.hpFull};`, hpBar);
 
-    // ammo — bottom right (lifted above the button cluster on touch)
+    // ammo — own zone above the touch button cluster so it can't overlap the
+    // 跳/蹲 column even in portrait (cluster top is ~224px on touch)
     const ammoWrap = div(
-      `position:absolute;right:${ar(16)};bottom:${ab(touchMode ? 116 : 16)};` +
+      `position:absolute;right:${ar(16)};bottom:${ab(touchMode ? 256 : 16)};` +
         `background:${PALETTE.uiPanel};border:1px solid ${PALETTE.uiBorder};` +
         `border-radius:6px;padding:6px 12px;text-align:right;`,
       this.root,
@@ -240,11 +241,13 @@ export class Hud {
     left.style.transform = `translateX(${-g - 5}px)`;
     right.style.transform = `translateX(${g - 5}px)`;
 
+    // portrait hides secondary info — fps readout yields the space to controls
+    const portrait = window.innerHeight > window.innerWidth;
+    this.fpsEl.style.display = portrait ? 'none' : '';
     this.fpsEl.textContent = this.fpsVisible ? `${s.fps.toFixed(0)} fps` : '';
     this.deadEl.style.display = s.dead ? 'block' : 'none';
     if (s.dead) this.deadEl.textContent = `阵亡 · ${Math.max(0, s.respawnIn).toFixed(1)}s 后重生`;
-    this.rotateEl.style.display =
-      window.innerHeight > window.innerWidth ? 'block' : 'none';
+    this.rotateEl.style.display = portrait ? 'block' : 'none';
 
     // --- feedback decay (values only; elements and gradients prebuilt) ---
     const now = performance.now();

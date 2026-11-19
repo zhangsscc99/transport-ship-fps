@@ -14,7 +14,15 @@ export type MaterialKind =
   | 'sea'
   | 'paint'
   | 'wood'
-  | 'crane';
+  | 'crane'
+  | 'barrel'
+  | 'grate'
+  | 'ao'
+  | 'lamp'
+  | 'gunMetal'
+  | 'gunPoly'
+  | 'gunEdge'
+  | 'glove';
 
 const cache = new Map<MaterialKind, THREE.Material>();
 
@@ -106,6 +114,59 @@ function build(kind: Exclude<MaterialKind, 'deck'>): THREE.Material {
     case 'crane':
       // distant silhouette — unlit on purpose, fog still fades it into the sky
       return new THREE.MeshBasicMaterial({ color: PALETTE.crane });
+    case 'barrel':
+      // oil drums — white base so per-instance rust/paint tints stay true
+      return new THREE.MeshStandardMaterial({
+        map: getTexture('metal'),
+        roughness: 0.55,
+        metalness: 0.45,
+      });
+    case 'grate':
+      return new THREE.MeshStandardMaterial({
+        map: getTexture('grate'),
+        roughness: 0.9,
+        metalness: 0.25,
+      });
+    case 'ao':
+      // fake contact shadow — unlit alpha blob, never writes depth
+      return new THREE.MeshBasicMaterial({
+        map: getTexture('ao'),
+        transparent: true,
+        depthWrite: false,
+      });
+    case 'lamp':
+      // work-light bulb — self-lit dot at the lamp head
+      return new THREE.MeshBasicMaterial({ color: PALETTE.lampWarm });
+    case 'gunMetal':
+      return new THREE.MeshStandardMaterial({
+        color: PALETTE.gun[1],
+        map: getTexture('metal'),
+        metalness: 0.75,
+        roughness: 0.35,
+      });
+    case 'gunPoly':
+      return new THREE.MeshStandardMaterial({
+        color: PALETTE.gun[0],
+        map: getTexture('metal'),
+        metalness: 0.05,
+        roughness: 0.7,
+      });
+    case 'gunEdge':
+      // highlight band — faint emissive keeps the outline readable in gloom
+      return new THREE.MeshStandardMaterial({
+        color: PALETTE.gun[2],
+        emissive: PALETTE.gun[2],
+        emissiveIntensity: 0.32,
+        metalness: 0.6,
+        roughness: 0.4,
+      });
+    case 'glove':
+      return new THREE.MeshStandardMaterial({
+        color: PALETTE.pipe,
+        map: getTexture('metal'),
+        metalness: 0.05,
+        roughness: 0.9,
+      });
   }
 }
 

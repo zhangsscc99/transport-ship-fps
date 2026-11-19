@@ -11,7 +11,9 @@ export type TextureKey =
   | 'puddle'
   | 'container'
   | 'containerRough'
-  | 'metal';
+  | 'metal'
+  | 'grate'
+  | 'ao';
 
 const cache = new Map<TextureKey, THREE.Texture>();
 
@@ -256,6 +258,50 @@ function genMetal(): HTMLCanvasElement {
   return c;
 }
 
+// --- 128² drainage grate: dark plate + stamped slots + rim highlight + rust ---
+function genGrate(): HTMLCanvasElement {
+  const size = 128;
+  const [c, ctx] = makeCanvas(size);
+  const rnd = mulberry32(67);
+
+  ctx.fillStyle = PALETTE.deck[0];
+  ctx.fillRect(0, 0, size, size);
+  grain(ctx, size, rnd, 0.1);
+
+  // recessed frame
+  ctx.strokeStyle = 'rgba(6,9,12,0.9)';
+  ctx.lineWidth = 5;
+  ctx.strokeRect(4, 4, size - 8, size - 8);
+
+  // drain slots: two columns of long slots, near-black (holes)
+  ctx.fillStyle = 'rgba(4,6,9,0.95)';
+  for (let col = 0; col < 2; col++) {
+    const x = 24 + col * 48;
+    for (let i = 0; i < 5; i++) ctx.fillRect(x, 14 + i * 22, 32, 12);
+  }
+  // stamped lip: thin highlight along each slot's top edge
+  ctx.fillStyle = 'rgba(220,230,240,0.14)';
+  for (let col = 0; col < 2; col++) {
+    const x = 24 + col * 48;
+    for (let i = 0; i < 5; i++) ctx.fillRect(x, 14 + i * 22, 32, 1.5);
+  }
+  rustAlongSeams(ctx, size, 64, rnd, 40);
+  return c;
+}
+
+// --- 128² radial falloff blob: pure-alpha fake-AO shadow mask ---
+function genAo(): HTMLCanvasElement {
+  const size = 128;
+  const [c, ctx] = makeCanvas(size);
+  const g = ctx.createRadialGradient(size / 2, size / 2, size * 0.08, size / 2, size / 2, size * 0.5);
+  g.addColorStop(0, 'rgba(0,0,0,0.6)');
+  g.addColorStop(0.65, 'rgba(0,0,0,0.3)');
+  g.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, size, size);
+  return c;
+}
+
 const GEN: Record<TextureKey, () => HTMLCanvasElement> = {
   deck: genDeck,
   deckRough: genDeckRough,
@@ -263,9 +309,11 @@ const GEN: Record<TextureKey, () => HTMLCanvasElement> = {
   container: genContainer,
   containerRough: genContainerRough,
   metal: genMetal,
+  grate: genGrate,
+  ao: genAo,
 };
 
-const SRGB_KEYS: ReadonlySet<TextureKey> = new Set(['deck', 'container', 'metal']);
+const SRGB_KEYS: ReadonlySet<TextureKey> = new Set(['deck', 'container', 'metal', 'grate']);
 const DECK_REPEAT: ReadonlySet<TextureKey> = new Set(['deck', 'deckRough', 'puddle']);
 
 export function getTexture(key: TextureKey): THREE.Texture {
