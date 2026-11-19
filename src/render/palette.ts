@@ -12,6 +12,7 @@ export const PALETTE = {
   sea: ['#13212b', '#1b2f3c', '#27414f'],
   sky: ['#0e1620', '#1a2a38'],
   skyHorizon: '#2a3038', // 地平线暖灰
+  fill: '#8899aa', // 反向补光（冷灰蓝）
   fog: '#16222c',
   teamA: '#4fa4f1', // 我方：蓝
   teamB: '#d9534f', // 敌方：红

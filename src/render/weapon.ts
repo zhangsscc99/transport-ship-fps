@@ -4,15 +4,18 @@
 
 import * as THREE from 'three';
 import { PALETTE } from './palette';
+import { getMaterial } from './materials';
 import type { WeaponSpec } from '../game/weapons';
 import type { Vec3 } from '../game/player';
 
 type GunId = WeaponSpec['id'];
 
 const MAT = {
-  body: new THREE.MeshLambertMaterial({ color: PALETTE.gun[0] }),
-  mid: new THREE.MeshLambertMaterial({ color: PALETTE.gun[1] }),
-  bright: new THREE.MeshLambertMaterial({ color: PALETTE.gun[2] }),
+  metal: getMaterial('gunMetal'), // receiver / barrel / magazine
+  poly: getMaterial('gunPoly'), // stock / grip / handguard / pump
+  edge: getMaterial('gunEdge'), // sight rib + body highlight strip
+  glove: getMaterial('glove'), // hands + forearms
+  cuff: getMaterial('rail'), // wrist cuff — small bright accent
   flash: new THREE.MeshBasicMaterial({
     color: PALETTE.accent,
     transparent: true,
@@ -42,40 +45,75 @@ function cylinder(r: number, len: number, m: THREE.Material, x = 0, y = 0, z = 0
   return mesh;
 }
 
+/**
+ * Low-poly hands + forearms so the gun isn't floating. The rear glove wraps
+ * the grip, the support glove cups the handguard at supportZ; both forearms
+ * trail down-right toward the screen edge. Cuffs give the "少量亮部".
+ */
+function addArms(g: THREE.Group, supportZ: number): void {
+  const glove = box(0.055, 0.08, 0.085, MAT.glove, 0, -0.085, 0.1);
+  glove.rotation.x = 0.35;
+  g.add(glove);
+  const rearArm = box(0.07, 0.075, 0.22, MAT.glove, 0.04, -0.165, 0.22);
+  rearArm.rotation.set(0.5, -0.3, 0);
+  g.add(rearArm);
+  const rearCuff = box(0.078, 0.08, 0.04, MAT.cuff, 0.026, -0.112, 0.142);
+  rearCuff.rotation.set(0.5, -0.3, 0);
+  g.add(rearCuff);
+
+  const sup = box(0.058, 0.05, 0.1, MAT.glove, 0.005, -0.046, supportZ);
+  sup.rotation.x = -0.2;
+  g.add(sup);
+  const supArm = box(0.065, 0.07, 0.2, MAT.glove, 0.045, -0.12, supportZ + 0.14);
+  supArm.rotation.set(0.55, -0.35, 0);
+  g.add(supArm);
+  const supCuff = box(0.073, 0.075, 0.038, MAT.cuff, 0.032, -0.08, supportZ + 0.062);
+  supCuff.rotation.set(0.55, -0.35, 0);
+  g.add(supCuff);
+}
+
 /** Build a gun model; returns the group and the muzzle-tip local z. */
 function buildModel(id: GunId): { group: THREE.Group; muzzleZ: number } {
   const g = new THREE.Group();
   if (id === 'rifle') {
-    g.add(box(0.055, 0.09, 0.4, MAT.body, 0, 0, -0.08)); // receiver
-    g.add(cylinder(0.013, 0.3, MAT.mid, 0, 0.012, -0.42)); // barrel
-    g.add(box(0.045, 0.13, 0.06, MAT.mid, 0, -0.1, -0.04)); // magazine
-    g.add(box(0.05, 0.07, 0.18, MAT.body, 0, -0.005, 0.2)); // stock
-    const grip = box(0.04, 0.1, 0.05, MAT.body, 0, -0.07, 0.08);
+    g.add(box(0.055, 0.09, 0.4, MAT.metal, 0, 0, -0.08)); // receiver
+    g.add(box(0.06, 0.007, 0.32, MAT.edge, 0, 0.048, -0.1)); // highlight strip
+    g.add(cylinder(0.013, 0.3, MAT.metal, 0, 0.012, -0.42)); // barrel
+    g.add(box(0.052, 0.05, 0.22, MAT.poly, 0, -0.02, -0.3)); // handguard
+    g.add(box(0.045, 0.13, 0.06, MAT.metal, 0, -0.1, -0.04)); // magazine
+    g.add(box(0.05, 0.07, 0.18, MAT.poly, 0, -0.005, 0.2)); // stock
+    const grip = box(0.04, 0.1, 0.05, MAT.poly, 0, -0.07, 0.08);
     grip.rotation.x = 0.35;
     g.add(grip);
-    g.add(box(0.02, 0.03, 0.12, MAT.bright, 0, 0.06, -0.02)); // sight rib
+    g.add(box(0.02, 0.03, 0.12, MAT.edge, 0, 0.06, -0.02)); // sight rib
+    addArms(g, -0.3);
     return { group: g, muzzleZ: -0.58 };
   }
   if (id === 'sniper') {
-    g.add(box(0.05, 0.08, 0.5, MAT.body, 0, 0, -0.05)); // long receiver
-    g.add(cylinder(0.011, 0.5, MAT.mid, 0, 0.008, -0.6)); // long barrel
-    g.add(cylinder(0.024, 0.15, MAT.bright, 0, 0.065, -0.05)); // scope
-    g.add(box(0.04, 0.11, 0.05, MAT.mid, 0, -0.09, 0.0)); // magazine
-    g.add(box(0.05, 0.07, 0.17, MAT.body, 0, -0.005, 0.26)); // stock
-    const grip = box(0.038, 0.09, 0.045, MAT.body, 0, -0.065, 0.13);
+    g.add(box(0.05, 0.08, 0.5, MAT.metal, 0, 0, -0.05)); // long receiver
+    g.add(box(0.054, 0.006, 0.42, MAT.edge, 0, 0.042, -0.08)); // highlight strip
+    g.add(cylinder(0.011, 0.5, MAT.metal, 0, 0.008, -0.6)); // long barrel
+    g.add(box(0.048, 0.045, 0.26, MAT.poly, 0, -0.02, -0.32)); // handguard
+    g.add(cylinder(0.024, 0.15, MAT.edge, 0, 0.065, -0.05)); // scope
+    g.add(box(0.04, 0.11, 0.05, MAT.metal, 0, -0.09, 0.0)); // magazine
+    g.add(box(0.05, 0.07, 0.17, MAT.poly, 0, -0.005, 0.26)); // stock
+    const grip = box(0.038, 0.09, 0.045, MAT.poly, 0, -0.065, 0.13);
     grip.rotation.x = 0.3;
     g.add(grip);
+    addArms(g, -0.34);
     return { group: g, muzzleZ: -0.86 };
   }
   // shotgun: twin barrels + pump
-  g.add(box(0.075, 0.09, 0.36, MAT.body, 0, 0, -0.06)); // wide receiver
-  g.add(cylinder(0.016, 0.46, MAT.mid, -0.02, 0.012, -0.42)); // barrel L
-  g.add(cylinder(0.016, 0.46, MAT.mid, 0.02, 0.012, -0.42)); // barrel R
-  g.add(box(0.07, 0.045, 0.13, MAT.bright, 0, -0.045, -0.34)); // pump
-  g.add(box(0.055, 0.07, 0.16, MAT.body, 0, -0.005, 0.22)); // stock
-  const grip = box(0.04, 0.09, 0.05, MAT.body, 0, -0.065, 0.1);
+  g.add(box(0.075, 0.09, 0.36, MAT.metal, 0, 0, -0.06)); // wide receiver
+  g.add(box(0.08, 0.007, 0.28, MAT.edge, 0, 0.048, -0.06)); // highlight strip
+  g.add(cylinder(0.016, 0.46, MAT.metal, -0.02, 0.012, -0.42)); // barrel L
+  g.add(cylinder(0.016, 0.46, MAT.metal, 0.02, 0.012, -0.42)); // barrel R
+  g.add(box(0.07, 0.045, 0.13, MAT.poly, 0, -0.045, -0.34)); // pump
+  g.add(box(0.055, 0.07, 0.16, MAT.poly, 0, -0.005, 0.22)); // stock
+  const grip = box(0.04, 0.09, 0.05, MAT.poly, 0, -0.065, 0.1);
   grip.rotation.x = 0.35;
   g.add(grip);
+  addArms(g, -0.36);
   return { group: g, muzzleZ: -0.66 };
 }
 
@@ -88,7 +126,8 @@ export class WeaponView {
   private flashT = 0;
   private time = 0;
   private current: GunId = 'rifle';
-  private readonly basePos = new THREE.Vector3(0.27, -0.25, -0.5);
+  // pushed right/down so the muzzle never covers the crosshair's lower half
+  private readonly basePos = new THREE.Vector3(0.29, -0.28, -0.52);
   private readonly baseRot = new THREE.Euler(0, 0, 0); // models are built muzzle-forward (-z)
 
   constructor() {

@@ -17,7 +17,7 @@ export interface Lights {
 export function configureRenderer(renderer: THREE.WebGLRenderer): void {
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.1;
+  renderer.toneMappingExposure = 1.25;
 }
 
 export function addLights(scene: THREE.Scene): Lights {
@@ -36,6 +36,13 @@ export function addLights(scene: THREE.Scene): Lights {
   sun.shadow.normalBias = 0.02;
   scene.add(sun);
   scene.add(sun.target);
+
+  // weak counter-fill from the opposite azimuth — lifts the shadowed faces
+  // out of pure black without flattening the sun's key
+  const fill = new THREE.DirectionalLight(PALETTE.fill, 0.25);
+  fill.position.set(-24, 18, -16);
+  scene.add(fill);
+  scene.add(fill.target);
 
   // bow warning beacon over the +x tip of the hull
   const bow = new THREE.PointLight(PALETTE.lampRed, 24, 30, 2);

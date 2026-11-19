@@ -104,17 +104,19 @@ export class TouchControls implements InputSource {
     );
     document.body.append(this.stickBase, this.stickNub);
 
-    // bottom-right cluster (SPEC: 开火·换弹·换枪·跳跃·蹲), all inside safe area
+    // bottom-right cluster (SPEC: 开火·换弹·换枪·跳跃·蹲), all inside safe area.
+    // Two columns ≥8px apart; 跳 moved left into the inner column so the HUD
+    // ammo panel above never collides with it in portrait.
     const ar = (px: number) => `calc(${px}px + env(safe-area-inset-right, 0px))`;
     const ab = (px: number) => `calc(${px}px + env(safe-area-inset-bottom, 0px))`;
     const al = (px: number) => `calc(${px}px + env(safe-area-inset-left, 0px))`;
     const at = (px: number) => `calc(${px}px + env(safe-area-inset-top, 0px))`;
     const btns: { el: HTMLDivElement; id: string; act: 'hold' | 'edge' | 'toggle' }[] = [
       { el: makeBtn('fire', '开火', `right:${ar(20)};bottom:${ab(20)};`, FIRE_BTN, true), act: 'hold', id: 'fire' },
-      { el: makeBtn('reload', '换弹', `right:${ar(116)};bottom:${ab(24)};`, BTN), act: 'edge', id: 'reload' },
-      { el: makeBtn('swap', '切枪', `right:${ar(116)};bottom:${ab(96)};`, BTN), act: 'edge', id: 'swap' },
-      { el: makeBtn('jump', '跳', `right:${ar(32)};bottom:${ab(116)};`, BTN), act: 'edge', id: 'jump' },
-      { el: makeBtn('crouch', '蹲', `right:${ar(32)};bottom:${ab(188)};`, BTN), act: 'toggle', id: 'crouch' },
+      { el: makeBtn('jump', '跳', `right:${ar(116)};bottom:${ab(24)};`, BTN), act: 'edge', id: 'jump' },
+      { el: makeBtn('reload', '换弹', `right:${ar(116)};bottom:${ab(96)};`, BTN), act: 'edge', id: 'reload' },
+      { el: makeBtn('swap', '切枪', `right:${ar(116)};bottom:${ab(168)};`, BTN), act: 'edge', id: 'swap' },
+      { el: makeBtn('crouch', '蹲', `right:${ar(32)};bottom:${ab(116)};`, BTN), act: 'toggle', id: 'crouch' },
       { el: makeBtn('run', '跑', `left:${al(20)};top:${at(20)};`, BTN), act: 'toggle', id: 'run' },
     ];
     for (const b of btns) {
