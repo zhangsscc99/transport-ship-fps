@@ -1,0 +1,25 @@
+{
+  "name": "transport-fps",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "typecheck": "tsc --noEmit",
+    "test": "bash scripts/build-tests.sh && node --test src/game/",
+    "verify": "bash scripts/verify.sh",
+    "deploy": "bash scripts/ci-deploy.sh"
+  },
+  "dependencies": {
+    "three": "^0.187.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "@types/three": "^0.187.0",
+    "esbuild": "^0.25.12",
+    "playwright": "^1.65.1",
+    "typescript": "~5.6.3",
+    "vite": "^7.3.8"
+  }
+}
