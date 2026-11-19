@@ -8,6 +8,7 @@ import { MAP, type Box } from '../game/map';
 import { PALETTE } from './palette';
 import { getMaterial } from './materials';
 import type { MaterialKind } from './materials';
+import { createSea } from './sea';
 
 export interface MapMeshes {
   group: THREE.Group;
@@ -479,11 +480,8 @@ export function buildMap(scene: THREE.Scene): MapMeshes {
   buildPuddles(group);
   buildWindows(group);
 
-  // Sea — a standard material now so the sun leaves a glint on the swell.
-  const sea = new THREE.Mesh(new THREE.PlaneGeometry(600, 600), getMaterial('sea'));
-  sea.rotation.x = -Math.PI / 2;
-  sea.position.y = MAP.waterY;
-  sea.name = 'sea';
+  // Sea — Saltline water port (see sea.ts): swell + foam ring + sun glitter.
+  const sea = createSea();
   group.add(sea);
 
   scene.add(group);

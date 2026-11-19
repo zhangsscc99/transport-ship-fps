@@ -12,6 +12,11 @@ export const PALETTE = {
   sea: ['#16242e', '#1b2833', '#2b4252'],
   sky: ['#2b3a49', '#42566a'], // [0] 天顶，[1] 半球光上色
   skyHorizon: '#78889a', // 地平线雾霾亮灰蓝 — 画面里最亮的底色
+  // Saltline sky palette — linear-space RGB triples (NOT sRGB hex), ported
+  // verbatim from the reference shader's environment constants.
+  skyZen: [0.055, 0.085, 0.13],
+  skyHor: [0.95, 0.55, 0.28],
+  skyHorAway: [0.16, 0.22, 0.3],
   fill: '#8899aa', // 反向补光（冷灰蓝）
   fog: '#5b6b78', // 雾色必须贴近天空，不许是黑
   sun: '#ffd9b0', // 主方向光：雨后天光暖白

@@ -11,7 +11,6 @@ export type MaterialKind =
   | 'tower'
   | 'rail'
   | 'pipe'
-  | 'sea'
   | 'paint'
   | 'wood'
   | 'crane'
@@ -91,12 +90,6 @@ function build(kind: Exclude<MaterialKind, 'deck'>): THREE.Material {
         map: getTexture('metal'),
         roughness: 0.9,
         metalness: 0.2,
-      });
-    case 'sea':
-      return new THREE.MeshStandardMaterial({
-        color: PALETTE.sea[1],
-        roughness: 0.32,
-        metalness: 0.1,
       });
     case 'paint':
       // deck markings — slight emissive so the warning lines stay readable in gloom
