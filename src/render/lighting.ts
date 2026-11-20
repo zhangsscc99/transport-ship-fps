@@ -6,10 +6,10 @@
 import * as THREE from 'three';
 import { PALETTE } from './palette';
 
-// Dusk sun like Saltline's: ~10° above the horizon, azimuth ~20° off +x
+// Dusk sun like Saltline's: ~14° above the horizon, azimuth ~20° off +x
 // toward +z, so it rakes along the deck's long axis and sits inside the
 // cloud deck's burning gap (see sky.ts).
-const SUN_POS = new THREE.Vector3(46.3, 8.7, 16.75);
+const SUN_POS = new THREE.Vector3(46.3, 12.2, 16.75);
 /** Direction toward the sun in world space — shared by the sky dome and the
  * sea glitter so the visuals and the light stay aligned. */
 export const SUN_DIR = SUN_POS.clone().normalize();
@@ -31,7 +31,7 @@ export interface Lights {
 export function configureRenderer(renderer: THREE.WebGLRenderer): void {
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.48;
+  renderer.toneMappingExposure = 1.3;
 }
 
 export function addLights(scene: THREE.Scene): Lights {
@@ -54,7 +54,7 @@ export function addLights(scene: THREE.Scene): Lights {
 
   // counter-fill from the opposite azimuth — lifts shadowed faces (guard
   // rails, bollards, pipe walls) out of pure black without flattening the key
-  const fill = new THREE.DirectionalLight(PALETTE.fill, 0.85);
+  const fill = new THREE.DirectionalLight(PALETTE.fill, 0.95);
   fill.position.set(-24, 18, -16);
   scene.add(fill);
   scene.add(fill.target);
@@ -62,7 +62,7 @@ export function addLights(scene: THREE.Scene): Lights {
   // camera-follow fill: main.ts re-aims it every frame so it always shines
   // down the view axis — the face of the gun and any prop right in front of
   // the lens keep a readable mid-tone even in full backlight
-  const camFill = new THREE.DirectionalLight(PALETTE.fill, 0.6);
+  const camFill = new THREE.DirectionalLight(PALETTE.fill, 0.9);
   scene.add(camFill);
   scene.add(camFill.target);
 

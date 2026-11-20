@@ -6,7 +6,7 @@
 import * as THREE from 'three';
 import { MAP, type Box } from '../game/map';
 import { PALETTE } from './palette';
-import { getMaterial } from './materials';
+import { getMaterial, getStencilMaterial } from './materials';
 import type { MaterialKind } from './materials';
 import { createSea } from './sea';
 
@@ -369,6 +369,242 @@ function buildAoEdges(group: THREE.Group): void {
 }
 
 /**
+ * Hull topsides: four side plates wrapping the deck slab, dropping below the
+ * waterline — steel above, dull-red antifouling band at the waterline. Turns
+ * the floating slab into a ship. 2 materials × 4 instances each.
+ */
+function buildHull(group: THREE.Group): void {
+  const geo = new THREE.BoxGeometry(1, 1, 1);
+  const steel = new THREE.InstancedMesh(geo, getMaterial('hull'), 4);
+  const band = new THREE.InstancedMesh(geo, getMaterial('hullBand'), 4);
+  steel.name = 'hull-sides';
+  band.name = 'hull-band';
+  // plate: top just above deck (+0.06 lip), bottom under the waterline
+  const TOP = 0.06;
+  const BOT = -2.55;
+  const HY = (TOP + BOT) / 2;
+  const HH = TOP - BOT;
+  // band: waterline crossing ~55% up its height
+  const BTOP = -1.55;
+  const BY = (BTOP + BOT) / 2;
+  const BH = BTOP - BOT;
+  let i = 0;
+  for (const s of [1, -1]) {
+    // long side plates (z faces) + end plates (x faces)
+    setInst(steel, i, 0, HY, s * 20.07, 64.6, HH, 0.14);
+    setInst(band, i, 0, BY, s * 20.09, 64.6, BH, 0.16);
+    i++;
+  }
+  for (const s of [1, -1]) {
+    setInst(steel, i, s * 32.07, HY, 0, 0.14, HH, 40.4);
+    setInst(band, i, s * 32.09, BY, 0, 0.16, BH, 40.4);
+    i++;
+  }
+  steel.castShadow = false; // below-deck faces never see the sun anyway
+  band.castShadow = false;
+  steel.receiveShadow = band.receiveShadow = true;
+  group.add(steel, band);
+}
+
+/**
+ * Distant silhouette: a second freighter anchored off the sun azimuth — its
+ * outline burns against the horizon gap and fades into the dusk haze.
+ * Unlit crane material + a few lit cabin windows.
+ */
+function buildDistantShip(group: THREE.Group): void {
+  const geo = new THREE.BoxGeometry(1, 1, 1);
+  const mesh = new THREE.InstancedMesh(geo, getMaterial('crane'), 9);
+  mesh.name = 'distant-ship';
+  const cx = 118;
+  const cz = 44;
+  const ry = -0.42;
+  const cos = Math.cos(ry);
+  const sin = Math.sin(ry);
+  let i = 0;
+  const P = (x: number, y: number, z: number, sx: number, sy: number, sz: number): void => {
+    const wx = cx + x * cos + z * sin;
+    const wz = cz + (-x * sin + z * cos);
+    setInst(mesh, i++, wx, -2 + y, wz, sx, sy, sz, ry);
+  };
+  P(0, 2.2, 0, 48, 5, 8.5); // hull (waterline cut)
+  P(24.5, 3.4, 0, 6, 2.6, 6.4); // raised bow
+  P(-18, 7.2, 0, 9, 9, 7.5); // aft superstructure
+  P(-18, 12.2, 0, 3.2, 2.4, 3); // funnel cap
+  P(-18, 15, 0, 0.5, 4, 0.5); // mast
+  P(4, 4.9, 0, 13, 2.6, 7); // container block amidships
+  P(14.5, 4.4, 0, 7, 1.8, 6.2);
+  P(-6, 4.9, 0, 9, 2.6, 6.8);
+  P(-18, 5.9, 0, 10.5, 0.8, 8); // boat-deck overhang
+  group.add(mesh);
+
+  // lit cabin windows on the superstructure's map-facing side
+  const win = new THREE.InstancedMesh(new THREE.PlaneGeometry(1, 1), getMaterial('window'), 3);
+  win.name = 'distant-windows';
+  const wx = cx + -13.4 * cos;
+  const wz = cz - -13.4 * sin;
+  // face the map: rotate plane toward -x-ish; the superstructure's near wall
+  const wyaw = -ry + Math.PI / 2;
+  for (let k = 0; k < 3; k++) {
+    const off = (k - 1) * 1.8;
+    setInst(win, k, wx + off * sin, -2 + 7.6, wz + off * cos, 1.1, 0.7, 1, wyaw);
+  }
+  group.add(win);
+}
+
+/** Pipe bundles ×6 — three steel pipes stacked triangle-wise near the edges. */
+function buildPipeBundles(group: THREE.Group): void {
+  const geo = new THREE.CylinderGeometry(0.13, 0.13, 3.6, 10);
+  geo.rotateZ(Math.PI / 2); // axis → x, then per-instance ry turns it
+  const mesh = new THREE.InstancedMesh(geo, getMaterial('pipe'), 18);
+  mesh.name = 'pipe-bundles';
+  const spots: [number, number, number][] = [
+    [-27, 12, 0.15],
+    [27, -12, -0.1],
+    [-22, -15, 1.62],
+    [22, 15, 1.55],
+    [-9, 18.2, 0.05],
+    [9, -18.2, -0.08],
+  ];
+  let i = 0;
+  for (const [x, z, ry] of spots) {
+    // two on the deck, one nested on top — local offsets along the pipe's
+    // cross-axis, rotated with the bundle's yaw
+    const dx = Math.sin(ry) * 0.23;
+    const dz = Math.cos(ry) * 0.23;
+    setInst(mesh, i++, x - dx, 0.13, z - dz, 1, 1, 1, ry);
+    setInst(mesh, i++, x + dx, 0.13, z + dz, 1, 1, 1, ry);
+    setInst(mesh, i++, x, 0.36, z, 1, 1, 1, ry);
+  }
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  group.add(mesh);
+}
+
+/** Rope coils ×6 — flat torus rings like mooring line flaked on deck. */
+function buildCoils(group: THREE.Group): void {
+  const geo = new THREE.TorusGeometry(0.3, 0.1, 7, 18);
+  geo.rotateX(-Math.PI / 2); // lie flat
+  const mesh = new THREE.InstancedMesh(geo, getMaterial('rope'), 6);
+  mesh.name = 'rope-coils';
+  const spots: [number, number][] = [
+    [-24, 18.3],
+    [-7, -18.4],
+    [25.5, 6.8],
+    [11, 12.6],
+    [-16.5, -3.4],
+    [18.6, -9.8],
+  ];
+  spots.forEach(([x, z], i) => setInst(mesh, i, x, 0.1, z, 1, 1, 1, i * 0.7));
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  group.add(mesh);
+}
+
+/** Safety cones ×8 — scattered at lane mouths and stair bases. */
+function buildCones(group: THREE.Group): void {
+  const geo = new THREE.ConeGeometry(0.16, 0.5, 9);
+  const mesh = new THREE.InstancedMesh(geo, getMaterial('cone'), 8);
+  mesh.name = 'cones';
+  const spots: [number, number][] = [
+    [-13.5, 8.2],
+    [-4, 7.4],
+    [10.8, -7.6],
+    [4.6, -7.9],
+    [-21.5, 12.3],
+    [21.8, -12.4],
+    [0.5, 16.9],
+    [-0.6, -16.8],
+  ];
+  spots.forEach(([x, z], i) => setInst(mesh, i, x, 0.25, z, 1, 1, 1, i * 0.9));
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  group.add(mesh);
+}
+
+/**
+ * Painted hazard stripes at the mooring bays (rail gaps) + tyre scuffs.
+ * Thin decal planes just above the deck, no depth write needed for skids.
+ */
+function buildMarkings(group: THREE.Group): void {
+  const stripeGeo = new THREE.PlaneGeometry(1, 1);
+  const stripes = new THREE.InstancedMesh(stripeGeo, getMaterial('stripe'), 6);
+  stripes.name = 'hazard-stripes';
+  // (cx, cz, w, d, yaw) — bands fronting each rail gap + two lane mouths
+  const bands: [number, number, number, number, number][] = [
+    [-10, 19.15, 8, 1.1, 0], // bay gap z=+19.65 x∈[-14,-6]
+    [10, -19.15, 8, 1.1, 0], // mirrored bay z=-19.65 x∈[6,14]
+    [-27.6, 7.5, 1.2, 5, Math.PI / 2], // pipe mouth approach
+    [27.6, -7.5, 1.2, 5, Math.PI / 2],
+    [-14.2, -1.8, 2.6, 1.0, 0.12],
+    [14.2, 1.8, 2.6, 1.0, -0.12],
+  ];
+  bands.forEach(([x, z, w, d, ry], i) =>
+    setInst(stripes, i, x, 0.022, z, w, d, 1, ry, -Math.PI / 2),
+  );
+  stripes.receiveShadow = true;
+  group.add(stripes);
+
+  const skids = new THREE.InstancedMesh(new THREE.PlaneGeometry(4.2, 3.4), getMaterial('skid'), 4);
+  skids.name = 'skid-marks';
+  const spots: [number, number, number][] = [
+    [-7, 4.5, 0.4],
+    [9, -4.2, 2.2],
+    [18.5, 2.5, -0.6],
+    [-18.5, -4.5, 1.1],
+  ];
+  spots.forEach(([x, z, ry], i) => setInst(skids, i, x, 0.024, z, 1, 1, 1, ry, -Math.PI / 2));
+  skids.renderOrder = 3;
+  group.add(skids);
+}
+
+/**
+ * Shipping-number stencils on the big containers — one atlas cell per decal,
+ * both long faces of every full-height collider + the two ground-level decor
+ * boxes. Four InstancedMeshes (one per atlas cell), ~20 decals total.
+ */
+function buildStencils(group: THREE.Group): void {
+  const geo = new THREE.PlaneGeometry(1.7, 0.85);
+  const cells: THREE.InstancedMesh[] = [];
+  const used: number[] = [];
+  for (let k = 0; k < 4; k++) {
+    const m = new THREE.InstancedMesh(geo, getStencilMaterial(k), 8);
+    m.name = `stencil-${k}`;
+    cells.push(m);
+    used.push(0);
+  }
+  const list: { x: number; z: number; w: number; h: number; d: number; y: number }[] = [];
+  for (const b of MAP.boxes) {
+    if (b.kind === 'container' && b.h >= 2.5 && Math.max(b.w, b.d) >= 4) {
+      list.push({ x: b.x, z: b.z, w: b.w, h: b.h, d: b.d, y: b.y });
+    }
+  }
+  // ground-level decorative containers (not colliders)
+  list.push(
+    { x: 29.8, z: 18, w: 4, h: 2.6, d: 2.2, y: 0 },
+    { x: -29.8, z: -18, w: 4, h: 2.6, d: 2.2, y: 0 },
+  );
+  let n = 0;
+  for (const b of list) {
+    const y = b.y + Math.min(b.h - 0.85, b.h * 0.62);
+    const outs =
+      b.w >= b.d
+        ? ([[0, b.d / 2 + 0.03, 0], [0, -b.d / 2 - 0.03, Math.PI]] as const)
+        : ([[b.w / 2 + 0.03, 0, Math.PI / 2], [-b.w / 2 - 0.03, 0, -Math.PI / 2]] as const);
+    for (const [ox, oz, ry] of outs) {
+      const k = n % 4;
+      setInst(cells[k], used[k]++, b.x + ox, y, b.z + oz, 1, 1, 1, ry);
+      n++;
+    }
+  }
+  cells.forEach((m, k) => {
+    m.count = used[k];
+    m.instanceMatrix.needsUpdate = true;
+    m.renderOrder = 4;
+    group.add(m);
+  });
+}
+
+/**
  * Silhouette layer: two distant harbour cranes across the water, a bow mast
  * on the +x tip and a stern crane arm on -x. All share one unlit material —
  * fog fades them into the sky. 14 + 4 + 3 = 21 instances, one draw call.
@@ -484,6 +720,29 @@ function buildWindows(group: THREE.Group): void {
   group.add(mesh);
 }
 
+/**
+ * Pipe-corridor lamps: two small warm bulbs + point lights inside each flank
+ * tunnel so the enclosed lanes read as lit interiors instead of black cuts.
+ */
+function buildPipeLamps(group: THREE.Group): void {
+  const geo = new THREE.SphereGeometry(0.09, 8, 6);
+  const bulbs = new THREE.InstancedMesh(geo, getMaterial('lamp'), 4);
+  bulbs.name = 'pipe-lamps';
+  const heads: [number, number, number][] = [
+    [-30, 1.82, -9],
+    [-30, 1.82, 9],
+    [30, 1.82, 9],
+    [30, 1.82, -9],
+  ];
+  heads.forEach(([x, y, z], i) => setInst(bulbs, i, x, y, z, 1, 1, 1));
+  group.add(bulbs);
+  for (const [x, y, z] of heads) {
+    const l = new THREE.PointLight(PALETTE.lampWarm, 5, 9, 2);
+    l.position.set(x, y - 0.15, z);
+    group.add(l);
+  }
+}
+
 /** Two work lamps — point light + a small self-lit bulb at each mast. */
 function buildWorkLamps(group: THREE.Group): void {
   const geo = new THREE.SphereGeometry(0.22, 8, 6);
@@ -559,6 +818,14 @@ export function buildMap(scene: THREE.Scene): MapMeshes {
   buildLightAnchors(group);
   buildPuddles(group);
   buildWindows(group);
+  buildHull(group);
+  buildDistantShip(group);
+  buildPipeBundles(group);
+  buildCoils(group);
+  buildCones(group);
+  buildMarkings(group);
+  buildStencils(group);
+  buildPipeLamps(group);
 
   // Sea — Saltline water port (see sea.ts): swell + foam ring + sun glitter.
   const sea = createSea();

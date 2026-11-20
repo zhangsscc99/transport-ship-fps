@@ -27,7 +27,13 @@ export type MaterialKind =
   | 'glove'
   | 'puddle'
   | 'lampRed'
-  | 'window';
+  | 'window'
+  | 'hull'
+  | 'hullBand'
+  | 'stripe'
+  | 'cone'
+  | 'rope'
+  | 'skid';
 
 const cache = new Map<MaterialKind, THREE.Material>();
 
@@ -45,6 +51,8 @@ function buildDeck(): THREE.MeshStandardMaterial {
   const m = new THREE.MeshStandardMaterial({
     map: getTexture('deck'),
     roughnessMap: getTexture('deckRough'),
+    normalMap: getTexture('deckNormal'),
+    normalScale: new THREE.Vector2(0.7, 0.7),
     roughness: 1,
     metalness: 0.15,
   });
@@ -80,6 +88,8 @@ function build(kind: Exclude<MaterialKind, 'deck'>): THREE.Material {
       const m = new THREE.MeshStandardMaterial({
         map: getTexture('container'),
         roughnessMap: getTexture('containerRough'),
+        normalMap: getTexture('containerNormal'),
+        normalScale: new THREE.Vector2(1, 1),
         roughness: 1,
         metalness: 0.25,
       });
@@ -103,6 +113,7 @@ function build(kind: Exclude<MaterialKind, 'deck'>): THREE.Material {
 	cUv += vec2( dot( normal, vec3( 0.31, 0.71, 0.53 ) ), dot( normal, vec3( 0.17, 0.43, 0.29 ) ) );
 	vMapUv = cUv;
 	vRoughnessMapUv = cUv;
+	vNormalMapUv = cUv;
 	// wear mask: ~6 skin tiles per repeat + a big per-instance phase, so the
 	// metre-scale grime shapes differ between adjacent boxes
 	vWearUv = cUv * ( 1.0 / 6.0 ) + aUvOffset * vec2( 13.73, 9.17 );
@@ -131,19 +142,20 @@ function build(kind: Exclude<MaterialKind, 'deck'>): THREE.Material {
 // never read warm. Two scales of the same channel keep the scabs mottled,
 // and a soft gate biases rust toward the corrugation roots (skin-tex
 // troughs at x = 19.5 + 26k).
-float rustMask = smoothstep( 0.20, 0.62, texture2D( uWear, vWearUv ).g );
-rustMask *= 0.7 + 0.3 * smoothstep( 0.3, 0.75, texture2D( uWear, vMapUv * 0.83 + vec2( 0.37, 0.61 ) ).g );
+float rustG2 = texture2D( uWear, vMapUv * 0.83 + vec2( 0.37, 0.61 ) ).g;
+float rustMask = smoothstep( 0.30, 0.70, texture2D( uWear, vWearUv ).g );
+rustMask *= 0.75 + 0.25 * smoothstep( 0.3, 0.75, rustG2 );
 float rustRib = abs( fract( ( vMapUv.x * 256.0 - 19.5 ) / 26.0 + 0.5 ) - 0.5 ) * 26.0;
-rustMask *= 0.7 + 0.3 * smoothstep( 7.0, 2.5, rustRib );
+rustMask *= 0.75 + 0.25 * smoothstep( 7.0, 2.5, rustRib );
 // oxide hue kept saturated — a flatter brown washes out warm once blended
 // onto green/blue paint, and a brighter tone reads lighter than the paint
-// around it instead of as staining. Rust gathers in the run-off band just
-// under the top lip of the face — that is where the weep starts and where
-// the staining shows strongest against the sky
-float rustM = 1.0 - ( 1.0 - rustMask * 0.85 ) * ( 1.0 - rustMask * 0.85 );
+// around it instead of as staining. Pitted cores run a shade deeper than
+// the stained halo, and rust gathers in the run-off band just under the
+// top lip of the face where the weep starts
+float rustM = rustMask * ( 0.45 + 0.55 * rustMask ) * 0.88; // strong cores, faint halo
 float rustBand = smoothstep( 0.30, 0.62, vFaceV ) * ( 1.0 - smoothstep( 0.82, 0.97, vFaceV ) );
-rustM *= 0.35 + 0.65 * rustBand;
-diffuseColor.rgb = mix( diffuseColor.rgb, vec3( 0.30, 0.15, 0.05 ) * 0.30, rustM );`,
+rustM *= 0.55 + 0.45 * rustBand;
+diffuseColor.rgb = mix( diffuseColor.rgb, vec3( 0.30, 0.15, 0.05 ) * 0.95, rustM );`,
           )
           .replace(
             '#include <roughnessmap_fragment>',
@@ -354,7 +366,77 @@ uniform vec3 uSunCol;`,
       m.fog = false;
       return m;
     }
+    case 'hull':
+      // topsides — painted steel above the waterline
+      return new THREE.MeshStandardMaterial({
+        color: PALETTE.hull,
+        map: getTexture('metal'),
+        roughness: 0.62,
+        metalness: 0.45,
+      });
+    case 'hullBand':
+      // antifouling band at the waterline — dull oxide red
+      return new THREE.MeshStandardMaterial({
+        color: PALETTE.hullBand,
+        map: getTexture('metal'),
+        roughness: 0.85,
+        metalness: 0.1,
+      });
+    case 'stripe':
+      // painted hazard band on the deck — matte, still picks up light
+      return new THREE.MeshStandardMaterial({
+        map: getTexture('stripe'),
+        roughness: 0.85,
+        metalness: 0.05,
+      });
+    case 'cone':
+      return new THREE.MeshStandardMaterial({
+        color: PALETTE.cone,
+        map: getTexture('metal'),
+        roughness: 0.7,
+        metalness: 0,
+      });
+    case 'rope':
+      return new THREE.MeshStandardMaterial({
+        color: PALETTE.rope,
+        roughness: 0.95,
+        metalness: 0,
+      });
+    case 'skid':
+      // tyre scuffs — transparent decal sheet, never writes depth
+      return new THREE.MeshBasicMaterial({
+        map: getTexture('skid'),
+        transparent: true,
+        depthWrite: false,
+      });
   }
+}
+
+/** Container stencil decals — one material per atlas cell (4 cells across x).
+ * Texture clones share the canvas; offset/repeat crop to the cell. */
+const stencilMats: THREE.MeshStandardMaterial[] = [];
+export function getStencilMaterial(cell: number): THREE.MeshStandardMaterial {
+  const i = ((cell % 4) + 4) % 4;
+  let m = stencilMats[i];
+  if (!m) {
+    const tex = getTexture('stencil').clone();
+    tex.repeat.set(0.25, 1);
+    tex.offset.set(i * 0.25, 0);
+    tex.needsUpdate = true;
+    m = new THREE.MeshStandardMaterial({
+      map: tex,
+      transparent: true,
+      roughness: 0.9,
+      metalness: 0,
+      depthWrite: false,
+      polygonOffset: true,
+      polygonOffsetFactor: -2,
+      polygonOffsetUnits: -2,
+    });
+    m.name = `mat-stencil-${i}`;
+    stencilMats[i] = m;
+  }
+  return m;
 }
 
 export function getMaterial(kind: MaterialKind): THREE.Material {

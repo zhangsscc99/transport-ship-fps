@@ -8,14 +8,19 @@ import { PALETTE } from './palette';
 export type TextureKey =
   | 'deck'
   | 'deckRough'
+  | 'deckNormal'
   | 'puddle'
   | 'puddleAlpha'
   | 'puddleNormal'
   | 'container'
   | 'containerRough'
   | 'containerWear'
+  | 'containerNormal'
   | 'metal'
   | 'grate'
+  | 'stripe'
+  | 'stencil'
+  | 'skid'
   | 'ao'
   | 'aoEdge';
 
@@ -83,6 +88,165 @@ function rustAlongSeams(
     else ctx.fillRect(along, seam + off, s, s);
   }
   ctx.globalAlpha = 1;
+}
+
+// --- 512² deck normal map: plate seams (128px grid, same as genDeck) read as
+// shallow grooves — packed tangent-space: r=x slope, g=y slope, b=up ---
+function genDeckNormal(): HTMLCanvasElement {
+  const size = 512;
+  const [c, ctx] = makeCanvas(size);
+  const h = new Float32Array(size * size);
+  const rnd = mulberry32(29);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      // distance to nearest 128px seam → a 5px-wide pressed groove
+      const dx = Math.min(x % 128, 128 - (x % 128));
+      const dy = Math.min(y % 128, 128 - (y % 128));
+      const seam = Math.min(dx, dy);
+      h[y * size + x] =
+        -Math.max(0, 1 - seam / 5) * 1.0 + (rnd() - 0.5) * 0.08; // groove + micro noise
+    }
+  }
+  const img = ctx.createImageData(size, size);
+  const d = img.data;
+  const at = (x: number, y: number) => h[((y + size) % size) * size + ((x + size) % size)];
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const gx = (at(x + 1, y) - at(x - 1, y)) * 0.9;
+      const gy = (at(x, y + 1) - at(x, y - 1)) * 0.9;
+      const il = 1 / Math.hypot(gx, gy, 1);
+      const i = (y * size + x) * 4;
+      d[i] = (-gx * il * 0.5 + 0.5) * 255;
+      d[i + 1] = (-gy * il * 0.5 + 0.5) * 255;
+      d[i + 2] = (il * 0.5 + 0.5) * 255;
+      d[i + 3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  return c;
+}
+
+// --- 256² container corrugation normal map: ribs at the same 26px period as
+// genContainer's sine shading + the 6.5px fine wave, so the lit/shadowed rib
+// faces land exactly on the painted corrugation ---
+function genContainerNormal(): HTMLCanvasElement {
+  const size = 256;
+  const [c, ctx] = makeCanvas(size);
+  const img = ctx.createImageData(size, size);
+  const d = img.data;
+  const rnd = mulberry32(43);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      // slope of the rib height field (analytic derivative of the shade fn)
+      const gx =
+        Math.cos((x * Math.PI * 2) / 26) * 2.6 +
+        Math.cos((x * Math.PI * 2) / 6.5 + 1.3) * 1.1 +
+        (rnd() - 0.5) * 0.35;
+      const gy = (rnd() - 0.5) * 0.15;
+      const il = 1 / Math.hypot(gx, gy, 1);
+      const i = (y * size + x) * 4;
+      d[i] = (-gx * il * 0.5 + 0.5) * 255;
+      d[i + 1] = (-gy * il * 0.5 + 0.5) * 255;
+      d[i + 2] = (il * 0.5 + 0.5) * 255;
+      d[i + 3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  return c;
+}
+
+// --- 128² diagonal hazard stripes (warning yellow / near-black), worn ---
+function genStripes(): HTMLCanvasElement {
+  const size = 128;
+  const [c, ctx] = makeCanvas(size);
+  const rnd = mulberry32(59);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const band = Math.floor((x + y) / 16) % 2;
+      ctx.fillStyle = band ? PALETTE.deckLine : '#171a1e';
+      ctx.fillRect(x, y, 1, 1);
+    }
+  }
+  // wear: knock chips back out so the paint reads scuffed
+  ctx.fillStyle = PALETTE.deck[1];
+  for (let i = 0; i < 90; i++) {
+    ctx.globalAlpha = 0.06 + rnd() * 0.25;
+    const s = 1 + rnd() * 4;
+    ctx.fillRect(rnd() * size, rnd() * size, s, s);
+  }
+  ctx.globalAlpha = 1;
+  return c;
+}
+
+// --- 512×64 stencil atlas: four shipping-code cells (128×64 each), worn
+// white paint on transparent — containers pick a cell per decal ---
+function genStencil(): HTMLCanvasElement {
+  const w = 512;
+  const h = 64;
+  const c = document.createElement('canvas');
+  c.width = w;
+  c.height = h;
+  const ctx = c.getContext('2d')!;
+  const rnd = mulberry32(71);
+  const codes = ['MSKU 481-07', 'CSNU 730-2', 'TGHU 055-9', 'OCLU 216-4'];
+  const subs = ['MAX 30480 KG', '22G1 · NET 28200', 'TARE 2180 KG', 'CSC-24 · SEALED'];
+  ctx.clearRect(0, 0, w, h);
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  codes.forEach((code, i) => {
+    const cx = i * 128 + 64;
+    ctx.fillStyle = 'rgba(228,232,238,0.92)';
+    ctx.font = "700 26px 'Courier New',monospace";
+    // stencil breaks: draw glyph-by-glyph isn't needed — erode after instead
+    ctx.fillText(code, cx, 22);
+    ctx.font = "600 13px 'Courier New',monospace";
+    ctx.fillStyle = 'rgba(228,232,238,0.8)';
+    ctx.fillText(subs[i], cx, 48);
+  });
+  // paint erosion: destination-out speckle so letters read sprayed-on
+  ctx.globalCompositeOperation = 'destination-out';
+  for (let i = 0; i < 700; i++) {
+    ctx.globalAlpha = 0.15 + rnd() * 0.5;
+    const s = 0.5 + rnd() * 1.6;
+    ctx.fillRect(rnd() * w, rnd() * h, s, s);
+  }
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.globalAlpha = 1;
+  return c;
+}
+
+// --- 256² tyre-scuff decal: transparent sheet, a few dark arcing streaks ---
+function genSkid(): HTMLCanvasElement {
+  const size = 256;
+  const [c, ctx] = makeCanvas(size);
+  const rnd = mulberry32(89);
+  ctx.clearRect(0, 0, size, size);
+  for (let i = 0; i < 5; i++) {
+    const x0 = rnd() * size;
+    const y0 = rnd() * size;
+    const arc = (rnd() - 0.5) * 1.6;
+    const len = 90 + rnd() * 120;
+    const w = 9 + rnd() * 9;
+    ctx.strokeStyle = 'rgba(8,10,13,0.5)';
+    ctx.lineWidth = w;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(x0, y0);
+    ctx.quadraticCurveTo(
+      x0 + Math.cos(arc) * len * 0.5,
+      y0 + Math.sin(arc) * len * 0.5 + (rnd() - 0.5) * 30,
+      x0 + Math.cos(arc) * len,
+      y0 + Math.sin(arc) * len,
+    );
+    ctx.stroke();
+  }
+  // feather the edges with soft speckle
+  for (let i = 0; i < 60; i++) {
+    ctx.fillStyle = `rgba(8,10,13,${0.06 + rnd() * 0.2})`;
+    const s = 2 + rnd() * 7;
+    ctx.fillRect(rnd() * size, rnd() * size, s, s);
+  }
+  return c;
 }
 
 // --- 512² deck plates: base tone + blotches + grain + seam grid + scratches + seam rust ---
@@ -698,20 +862,38 @@ function genAoEdge(): HTMLCanvasElement {
 const GEN: Record<TextureKey, () => HTMLCanvasElement> = {
   deck: genDeck,
   deckRough: genDeckRough,
+  deckNormal: genDeckNormal,
   puddle: genPuddle,
   puddleAlpha: genPuddleAlpha,
   puddleNormal: genPuddleNormal,
   container: genContainer,
   containerRough: genContainerRough,
   containerWear: genContainerWear,
+  containerNormal: genContainerNormal,
   metal: genMetal,
   grate: genGrate,
+  stripe: genStripes,
+  stencil: genStencil,
+  skid: genSkid,
   ao: genAo,
   aoEdge: genAoEdge,
 };
 
-const SRGB_KEYS: ReadonlySet<TextureKey> = new Set(['deck', 'container', 'metal', 'grate']);
-const DECK_REPEAT: ReadonlySet<TextureKey> = new Set(['deck', 'deckRough', 'puddle']);
+const SRGB_KEYS: ReadonlySet<TextureKey> = new Set([
+  'deck',
+  'container',
+  'metal',
+  'grate',
+  'stripe',
+  'stencil',
+  'skid',
+]);
+const DECK_REPEAT: ReadonlySet<TextureKey> = new Set([
+  'deck',
+  'deckRough',
+  'deckNormal',
+  'puddle',
+]);
 
 export function getTexture(key: TextureKey): THREE.Texture {
   let t = cache.get(key);

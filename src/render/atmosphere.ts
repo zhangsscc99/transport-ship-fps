@@ -27,7 +27,7 @@ export function applyAtmosphere(scene: THREE.Scene, renderer: THREE.WebGLRendere
   scene.environment = captureSkyEnv(renderer, dome);
 
   // Hemisphere fill stays low — the env map now carries most of the ambient.
-  const hemi = new THREE.HemisphereLight(PALETTE.sky[1], PALETTE.deck[1], 0.5);
+  const hemi = new THREE.HemisphereLight(PALETTE.sky[1], PALETTE.deck[1], 0.85);
   scene.add(hemi);
 
   return {

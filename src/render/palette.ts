@@ -44,4 +44,8 @@ export const PALETTE = {
   lampWarm: '#ffc27a', // 哨塔暖黄工作灯 / 亮窗
   wood: '#6d5637', // 木托盘
   crane: '#27333d', // 远处起重机剪影
+  hull: '#2b3238', // 船体外板——比甲板再暗一档，挂金属反光
+  hullBand: '#74301f', // 水线防污漆——暗氧化红
+  cone: '#d2691e', // 警示锥——安全橙
+  rope: '#8a7350', // 缆绳卷——麻色
 } as const;
