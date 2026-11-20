@@ -14,22 +14,39 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { PALETTE } from './palette';
 import { getMaterial } from './materials';
+import type { MaterialKind } from './materials';
 import type { WeaponSpec } from '../game/weapons';
 import type { Vec3 } from '../game/player';
 
 type GunId = WeaponSpec['id'];
 type MatKey = 'metal' | 'poly' | 'mag' | 'edge' | 'glove' | 'cuff';
 
+// The viewmodel lives 0.5m from the lens inside the dusk backlight — shared
+// world materials (metalness .85, near-black albedo) collapse to luma≈0 there.
+// Clone them with a low emissive floor of their own base colour so every
+// camera-facing surface keeps a mid-tone the cam fill can shade on top of.
+const std = (kind: MaterialKind, emissiveIntensity: number): THREE.MeshStandardMaterial => {
+  const m = (getMaterial(kind) as THREE.MeshStandardMaterial).clone();
+  m.emissive.copy(m.color);
+  m.emissiveIntensity = emissiveIntensity;
+  return m;
+};
+
 const MAT: Record<MatKey, THREE.Material> & {
   flash: THREE.MeshBasicMaterial;
   flashCore: THREE.MeshBasicMaterial;
 } = {
-  metal: getMaterial('gunMetal'), // receiver / barrel / rail / sights / muzzle
-  poly: getMaterial('gunPoly'), // handguard / stock / grip / pump
-  mag: getMaterial('gunMag'), // magazine + small dark fittings
+  metal: (() => {
+    const m = std('gunMetal', 0.14); // receiver / barrel / rail / sights / muzzle
+    m.metalness = 0.62; // let the fill light's diffuse term actually land
+    m.roughness = 0.42;
+    return m;
+  })(),
+  poly: std('gunPoly', 0.16), // handguard / stock / grip / pump
+  mag: std('gunMag', 0.15), // magazine + small dark fittings
   edge: getMaterial('gunEdge'), // 1–2px highlight strip along the top edge
-  glove: getMaterial('glove'), // hands — a step brighter than the gun
-  cuff: getMaterial('rail'), // wrist cuff — small bright accent
+  glove: std('glove', 0.16), // hands — a step brighter than the gun
+  cuff: std('rail', 0.10), // wrist cuff — small bright accent
   flash: new THREE.MeshBasicMaterial({
     color: PALETTE.accent,
     transparent: true,
@@ -263,25 +280,27 @@ function addMagazine(p: Parts, z: number, yTop: number, depth = 0.1): void {
 
 /**
  * Two low-poly gloves so the gun isn't floating: palm + thumb + finger blocks
- * wrap the grip (rear hand) and the handguard/pump (support hand); forearm
- * stubs and bright cuffs trail down-right toward the screen edge.
+ * wrap the grip (rear hand) and the handguard/pump (support hand). Both wrists
+ * run into forearms that angle down-right and exit the bottom-right of frame —
+ * rx≈0.62 pitches the stub's +z end down, ry≈0.44 swings it toward +x, so the
+ * arm reads as a real limb leaving the screen instead of a hanging peg.
  */
 function addArms(p: Parts, supportZ: number, supportUnder = -0.024): void {
   // ---- support hand: cups the handguard/pump from below ----
   const sz = supportZ;
-  box(p, 'glove', 0.048, 0.026, 0.076, -0.002, supportUnder - 0.012, sz); // palm
-  box(p, 'glove', 0.014, 0.030, 0.070, -0.021, supportUnder + 0.008, sz); // hand back, left side
+  box(p, 'glove', 0.050, 0.028, 0.078, -0.002, supportUnder - 0.010, sz); // palm
+  box(p, 'glove', 0.015, 0.032, 0.072, -0.0215, supportUnder + 0.010, sz); // hand back, left side
   // fingers over the top of the tube — four angled blocks
   for (let i = 0; i < 4; i++) {
     box(
       p,
       'glove',
       0.024,
-      0.009,
-      0.013,
+      0.010,
+      0.014,
       -0.007,
-      supportUnder + 0.030,
-      sz + 0.024 - i * 0.016,
+      supportUnder + 0.031,
+      sz + 0.026 - i * 0.017,
       0,
       0,
       0.22,
@@ -289,22 +308,22 @@ function addArms(p: Parts, supportZ: number, supportUnder = -0.024): void {
   }
   // thumb curled onto the far (right) side
   box(p, 'glove', 0.013, 0.011, 0.030, 0.0175, supportUnder + 0.006, sz + 0.01, 0, -0.15, 0);
-  // forearm stub + cuff trailing toward the bottom-right corner
-  box(p, 'glove', 0.054, 0.048, 0.15, 0.035, supportUnder - 0.052, sz + 0.11, 0.5, -0.35, 0);
-  box(p, 'cuff', 0.058, 0.052, 0.028, 0.024, supportUnder - 0.032, sz + 0.062, 0.5, -0.35, 0);
+  // cuff ring at the wrist, then the forearm running down-right off-screen
+  box(p, 'cuff', 0.058, 0.052, 0.030, 0.030, supportUnder - 0.034, sz + 0.066, 0.62, 0.42, 0);
+  box(p, 'glove', 0.056, 0.050, 0.19, 0.058, supportUnder - 0.105, sz + 0.155, 0.62, 0.42, 0);
 
   // ---- rear hand: grips the pistol grip ----
-  box(p, 'glove', 0.022, 0.062, 0.036, 0.022, -0.062, 0.104, 0.28, 0, 0); // hand back on the right
-  box(p, 'glove', 0.030, 0.017, 0.032, 0.006, -0.028, 0.094); // knuckle bridge over the grip
+  box(p, 'glove', 0.024, 0.060, 0.038, 0.024, -0.060, 0.106, 0.28, 0, 0); // hand back on the right
+  box(p, 'glove', 0.032, 0.018, 0.034, 0.007, -0.028, 0.096); // knuckle bridge over the grip
   for (let i = 0; i < 3; i++) {
-    box(p, 'glove', 0.017, 0.0135, 0.015, -0.009, -0.043 - i * 0.0175, 0.075 + i * 0.003, 0.45, 0, 0);
+    box(p, 'glove', 0.017, 0.014, 0.016, -0.009, -0.043 - i * 0.018, 0.076 + i * 0.003, 0.45, 0, 0);
   }
   // thumb across the grip's left shoulder + index onto the trigger
-  box(p, 'glove', 0.013, 0.010, 0.026, -0.008, -0.031, 0.082, 0, 0.3, 0);
+  box(p, 'glove', 0.013, 0.010, 0.026, -0.008, -0.031, 0.084, 0, 0.3, 0);
   box(p, 'glove', 0.008, 0.010, 0.022, -0.005, -0.036, 0.060);
-  // forearm stub + cuff
-  box(p, 'glove', 0.056, 0.050, 0.16, 0.048, -0.138, 0.20, 0.55, -0.3, 0);
-  box(p, 'cuff', 0.060, 0.054, 0.028, 0.033, -0.108, 0.142, 0.55, -0.3, 0);
+  // cuff ring at the wrist + forearm out the bottom-right corner
+  box(p, 'cuff', 0.058, 0.052, 0.030, 0.042, -0.096, 0.128, 0.5, 0.42, 0);
+  box(p, 'glove', 0.058, 0.052, 0.20, 0.075, -0.155, 0.225, 0.62, 0.45, 0);
 }
 
 // --- shared silhouette pieces -------------------------------------------------

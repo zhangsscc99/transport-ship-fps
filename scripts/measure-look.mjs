@@ -75,7 +75,7 @@ if (!started) {
 }
 
 await page.waitForTimeout(SETTLE_MS);
-const png = await page.screenshot();
+const png = await page.screenshot({ timeout: 150000 });
 
 // decode the png back inside the page — no native deps needed
 const stats = await page.evaluate(async (b64) => {

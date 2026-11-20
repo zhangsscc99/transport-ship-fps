@@ -120,6 +120,7 @@ const menu = new Menu(document.body, {
 menu.show();
 
 const scratchMuzzle = new THREE.Vector3();
+const scratchFillDir = new THREE.Vector3();
 const rayEnd = (ray: Ray, dist: number): Vec3 => ({
   x: ray.origin.x + ray.dir.x * dist,
   y: ray.origin.y + ray.dir.y * dist,
@@ -196,6 +197,13 @@ engine.onFrame = (dt) => {
   view.update(player, dt);
   lights.update(now * 0.001);
   atmo.update(view.camera.position);
+
+  // camera-follow fill: parked just above/behind the lens, aimed a few metres
+  // down the view axis so gun + foreground props keep a readable mid-tone
+  view.camera.getWorldDirection(scratchFillDir);
+  lights.camFill.position.copy(view.camera.position).addScaledVector(scratchFillDir, -1.5);
+  lights.camFill.position.y += 1.2;
+  lights.camFill.target.position.copy(view.camera.position).addScaledVector(scratchFillDir, 6);
 
   const w = rack.current;
   if (acting && playerEnt.alive) {

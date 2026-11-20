@@ -8,7 +8,7 @@ export const PALETTE = {
   containerTop: '#8a8a8a',
   rust: '#6b3a22',
   tower: ['#48535f', '#5a6673'],
-  pipe: '#2d353d',
+  pipe: '#39434d', // 管件/系缆桩——逆光面也不许压到纯黑
   sea: ['#16242e', '#1b2833', '#2b4252'],
   sky: ['#2b3a49', '#42566a'], // [0] 天顶，[1] 半球光上色
   skyHorizon: '#78889a', // 地平线雾霾亮灰蓝 — 画面里最亮的底色
@@ -30,10 +30,10 @@ export const PALETTE = {
   uiText: '#dfe7ee',
   uiDim: '#8fa0ad',
   accent: '#ff8b3d', // 开火/命中/危险提示
-  gun: ['#23282d', '#2b2f33', '#5a6570'], // 枪体：暗/中/亮
-  gunDark: '#191d22', // 弹匣/小件：偏暗哑光
-  gunHi: '#7a8a99', // 枪身高光条 emissive
-  glove: '#4a4c50', // 手臂——比枪身亮，分出层次
+  gun: ['#2e343b', '#3a4149', '#67727f'], // 枪体：暗/中/亮
+  gunDark: '#252b32', // 弹匣/小件：偏暗哑光
+  gunHi: '#8ea0b0', // 枪身高光条 emissive
+  glove: '#5d6167', // 手臂——比枪身亮，分出层次
   flashCore: '#ffd9a0', // 枪口焰心
   tracer: '#c9a227', // 曳光（同警示黄）
   crosshair: '#eef4fa',

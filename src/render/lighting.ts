@@ -21,6 +21,9 @@ export interface Lights {
   sun: THREE.DirectionalLight;
   bow: THREE.PointLight;
   tower: THREE.PointLight;
+  /** Camera-follow fill — repositioned each frame from main.ts so the
+   * viewmodel's camera-facing surfaces and backlit props never hit luma 0. */
+  camFill: THREE.DirectionalLight;
   /** t = elapsed seconds; drives the beacon's slow blink. */
   update(t: number): void;
 }
@@ -49,12 +52,19 @@ export function addLights(scene: THREE.Scene): Lights {
   scene.add(sun);
   scene.add(sun.target);
 
-  // weak counter-fill from the opposite azimuth — lifts the shadowed faces
-  // out of pure black without flattening the sun's key
-  const fill = new THREE.DirectionalLight(PALETTE.fill, 0.4);
+  // counter-fill from the opposite azimuth — lifts shadowed faces (guard
+  // rails, bollards, pipe walls) out of pure black without flattening the key
+  const fill = new THREE.DirectionalLight(PALETTE.fill, 0.85);
   fill.position.set(-24, 18, -16);
   scene.add(fill);
   scene.add(fill.target);
+
+  // camera-follow fill: main.ts re-aims it every frame so it always shines
+  // down the view axis — the face of the gun and any prop right in front of
+  // the lens keep a readable mid-tone even in full backlight
+  const camFill = new THREE.DirectionalLight(PALETTE.fill, 0.6);
+  scene.add(camFill);
+  scene.add(camFill.target);
 
   // bow warning beacon over the +x tip of the hull
   const bow = new THREE.PointLight(PALETTE.lampRed, 24, 30, 2);
@@ -71,6 +81,7 @@ export function addLights(scene: THREE.Scene): Lights {
     sun,
     bow,
     tower,
+    camFill,
     update(t) {
       // slow beacon: eases up, snaps back — reads as a rotating lamp
       const p = 0.5 + 0.5 * Math.sin(t * 1.5);
