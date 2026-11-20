@@ -8,6 +8,7 @@ import { addLights, configureRenderer } from './render/lighting';
 import { applyAtmosphere } from './render/atmosphere';
 import { setAnisotropyCap } from './render/textures';
 import { buildMap } from './render/map';
+import { updateWater } from './render/materials';
 import { PlayerCamera } from './render/camera';
 import { WeaponView, TracerPool } from './render/weapon';
 import { Hud } from './render/hud';
@@ -39,7 +40,10 @@ declare global {
     };
     __sfx: { counts: Record<string, number>; muted: boolean; unlocked: boolean };
     __fx: { hits: number; kills: number; flashOpacity: number; lowHpPulse: number };
-    __test: { hurt(dmg: number): void };
+    __test: {
+      hurt(dmg: number): void;
+      teleport(x: number, z: number, yawDeg: number, pitchDeg: number): void;
+    };
     __match: {
       phase: string;
       killsA: number;
@@ -196,6 +200,7 @@ engine.onFrame = (dt) => {
 
   view.update(player, dt);
   lights.update(now * 0.001);
+  updateWater(now * 0.001);
   atmo.update(view.camera.position);
 
   // camera-follow fill: parked just above/behind the lens, aimed a few metres
@@ -281,7 +286,17 @@ window.__state = dbg;
 const dbgSfx = { counts: sfx.counts, muted: false, unlocked: false };
 window.__sfx = dbgSfx;
 window.__fx = hud.fx;
-window.__test = { hurt: (dmg: number) => hurtPlayer(dmg) };
+window.__test = {
+  hurt: (dmg: number) => hurtPlayer(dmg),
+  // e2e-only camera placement: drop the player at (x,z) facing yaw/pitch
+  teleport: (x: number, z: number, yawDeg: number, pitchDeg: number) => {
+    player.position.x = x;
+    player.position.z = z;
+    player.yaw = (yawDeg * Math.PI) / 180;
+    player.pitch = (pitchDeg * Math.PI) / 180;
+    view.snap(player);
+  },
+};
 const mdbg = {
   phase: 'menu',
   killsA: 0,

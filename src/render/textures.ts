@@ -9,6 +9,8 @@ export type TextureKey =
   | 'deck'
   | 'deckRough'
   | 'puddle'
+  | 'puddleAlpha'
+  | 'puddleNormal'
   | 'container'
   | 'containerRough'
   | 'metal'
@@ -171,6 +173,111 @@ function genPuddle(): HTMLCanvasElement {
   return c;
 }
 
+// --- 512² puddle silhouette (linear): white = open water for alphaMap.
+// Varied-radius circles stamped along a curving, swaying spine give an
+// elongated organic blob; every stamp is clamped so all ink fades out ≥42px
+// before the texture edge — no cropped straight rims on the quad.
+function genPuddleAlpha(): HTMLCanvasElement {
+  const size = 512;
+  const [c, ctx] = makeCanvas(size);
+  const rnd = mulberry32(71);
+  ctx.fillStyle = '#000000';
+  ctx.fillRect(0, 0, size, size);
+
+  const cx = size / 2;
+  const cy = size / 2;
+  const count = 6 + Math.floor(rnd() * 5); // 6..10 stamps along the spine
+  const dir = rnd() * Math.PI * 2; // spine direction
+  const bend = (rnd() - 0.5) * 1.4; // spine curvature
+  const span = 200 + rnd() * 60; // half-length the stamps wander out to
+  const perpA = 30 + rnd() * 40; // sideways sway amplitude
+  const wob = 1.5 + rnd() * 1.5; // sway frequency along the spine
+  const ph = rnd() * Math.PI * 2;
+  for (let i = 0; i < count; i++) {
+    const t = i / (count - 1); // 0..1 along the spine
+    const along = (t - 0.5) * 2 * span;
+    const side = Math.sin(t * Math.PI * wob + ph) * perpA + (rnd() - 0.5) * 26;
+    const a = dir + bend * (t - 0.5);
+    let px = cx + Math.cos(a) * along - Math.sin(a) * side;
+    let py = cy + Math.sin(a) * along + Math.cos(a) * side;
+    const r = 66 + rnd() * 46;
+    const lim = size / 2 - 42 - r;
+    const dx = px - cx;
+    const dy = py - cy;
+    const d = Math.hypot(dx, dy);
+    if (d > lim && d > 0) {
+      px = cx + (dx / d) * lim;
+      py = cy + (dy / d) * lim;
+    }
+    const g = ctx.createRadialGradient(px, py, r * 0.3, px, py, r);
+    // F212c: wider outer feather — alpha 0.35→0.05 now spans ~17% of the
+    // stamp radius (was ~9%), so the shoreline fades in steps instead of
+    // snapping on like a sticker cut.
+    g.addColorStop(0, 'rgba(255,255,255,1)');
+    g.addColorStop(0.55, 'rgba(255,255,255,0.95)');
+    g.addColorStop(0.8, 'rgba(255,255,255,0.35)');
+    g.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(px, py, r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  return c;
+}
+
+// --- 256² tileable water-ripple normal map. Integer wave vectors make the
+// summed-sine height field exactly periodic; the analytic gradient is packed
+// as rgb = normalize(-dh/dx, -dh/dy, 1)*0.5+0.5 with z dominant, so it reads
+// as ripples instead of fake dunes. Frequencies stay ≤5 cycles/tile — the
+// analytic gradient is already perfectly smooth, and keeping the spectrum in
+// the mid band means no pixel-scale normal jumps (no blocky sparkle).
+function genPuddleNormal(): HTMLCanvasElement {
+  const size = 256;
+  const [c, ctx] = makeCanvas(size);
+  const rnd = mulberry32(97);
+  // (mx, my) = cycles per uv tile; 1/hypot(m) all lands in the 0.19..0.7 band
+  const K: [number, number][] = [
+    [4, 1],
+    [-3, 4],
+    [2, -4],
+    [-4, -2],
+    [1, 3],
+    [5, -2],
+    [-2, -3],
+  ];
+  const waves = K.map(([mx, my]) => ({
+    mx,
+    my,
+    f: Math.hypot(mx, my),
+    slope: 0.055 + rnd() * 0.1, // per-wave gradient amplitude — ripples, not dunes
+    ph: rnd() * Math.PI * 2,
+  }));
+  const img = ctx.createImageData(size, size);
+  const d = img.data;
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const u = x / size;
+      const v = y / size;
+      let gx = 0;
+      let gy = 0;
+      for (const w of waves) {
+        // h = sin(2π m·uv + φ) scaled so |∇h| peak == slope
+        const s = (w.slope * Math.cos(Math.PI * 2 * (w.mx * u + w.my * v) + w.ph)) / w.f;
+        gx += s * w.mx;
+        gy += s * w.my;
+      }
+      const iz = 1 / Math.hypot(gx, gy, 1);
+      const i = (y * size + x) * 4;
+      d[i] = (-gx * iz * 0.5 + 0.5) * 255;
+      d[i + 1] = (-gy * iz * 0.5 + 0.5) * 255;
+      d[i + 2] = (iz * 0.5 + 0.5) * 255;
+      d[i + 3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  return c;
+}
+
 // --- 256² container skin: vertical corrugation + top dark band + corner rust ---
 // Near-white base so the per-instance palette tint stays truthful.
 function genContainer(): HTMLCanvasElement {
@@ -320,6 +427,8 @@ const GEN: Record<TextureKey, () => HTMLCanvasElement> = {
   deck: genDeck,
   deckRough: genDeckRough,
   puddle: genPuddle,
+  puddleAlpha: genPuddleAlpha,
+  puddleNormal: genPuddleNormal,
   container: genContainer,
   containerRough: genContainerRough,
   metal: genMetal,
@@ -335,8 +444,14 @@ export function getTexture(key: TextureKey): THREE.Texture {
   let t = cache.get(key);
   if (t) return t;
   t = new THREE.CanvasTexture(GEN[key]());
-  t.wrapS = THREE.RepeatWrapping;
-  t.wrapT = THREE.RepeatWrapping;
+  if (key === 'puddleAlpha') {
+    // single quad, transparent margin — never tile the silhouette
+    t.wrapS = THREE.ClampToEdgeWrapping;
+    t.wrapT = THREE.ClampToEdgeWrapping;
+  } else {
+    t.wrapS = THREE.RepeatWrapping;
+    t.wrapT = THREE.RepeatWrapping;
+  }
   if (DECK_REPEAT.has(key)) t.repeat.set(8, 5); // deck slab: 8×5 tiles of ~2m plates
   if (SRGB_KEYS.has(key)) t.colorSpace = THREE.SRGBColorSpace;
   t.anisotropy = 4; // real cap applied by setAnisotropyCap once the GPU is known

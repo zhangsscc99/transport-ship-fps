@@ -4,6 +4,7 @@
 import * as THREE from 'three';
 import { PALETTE } from './palette';
 import { getTexture } from './textures';
+import { SUN_COLOR, SUN_DIR } from './lighting';
 
 export type MaterialKind =
   | 'deck'
@@ -29,6 +30,16 @@ export type MaterialKind =
   | 'window';
 
 const cache = new Map<MaterialKind, THREE.Material>();
+
+// Shared ripple clock for the puddle shader. The same object is handed to
+// shader.uniforms.uTime inside onBeforeCompile, so writes made before the
+// program compiles are simply the value the first frame already reads.
+const waterTime = { value: 0 };
+
+/** Advance the puddle ripple clock (seconds) — called once per frame. */
+export function updateWater(tSec: number): void {
+  waterTime.value = tSec;
+}
 
 function buildDeck(): THREE.MeshStandardMaterial {
   const m = new THREE.MeshStandardMaterial({
@@ -184,14 +195,80 @@ function build(kind: Exclude<MaterialKind, 'deck'>): THREE.Material {
         metalness: 0.05,
         roughness: 0.9,
       });
-    case 'puddle':
-      // standing water film — near-mirror that steals the sky from the env map
-      return new THREE.MeshStandardMaterial({
-        color: PALETTE.skyHorizon,
-        metalness: 0.9,
-        roughness: 0.05,
-        envMapIntensity: 1.4,
+    case 'puddle': {
+      // standing water — a dielectric film, NOT a metal: metalness .85 was
+      // what collapsed it to an oil stain at nadir view. Now it mirrors the
+      // bright PMREM dusk sky (envMapIntensity ≥2), carries a faint cool
+      // Blinn-Phong sun-glint through the perturbed ripple normals (F212c:
+      // sun term ×0.45 + skylight-weighted tint killed the lava glare, and
+      // the shore-band rim light is gone — no decal outline), darkens ~12%
+      // toward its centre on a uv-radius gradient, and reflects at 0.55 in
+      // the thin film just inside the feathered alpha edge so the junction
+      // reads damp-dark — all on the scrolled dual-sample ripples from F212.
+      const ripple = getTexture('puddleNormal');
+      ripple.repeat.set(3, 3); // F212c: finer ripples — no colour-block patches
+      const m = new THREE.MeshStandardMaterial({
+        color: PALETTE.sea[1],
+        metalness: 0.1,
+        roughness: 0.08,
+        envMapIntensity: 2.6,
+        alphaMap: getTexture('puddleAlpha'),
+        transparent: true,
+        depthWrite: false,
+        side: THREE.FrontSide,
+        normalMap: ripple,
+        normalScale: new THREE.Vector2(0.3, 0.3),
       });
+      m.onBeforeCompile = (shader) => {
+        shader.uniforms.uTime = waterTime;
+        shader.uniforms.uSkyTint = { value: new THREE.Color(PALETTE.skyHorizon) };
+        shader.uniforms.uSunDirW = { value: SUN_DIR.clone() };
+        shader.uniforms.uSunCol = { value: SUN_COLOR.clone() };
+        shader.fragmentShader = shader.fragmentShader
+          .replace(
+            '#include <common>',
+            `#include <common>
+uniform float uTime;
+uniform vec3 uSkyTint;
+uniform vec3 uSunDirW;
+uniform vec3 uSunCol;`,
+          )
+          .replace(
+            '#include <normal_fragment_maps>',
+            `vec3 mapN = texture2D( normalMap, vNormalMapUv + uTime * vec2( 0.021, 0.013 ) ).xyz * 2.0 - 1.0;
+	vec3 mapN2 = texture2D( normalMap, vNormalMapUv * 1.83 + uTime * vec2( -0.016, 0.024 ) ).xyz * 2.0 - 1.0;
+	mapN = normalize( vec3( mapN.xy + mapN2.xy, mapN.z * mapN2.z ) );
+	mapN.xy *= normalScale;
+	normal = normalize( tbn * mapN );
+	float shore = texture2D( alphaMap, vAlphaMapUv ).g; // 1 open water → 0 feathered rim
+	float depth = smoothstep( 0.5, 0.95, shore ); // deeper water toward the middle
+	float pRad = smoothstep( 0.0, 1.0, length( vAlphaMapUv - 0.5 ) * 2.0 ); // 0 centre → 1 quad edge
+	float fres = pow( 1.0 - clamp( dot( normal, normalize( vViewPosition ) ), 0.0, 1.0 ), 4.0 );
+	diffuseColor.rgb *= mix( 1.0, 0.55, depth ); // deep centre a shade darker
+	diffuseColor.rgb *= mix( 0.88, 1.0, pRad ); // volume: centre ~12% deeper than the rim
+	diffuseColor.rgb = mix( diffuseColor.rgb, uSkyTint, fres * 0.7 ); // grazing → sky mirror`,
+          )
+          .replace(
+            '#include <opaque_fragment>',
+            `{
+	vec3 pV = normalize( vViewPosition );
+	vec3 pSun = normalize( ( viewMatrix * vec4( uSunDirW, 0.0 ) ).xyz );
+	vec3 pH = normalize( pV + pSun ); // Blinn half-vector — wave facets tilted
+	vec3 pR = reflect( -pV, normal ); // toward it light up along the sun azimuth
+	float pSpec = pow( clamp( dot( normal, pH ), 0.0, 1.0 ), 10.0 ) * 1.17; // F212c: ×0.45
+	float pGlint = pow( clamp( dot( pR, pSun ), 0.0, 1.0 ), 160.0 ) * 2.25; // ×0.45 — no lava
+	float pThin = 1.0 - smoothstep( 0.35, 0.41, shore ); // ~6% band inside the alpha edge
+	float pRefl = mix( 1.0, 0.55, pThin ); // thin film: weak reflection, deck shows through
+	vec3 pSpecCol = mix( uSkyTint, uSunCol, 0.35 ); // skylight leads, warm sun only tints
+	outgoingLight += pSpecCol * ( pSpec + pGlint ) * pRefl;
+	outgoingLight += uSkyTint * ( 0.14 + fres * 0.5 ) * mix( 1.0, 0.55, depth ) * pRefl;
+	}
+	#include <opaque_fragment>`,
+          );
+      };
+      m.customProgramCacheKey = () => 'puddle-water'; // distinct program from unpatched standards
+      return m;
+    }
     case 'lampRed':
       // warning-beacon bulb — self-lit dot
       return new THREE.MeshBasicMaterial({ color: PALETTE.lampRed });
