@@ -13,6 +13,7 @@ export type TextureKey =
   | 'puddleNormal'
   | 'container'
   | 'containerRough'
+  | 'containerWear'
   | 'metal'
   | 'grate'
   | 'ao'
@@ -278,7 +279,109 @@ function genPuddleNormal(): HTMLCanvasElement {
   return c;
 }
 
-// --- 256² container skin: vertical corrugation + top dark band + corner rust ---
+// --- shared rust-mark model for the container skin: the same deterministic
+// mark list is stamped onto the colour canvas in rust tones AND onto the
+// roughness canvas in bright ink, so every rust patch also reads matte ---
+interface RustStreak {
+  x: number;
+  y0: number;
+  w: number;
+  len: number;
+  a: number;
+}
+interface RustSpot {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  a: number;
+  dark: boolean;
+}
+interface RustPatch {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  a: number;
+}
+interface RustScratch {
+  x: number;
+  y: number;
+  dx: number;
+  dy: number;
+  a: number;
+}
+
+const CONTAINER_MARKS = (() => {
+  const size = 256;
+  const rnd = mulberry32(101);
+
+  // run-off streaks weeping down from the top lip — 2–3 thin runs of
+  // uneven length, no mid-face rain of rust
+  const streaks: RustStreak[] = [];
+  for (let i = 0; i < 14; i++) {
+    streaks.push({
+      x: 3 + rnd() * (size - 6),
+      y0: rnd() * 8,
+      w: 1.0 + rnd() * 1.8,
+      len: 16 + rnd() * rnd() * 110,
+      a: 0.42 + rnd() * 0.4,
+    });
+  }
+
+  // rust freckles hugging the corrugation troughs (rib roots), biased low
+  const spots: RustSpot[] = [];
+  for (let i = 0; i < 110; i++) {
+    const trough = 19.5 + 26 * Math.floor(rnd() * 10);
+    spots.push({
+      x: trough + (rnd() - 0.5) * 8,
+      y: size * (0.4 + rnd() * 0.6),
+      w: 1.0 + rnd() * 3.0,
+      h: 1.0 + rnd() * 2.8,
+      a: 0.22 + rnd() * 0.42,
+      dark: rnd() < 0.35,
+    });
+  }
+
+  // scabby patches inside the bottom grime band
+  const grime: RustPatch[] = [];
+  for (let i = 0; i < 60; i++) {
+    const r = rnd() * rnd();
+    grime.push({
+      x: rnd() * size,
+      y: size - r * 46 - 3,
+      w: 5 + rnd() * 15,
+      h: 2 + rnd() * 6,
+      a: 0.24 + rnd() * 0.36,
+    });
+  }
+
+  // shallow scratches scraped back to pale primer — one or two, not a cage
+  const scratches: RustScratch[] = [];
+  for (let i = 0; i < 2; i++) {
+    const len = 18 + rnd() * 40;
+    const ang = (rnd() - 0.5) * 0.7; // mostly horizontal
+    scratches.push({
+      x: rnd() * size,
+      y: size * (0.1 + rnd() * 0.6),
+      dx: Math.cos(ang) * len,
+      dy: Math.sin(ang) * len,
+      a: 0.22 + rnd() * 0.2,
+    });
+  }
+  return { streaks, spots, grime, scratches };
+})();
+
+// PALETTE.rust (0x6b3a22) with a ±15% lightness jitter so neighbouring
+// marks aren't one flat stencil tone.
+function rustRgba(j: number, a: number): string {
+  const r = Math.min(255, Math.round(0x6b * j));
+  const g = Math.min(255, Math.round(0x3a * j));
+  const b = Math.min(255, Math.round(0x22 * j));
+  return `rgba(${r},${g},${b},${a.toFixed(3)})`;
+}
+
+// --- 256² container skin: vertical corrugation + top dark band + layered rust ---
 // Near-white base so the per-instance palette tint stays truthful.
 function genContainer(): HTMLCanvasElement {
   const size = 256;
@@ -287,6 +390,17 @@ function genContainer(): HTMLCanvasElement {
 
   ctx.fillStyle = '#e9ebee';
   ctx.fillRect(0, 0, size, size);
+
+  // large soft wear blotches so the painted sheet isn't a flat fill
+  for (let i = 0; i < 9; i++) {
+    const r = 30 + rnd() * 70;
+    ctx.fillStyle = rnd() < 0.5 ? '#d2d5da' : '#f2f3f5';
+    ctx.globalAlpha = 0.05 + rnd() * 0.06;
+    ctx.beginPath();
+    ctx.ellipse(rnd() * size, rnd() * size, r, r * (0.4 + rnd() * 0.6), rnd() * Math.PI, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
 
   // corrugation: ~10 sine ribs across the sheet + a finer secondary wave
   const shade = (x: number) =>
@@ -302,17 +416,158 @@ function genContainer(): HTMLCanvasElement {
   ctx.fillStyle = g;
   ctx.fillRect(0, 0, size, size);
 
-  // rust: corners + along the bottom edge
-  ctx.fillStyle = PALETTE.rust;
-  for (let i = 0; i < 130; i++) {
-    const corner = rnd() < 0.5;
-    const x = corner ? (rnd() < 0.5 ? rnd() * 26 : size - rnd() * 26) : rnd() * size;
-    const y = corner ? (rnd() < 0.5 ? rnd() * 30 : size - rnd() * 30) : size - rnd() * rnd() * 40;
-    ctx.globalAlpha = 0.1 + rnd() * 0.35;
-    const s = 0.6 + rnd() * 2.4;
+  // rust run-off: faint wide halo + darker narrow core, fading down its run.
+  // Each streak gets its own ±15% tone jitter so no two weep the same colour.
+  for (const s of CONTAINER_MARKS.streaks) {
+    const j = 0.85 + rnd() * 0.3;
+    const halo = ctx.createLinearGradient(0, s.y0, 0, s.y0 + s.len);
+    halo.addColorStop(0, rustRgba(j * 1.12, s.a * 0.35));
+    halo.addColorStop(1, rustRgba(j * 1.12, 0));
+    ctx.fillStyle = halo;
+    ctx.fillRect(s.x - s.w, s.y0, s.w * 3, s.len);
+    const core = ctx.createLinearGradient(0, s.y0, 0, s.y0 + s.len);
+    core.addColorStop(0, rustRgba(j * 0.82, s.a));
+    core.addColorStop(0.75, rustRgba(j * 0.82, s.a * 0.5));
+    core.addColorStop(1, rustRgba(j * 0.82, 0));
+    ctx.fillStyle = core;
+    ctx.fillRect(s.x - s.w / 2, s.y0, s.w, s.len);
+  }
+
+  // freckles at the rib roots — two depths + per-mark jitter, stamped twice
+  // (soft wide pass under a tighter core) so the pitting reads layered
+  for (const p of CONTAINER_MARKS.spots) {
+    ctx.fillStyle = p.dark ? `rgba(78,42,24,${(p.a * 0.8).toFixed(3)})` : rustRgba(0.85 + rnd() * 0.3, p.a * 0.55);
+    ctx.fillRect(p.x - 0.6, p.y - 0.6, p.w + 1.2, p.h + 1.2);
+    ctx.fillStyle = p.dark ? `rgba(60,30,16,${p.a.toFixed(3)})` : rustRgba(0.8 + rnd() * 0.3, p.a);
+    ctx.fillRect(p.x, p.y, p.w, p.h);
+  }
+
+  // scabs inside the bottom grime band — jittered tone, then a few paint-
+  // coloured chips knocked back out so the scab edges read ragged, not airbrushed
+  for (const p of CONTAINER_MARKS.grime) {
+    ctx.fillStyle = rustRgba(0.85 + rnd() * 0.3, p.a);
+    ctx.fillRect(p.x, p.y, p.w, p.h);
+    ctx.fillStyle = 'rgba(210,214,220,0.35)';
+    const chips = 1 + Math.floor(rnd() * 2);
+    for (let k = 0; k < chips; k++) {
+      ctx.fillRect(p.x + rnd() * p.w, p.y + rnd() * p.h, 1 + rnd() * 2, 1 + rnd() * 1.5);
+    }
+  }
+  // sparse speckle hugging the lower edge only (was a full-face brown spray)
+  for (let i = 0; i < 40; i++) {
+    const x = rnd() * size;
+    const y = size - rnd() * rnd() * 34;
+    ctx.fillStyle = rustRgba(0.85 + rnd() * 0.3, 0.12 + rnd() * 0.25);
+    const s = 0.6 + rnd() * 2;
     ctx.fillRect(x, y, s, s);
   }
   ctx.globalAlpha = 1;
+
+  // scratches: pale primer line with a thin rust bled along its lower lip
+  for (const s of CONTAINER_MARKS.scratches) {
+    ctx.globalAlpha = s.a;
+    ctx.strokeStyle = '#c8cdd2';
+    ctx.lineWidth = 1.1;
+    ctx.beginPath();
+    ctx.moveTo(s.x, s.y);
+    ctx.lineTo(s.x + s.dx, s.y + s.dy);
+    ctx.stroke();
+    ctx.globalAlpha = s.a * 0.6;
+    ctx.strokeStyle = '#5a3220';
+    ctx.lineWidth = 0.6;
+    ctx.beginPath();
+    ctx.moveTo(s.x, s.y + 1);
+    ctx.lineTo(s.x + s.dx, s.y + s.dy + 1);
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+  return c;
+}
+
+// --- 256² tileable two-channel weather mask (linear). .r = broad wear/grime
+// cells (unchanged); .g = dedicated rust mask: mid-scale irregular scabs plus
+// run-off drips so the container shader can stain the diffuse AFTER the
+// per-instance tint — rust painted into the colour map was being re-tinted by
+// instanceColor and never read as rust. Sampled at ~1/6 the skin's uv scale
+// plus a large per-instance offset, so the weather differs box-to-box even
+// when two containers tile the same skin pixels. Wrap-around gradient stamps
+// keep both channels perfectly periodic.
+function genContainerWear(): HTMLCanvasElement {
+  const size = 256;
+  const [c, ctx] = makeCanvas(size);
+  const rnd = mulberry32(83);
+  ctx.fillStyle = '#000000';
+  ctx.fillRect(0, 0, size, size);
+
+  const stamp = (x: number, y: number, r: number, a: number, ink: string) => {
+    for (const dx of [-size, 0, size]) {
+      for (const dy of [-size, 0, size]) {
+        const g = ctx.createRadialGradient(x + dx, y + dy, r * 0.15, x + dx, y + dy, r);
+        g.addColorStop(0, `rgba(${ink},${a})`);
+        g.addColorStop(0.7, `rgba(${ink},${(a * 0.5).toFixed(3)})`);
+        g.addColorStop(1, `rgba(${ink},0)`);
+        ctx.fillStyle = g;
+        ctx.beginPath();
+        ctx.arc(x + dx, y + dy, r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+  };
+
+  // .r cells — same stamp list as before, red ink keeps the channel identical
+  // ~12 broad blobs — these read as metre-scale weather cells on the box
+  for (let i = 0; i < 12; i++) stamp(rnd() * size, rnd() * size, 46 + rnd() * 78, 0.5 + rnd() * 0.4, '255,0,0');
+  // ~18 smaller mottle blobs so the big cells have ragged insides
+  for (let i = 0; i < 18; i++) stamp(rnd() * size, rnd() * size, 14 + rnd() * 30, 0.25 + rnd() * 0.35, '255,0,0');
+
+  // .g rust marks — 'lighter' so each stamp can only add to the channel and
+  // never eat back into the .r cells. Elliptical stamps with ry down-face
+  // (v) so the shapes lean with the run-off direction.
+  ctx.globalCompositeOperation = 'lighter';
+  const rust = (x: number, y: number, rx: number, ry: number, rot: number, a: number) => {
+    for (const dx of [-size, 0, size]) {
+      for (const dy of [-size, 0, size]) {
+        ctx.save();
+        ctx.translate(x + dx, y + dy);
+        ctx.rotate(rot);
+        ctx.scale(1, ry / rx);
+        const g = ctx.createRadialGradient(0, 0, rx * 0.15, 0, 0, rx);
+        g.addColorStop(0, `rgba(0,255,0,${a})`);
+        g.addColorStop(0.55, `rgba(0,255,0,${(a * 0.55).toFixed(3)})`);
+        g.addColorStop(1, 'rgba(0,255,0,0)');
+        ctx.fillStyle = g;
+        ctx.beginPath();
+        ctx.arc(0, 0, rx, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
+    }
+  };
+
+  // scab cells — a broad feathered halo with a tighter, darker core stamped
+  // back on top, so the edges read layered instead of airbrushed. F213e:
+  // count/radius/alpha up so a clear share of any face clears the shader's
+  // smoothstep(0.45,0.8) gate — the old density left most faces under it.
+  for (let i = 0; i < 30; i++) {
+    const x = rnd() * size;
+    const y = rnd() * size;
+    const rx = 17 + rnd() * 24;
+    const ry = rx * (1.2 + rnd() * 0.8);
+    const rot = (rnd() - 0.5) * 0.5;
+    const a = 0.7 + rnd() * 0.3;
+    rust(x, y, rx, ry, rot, a);
+    rust(x, y, rx * 0.55, ry * 0.6, rot, Math.min(0.95, a * 1.35));
+  }
+  // weep drips — narrow, tall, near-vertical run-off threads
+  for (let i = 0; i < 36; i++) {
+    rust(rnd() * size, rnd() * size, 3 + rnd() * 5.5, 28 + rnd() * 48, (rnd() - 0.5) * 0.22, 0.4 + rnd() * 0.32);
+  }
+  // fine freckles so the rust zones stay pitted at close range
+  for (let i = 0; i < 55; i++) {
+    const rx = 2.5 + rnd() * 5.5;
+    rust(rnd() * size, rnd() * size, rx, rx * (1 + rnd() * 0.8), rnd() * Math.PI, 0.26 + rnd() * 0.34);
+  }
+  ctx.globalCompositeOperation = 'source-over';
   return c;
 }
 
@@ -324,6 +579,23 @@ function genContainerRough(): HTMLCanvasElement {
   ctx.fillStyle = '#b3b3b3'; // ~0.7 base
   ctx.fillRect(0, 0, size, size);
   grain(ctx, size, rnd, 0.08);
+
+  // same mark list as the colour skin, bright ink → rust/grime reads matte
+  ctx.fillStyle = '#ffffff';
+  for (const s of CONTAINER_MARKS.streaks) {
+    ctx.globalAlpha = s.a * 0.7;
+    ctx.fillRect(s.x - s.w, s.y0, s.w * 3, s.len);
+  }
+  for (const p of CONTAINER_MARKS.spots) {
+    ctx.globalAlpha = p.a * 0.8;
+    ctx.fillRect(p.x, p.y, p.w, p.h);
+  }
+  for (const p of CONTAINER_MARKS.grime) {
+    ctx.globalAlpha = p.a * 0.8;
+    ctx.fillRect(p.x, p.y, p.w, p.h);
+  }
+  ctx.globalAlpha = 1;
+
   // grime at the bottom is rougher
   const g = ctx.createLinearGradient(0, 0, 0, size);
   g.addColorStop(0.8, 'rgba(255,255,255,0)');
@@ -431,6 +703,7 @@ const GEN: Record<TextureKey, () => HTMLCanvasElement> = {
   puddleNormal: genPuddleNormal,
   container: genContainer,
   containerRough: genContainerRough,
+  containerWear: genContainerWear,
   metal: genMetal,
   grate: genGrate,
   ao: genAo,

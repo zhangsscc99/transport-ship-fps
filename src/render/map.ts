@@ -44,6 +44,34 @@ function setInst(
   mesh.setMatrixAt(i, mat4);
 }
 
+/**
+ * Per-instance tiling data for the patched container material:
+ * aSize = world dims so the shader repeats the skin every ~2.4 m per face,
+ * aUvOffset = golden-ratio walk so no two boxes share the same tile phase.
+ */
+function addContainerUvs(
+  geo: THREE.BufferGeometry,
+  dims: readonly (readonly [number, number, number])[],
+  salt: number,
+): void {
+  const size = new Float32Array(dims.length * 3);
+  const off = new Float32Array(dims.length * 2);
+  dims.forEach(([w, h, d], i) => {
+    size[i * 3] = w;
+    size[i * 3 + 1] = h;
+    size[i * 3 + 2] = d;
+    off[i * 2] = ((i + salt) * 0.618034) % 1;
+    off[i * 2 + 1] = ((i + salt) * 0.414214) % 1;
+  });
+  geo.setAttribute('aSize', new THREE.InstancedBufferAttribute(size, 3));
+  geo.setAttribute('aUvOffset', new THREE.InstancedBufferAttribute(off, 2));
+}
+
+/** Deterministic ±8% brightness jitter so neighbouring boxes never match. */
+function tintJitter(i: number): number {
+  return 0.92 + (0.16 * (((i * 2654435761) >>> 8) % 1024)) / 1023;
+}
+
 /** Guard-rail runs along the deck edges: [x0, x1] at fixed z. Gaps = mooring bays. */
 const RAIL_RUNS: { x0: number; x1: number; z: number }[] = [
   { x0: -32, x1: -14, z: 19.65 },
@@ -255,8 +283,9 @@ function buildStackedContainers(group: THREE.Group): void {
   ];
   boxes.forEach(([x, y, z, sx, sy, sz, ry, rz, ci], i) => {
     setInst(mesh, i, x, y, z, sx, sy, sz, ry, 0, rz);
-    mesh.setColorAt(i, c.set(PALETTE.container[ci]));
+    mesh.setColorAt(i, c.set(PALETTE.container[ci]).multiplyScalar(tintJitter(i + 29)));
   });
+  addContainerUvs(geo, boxes.map((b) => [b[3], b[4], b[5]] as [number, number, number]), 7);
   mesh.instanceColor!.needsUpdate = true;
   mesh.castShadow = true;
   mesh.receiveShadow = true;
@@ -486,7 +515,10 @@ export function buildMap(scene: THREE.Scene): MapMeshes {
     const boxes = MAP.boxes.filter((b) => b.kind === kind);
     if (boxes.length === 0) continue;
     const mat = getMaterial(kind as MaterialKind);
-    const mesh = new THREE.InstancedMesh(unitCube, mat, boxes.length);
+    // containers get a private clone — the shared cube must not carry the
+    // per-instance aSize/aUvOffset attributes their material now expects
+    const geo = kind === 'container' ? unitCube.clone() : unitCube;
+    const mesh = new THREE.InstancedMesh(geo, mat, boxes.length);
     mesh.name = `map-${kind}`;
     const c = new THREE.Color();
     boxes.forEach((b, i) => {
@@ -494,9 +526,15 @@ export function buildMap(scene: THREE.Scene): MapMeshes {
       mat4.setPosition(b.x, b.y + b.h / 2, b.z);
       mesh.setMatrixAt(i, mat4);
       if (kind === 'container') {
-        mesh.setColorAt(i, c.set(PALETTE.container[i % PALETTE.container.length]));
+        mesh.setColorAt(
+          i,
+          c.set(PALETTE.container[i % PALETTE.container.length]).multiplyScalar(tintJitter(i)),
+        );
       }
     });
+    if (kind === 'container') {
+      addContainerUvs(geo, boxes.map((b) => [b.w, b.h, b.d] as [number, number, number]), 0);
+    }
     mesh.instanceMatrix.needsUpdate = true;
     if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
     mesh.castShadow = kind !== 'deck';

@@ -76,13 +76,89 @@ function buildDeck(): THREE.MeshStandardMaterial {
 
 function build(kind: Exclude<MaterialKind, 'deck'>): THREE.Material {
   switch (kind) {
-    case 'container':
-      return new THREE.MeshStandardMaterial({
+    case 'container': {
+      const m = new THREE.MeshStandardMaterial({
         map: getTexture('container'),
         roughnessMap: getTexture('containerRough'),
         roughness: 1,
         metalness: 0.25,
       });
+      // Per-instance tiling: aSize = the box's world dims, so the skin repeats
+      // every ~2.4 m on each face (a 6 m side gets more rib columns instead of
+      // one stretched tile); aUvOffset decorrelates instances, and a
+      // normal-keyed phase keeps the six faces of one box from lining up.
+      m.onBeforeCompile = (shader) => {
+        shader.uniforms.uWear = { value: getTexture('containerWear') };
+        shader.vertexShader = shader.vertexShader
+          .replace(
+            '#include <common>',
+            '#include <common>\nattribute vec3 aSize;\nattribute vec2 aUvOffset;\nvarying vec2 vWearUv;\nvarying float vFaceV;',
+          )
+          .replace(
+            '#include <uv_vertex>',
+            `#include <uv_vertex>
+{
+	vec2 cFace = abs( normal.x ) > 0.5 ? aSize.zy : ( abs( normal.z ) > 0.5 ? aSize.xy : aSize.xz );
+	vec2 cUv = uv * ( cFace / 2.4 ) + aUvOffset;
+	cUv += vec2( dot( normal, vec3( 0.31, 0.71, 0.53 ) ), dot( normal, vec3( 0.17, 0.43, 0.29 ) ) );
+	vMapUv = cUv;
+	vRoughnessMapUv = cUv;
+	// wear mask: ~6 skin tiles per repeat + a big per-instance phase, so the
+	// metre-scale grime shapes differ between adjacent boxes
+	vWearUv = cUv * ( 1.0 / 6.0 ) + aUvOffset * vec2( 13.73, 9.17 );
+	vFaceV = uv.y; // 0 bottom → 1 top of the face, before any tiling offset
+}`,
+          );
+        shader.fragmentShader = shader.fragmentShader
+          .replace(
+            '#include <common>',
+            '#include <common>\nuniform sampler2D uWear;\nvarying vec2 vWearUv;\nvarying float vFaceV;',
+          )
+          .replace(
+            '#include <map_fragment>',
+            `#include <map_fragment>
+{
+	float wear = smoothstep( 0.26, 0.68, texture2D( uWear, vWearUv ).r );
+	diffuseColor.rgb *= mix( vec3( 1.0 ), vec3( 0.7, 0.62, 0.56 ), wear ); // damp grime darkens ~0.75
+	diffuseColor.rgb = mix( diffuseColor.rgb, vec3( 0.28, 0.17, 0.1 ), wear * 0.72 ); // rust-wash staining
+}`,
+          )
+          .replace(
+            '#include <color_fragment>',
+            `#include <color_fragment>
+// rust mask (.g of the wear map) applied AFTER the per-instance tint — oxide
+// painted into the colour map was being multiplied by instanceColor, so it
+// never read warm. Two scales of the same channel keep the scabs mottled,
+// and a soft gate biases rust toward the corrugation roots (skin-tex
+// troughs at x = 19.5 + 26k).
+float rustMask = smoothstep( 0.20, 0.62, texture2D( uWear, vWearUv ).g );
+rustMask *= 0.7 + 0.3 * smoothstep( 0.3, 0.75, texture2D( uWear, vMapUv * 0.83 + vec2( 0.37, 0.61 ) ).g );
+float rustRib = abs( fract( ( vMapUv.x * 256.0 - 19.5 ) / 26.0 + 0.5 ) - 0.5 ) * 26.0;
+rustMask *= 0.7 + 0.3 * smoothstep( 7.0, 2.5, rustRib );
+// oxide hue kept saturated — a flatter brown washes out warm once blended
+// onto green/blue paint, and a brighter tone reads lighter than the paint
+// around it instead of as staining. Rust gathers in the run-off band just
+// under the top lip of the face — that is where the weep starts and where
+// the staining shows strongest against the sky
+float rustM = 1.0 - ( 1.0 - rustMask * 0.85 ) * ( 1.0 - rustMask * 0.85 );
+float rustBand = smoothstep( 0.30, 0.62, vFaceV ) * ( 1.0 - smoothstep( 0.82, 0.97, vFaceV ) );
+rustM *= 0.35 + 0.65 * rustBand;
+diffuseColor.rgb = mix( diffuseColor.rgb, vec3( 0.30, 0.15, 0.05 ) * 0.30, rustM );`,
+          )
+          .replace(
+            '#include <roughnessmap_fragment>',
+            `#include <roughnessmap_fragment>
+	roughnessFactor = mix( roughnessFactor, 0.95, rustMask ); // rust is matte`,
+          )
+          .replace(
+            '#include <metalnessmap_fragment>',
+            `#include <metalnessmap_fragment>
+	metalnessFactor = mix( metalnessFactor, 0.0, rustMask ); // oxide, not steel`,
+          );
+      };
+      m.customProgramCacheKey = () => 'container-tiled';
+      return m;
+    }
     case 'tower':
       return new THREE.MeshStandardMaterial({
         color: PALETTE.tower[0],
