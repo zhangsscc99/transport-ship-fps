@@ -74,6 +74,11 @@ export class Weapon {
     }
   }
 
+  /** Advance timed weapon state (completes an elapsed reload even while idle). */
+  tick(now: number): void {
+    this.finishReload(now);
+  }
+
   /** Current cone half-angle — base spread plus accumulated burst recoil. */
   spreadAt(now: number): number {
     const b = now - this.lastFireAt > SPREAD_RECOVER_MS ? 0 : this.burst;
@@ -159,5 +164,9 @@ export class WeaponRack {
     this.current.cancelReload();
     this.index = (this.index + 1) % this.list.length;
     return this.current;
+  }
+
+  tick(now: number): void {
+    this.current.tick(now);
   }
 }

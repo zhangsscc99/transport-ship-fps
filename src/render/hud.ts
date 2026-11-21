@@ -285,7 +285,9 @@ export class Hud {
       `font-size:32px;font-weight:800;line-height:0.95;font-variant-numeric:tabular-nums;` +
         `letter-spacing:-0.01em;color:${PALETTE.uiText};pointer-events:none;`,
       ammoTop,
+      'ammo-num',
     );
+    this.ammoText.textContent = '30';
     const ammoInf = div(
       `font-size:11px;font-weight:700;color:${PALETTE.uiDim};letter-spacing:0.06em;pointer-events:none;`,
       ammoTop,
@@ -296,6 +298,7 @@ export class Hud {
         `color:${PALETTE.uiDim};margin-top:3px;pointer-events:none;`,
       ammoWrap,
     );
+    this.ammoSub.textContent = 'ASSAULT RIFLE';
     const segRow = div(
       `display:flex;align-items:center;gap:2px;height:6px;width:126px;margin:6px 0 0 auto;pointer-events:none;`,
       ammoWrap,
@@ -484,7 +487,9 @@ export class Hud {
     const litColor = lowAmmo ? PALETTE.accent : PALETTE.uiText;
     const emptyColor = s.ammo === 0 ? 'rgba(255,255,255,0.09)' : PALETTE.uiEmpty;
     for (let i = 0; i < mag; i++) {
-      this.ammoSegs[i].style.background = i < s.ammo ? litColor : emptyColor;
+      const lit = i < s.ammo;
+      this.ammoSegs[i].style.background = lit ? litColor : emptyColor;
+      this.ammoSegs[i].dataset.lit = lit ? '1' : '0';
     }
 
     // Crosshair: 4 short lines + dot, hit confirms in red + expands 60ms

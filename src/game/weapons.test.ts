@@ -56,14 +56,32 @@ test('firing consumes ammo; empty mag auto-reloads and cannot fire', () => {
   assert.equal(w.reloading, true);
 });
 
-test('reload refills the mag after reloadMs', () => {
+test('reload refills the mag after reloadMs (both via tick and via tryFire)', () => {
   const w = new Weapon(WEAPONS[0], rng);
   w.ammo = 3;
   assert.equal(w.reload(0), true);
   assert.equal(w.reload(10), false, 'already reloading');
   assert.equal(w.reloading, true);
+  w.tick(WEAPONS[0].reloadMs - 1);
+  assert.equal(w.reloading, true);
+  assert.equal(w.ammo, 3);
+  w.tick(WEAPONS[0].reloadMs);
+  assert.equal(w.reloading, false);
+  assert.equal(w.ammo, WEAPONS[0].mag);
   assert.ok(w.tryFire(WEAPONS[0].reloadMs + 1, ORG, DIR));
   assert.equal(w.ammo, WEAPONS[0].mag - 1);
+});
+
+test('all weapons initialize with a full magazine (30 / 5 / 6)', () => {
+  const rack = new WeaponRack(rng);
+  assert.deepEqual(
+    rack.list.map((w) => [w.spec.id, w.ammo, w.spec.mag]),
+    [
+      ['rifle', 30, 30],
+      ['sniper', 5, 5],
+      ['shotgun', 6, 6],
+    ],
+  );
 });
 
 test('trigger press during reload interrupts it without firing', () => {

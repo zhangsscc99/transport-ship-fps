@@ -33,6 +33,9 @@ declare global {
       z: number;
       hp: number;
       ammo: number;
+      mag: number;
+      weapon: string;
+      reloading: boolean;
       dead: boolean;
       yaw: number;
       pitch: number;
@@ -42,7 +45,7 @@ declare global {
     __fx: { hits: number; kills: number; flashOpacity: number; lowHpPulse: number };
     __test: {
       hurt(dmg: number): void;
-      teleport(x: number, z: number, yawDeg: number, pitchDeg: number): void;
+      teleport(x: number, z: number, yawDeg: number, pitchDeg: number, y?: number): void;
     };
     __match: {
       phase: string;
@@ -123,6 +126,8 @@ const menu = new Menu(document.body, {
     player.yaw = 0;
     player.pitch = 0;
     view.snap(player);
+    rack.index = 0;
+    weaponView.setWeapon(rack.current.spec.id);
     for (const w of rack.list) {
       w.ammo = w.spec.mag;
       w.cancelReload();
@@ -202,6 +207,10 @@ engine.onFrame = (dt) => {
       player.yaw = 0;
       player.pitch = 0;
       view.snap(player);
+      for (const rw of rack.list) {
+        rw.ammo = rw.spec.mag;
+        rw.cancelReload();
+      }
     }
   }
 
@@ -210,9 +219,12 @@ engine.onFrame = (dt) => {
   updateWater(now * 0.001);
   atmo.update(view.camera.position, view.camera.fov);
 
+  if (acting && playerEnt.alive && inp.swap) {
+    weaponView.setWeapon(rack.swap().spec.id);
+  }
   const w = rack.current;
+  w.tick(now);
   if (acting && playerEnt.alive) {
-    if (inp.swap) weaponView.setWeapon(rack.swap().spec.id);
     if (inp.reload && w.reload(now)) sfx.play('reload');
     if (inp.fire && player.onGround) {
       const eye: Vec3 = {
@@ -277,6 +289,9 @@ engine.onFrame = (dt) => {
   dbg.z = player.position.z;
   dbg.hp = playerEnt.hp;
   dbg.ammo = w.ammo;
+  dbg.mag = w.spec.mag;
+  dbg.weapon = w.spec.id;
+  dbg.reloading = w.reloading;
   dbg.dead = !playerEnt.alive;
   dbg.yaw = player.yaw;
   dbg.pitch = player.pitch;
@@ -292,16 +307,34 @@ engine.onFrame = (dt) => {
 };
 
 /** persistent debug handles (no per-frame alloc) — e2e tests read these */
-const dbg = { x: 0, y: 0, z: 0, hp: 0, ammo: 0, dead: false, yaw: 0, pitch: 0, firing: false };
+const dbg = {
+  x: sx,
+  y: sy,
+  z: sz,
+  hp: playerEnt.hp,
+  ammo: rack.current.ammo,
+  mag: rack.current.spec.mag,
+  weapon: rack.current.spec.id as string,
+  reloading: false,
+  dead: false,
+  yaw: 0,
+  pitch: 0,
+  firing: false,
+};
 window.__state = dbg;
 const dbgSfx = { counts: sfx.counts, muted: false, unlocked: false };
 window.__sfx = dbgSfx;
 window.__fx = hud.fx;
 window.__test = {
   hurt: (dmg: number) => hurtPlayer(dmg),
-  // e2e-only camera placement: drop the player at (x,z) facing yaw/pitch
-  teleport: (x: number, z: number, yawDeg: number, pitchDeg: number) => {
+  // e2e-only camera placement: drop the player at (x,z[,y]) facing yaw/pitch
+  teleport: (x: number, z: number, yawDeg: number, pitchDeg: number, y?: number) => {
     player.position.x = x;
+    if (y !== undefined) {
+      player.position.y = y;
+      player.velocity.y = 0;
+      player.onGround = true;
+    }
     player.position.z = z;
     player.yaw = (yawDeg * Math.PI) / 180;
     player.pitch = (pitchDeg * Math.PI) / 180;
@@ -318,6 +351,20 @@ const mdbg = {
 window.__match = mdbg;
 const rinfo = { calls: 0, triangles: 0, points: 0, lines: 0, geometries: 0, textures: 0 };
 window.__renderInfo = rinfo;
+
+// Seed HUD immediately with full initial mag so frame 0 never shows 0 / empty bars
+hud.update({
+  hp: playerEnt.hp,
+  maxHp: playerEnt.maxHp,
+  ammo: rack.current.ammo,
+  mag: rack.current.spec.mag,
+  reloading: rack.current.reloading,
+  weaponName: rack.current.spec.name,
+  spreadPx: 0,
+  fps: 60,
+  dead: false,
+  respawnIn: 0,
+});
 
 view.snap(player);
 engine.start();
