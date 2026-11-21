@@ -36,7 +36,7 @@ export function configureRenderer(renderer: THREE.WebGLRenderer): void {
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.18;
+  renderer.toneMappingExposure = 1.14;
   renderer.outputColorSpace = THREE.SRGBColorSpace;
 }
 

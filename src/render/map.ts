@@ -179,14 +179,10 @@ function makePalletGeo(): THREE.BufferGeometry {
   for (const sz of [-0.39, 0, 0.39]) {
     addBoxPart(parts, 1.15, 0.082, 0.088, 0, -0.022, sz);
   }
-  // 2 bottom end boards
-  for (const sx of [-0.49, 0.49]) {
-    addBoxPart(parts, 0.12, 0.02, 0.92, sx, -0.055, 0);
-  }
-  // 6 spaced top timber deck slats with real air gaps
-  for (let k = 0; k < 6; k++) {
-    const sx = -0.495 + k * 0.198;
-    addBoxPart(parts, 0.145, 0.026, 0.92, sx, 0.052, 0);
+  // 5 spaced top timber deck slats with real air gaps
+  for (let k = 0; k < 5; k++) {
+    const sx = -0.48 + k * 0.24;
+    addBoxPart(parts, 0.165, 0.026, 0.92, sx, 0.052, 0);
   }
   return mergeGeometries(parts, false)!;
 }
@@ -245,19 +241,18 @@ function buildPallets(group: THREE.Group): void {
 /** Real 3D 55-gallon oil drum: body + 2 raised rolling hoops + chime rims + top bung plugs. */
 function makeBarrelGeo(): THREE.BufferGeometry {
   const parts: THREE.BufferGeometry[] = [];
-  // Main drum shell
-  addCylPart(parts, 0.295, 0.295, 0.84, 14, 0, 0, 0);
-  // 2 raised 3D rolling hoops (桶箍)
+  // Main drum shell (12-seg cylinder: crisp silhouette at low tri count)
+  addCylPart(parts, 0.295, 0.295, 0.84, 12, 0, 0, 0);
+  // 2 raised 3D rolling hoops (桶箍) as stamped steel bands
   for (const hy of [-0.145, 0.145]) {
-    parts.push(prepGeo(new THREE.TorusGeometry(0.295, 0.017, 6, 14), 0, hy, 0, Math.PI / 2));
+    addCylPart(parts, 0.312, 0.312, 0.032, 12, 0, hy, 0);
   }
-  // Top & bottom raised chime rims forming a recessed lid
-  for (const cy of [-0.42, 0.42]) {
-    parts.push(prepGeo(new THREE.TorusGeometry(0.292, 0.015, 6, 14), 0, cy, 0, Math.PI / 2));
-  }
+  // Top & bottom raised chime rims forming a recessed top lid
+  addCylPart(parts, 0.308, 0.308, 0.028, 12, 0, 0.422, 0);
+  addCylPart(parts, 0.306, 0.306, 0.026, 12, 0, -0.422, 0);
   // Top lid 2" & 3/4" steel bung plugs (顶盖注油口与透气塞)
-  addCylPart(parts, 0.036, 0.036, 0.028, 6, 0.13, 0.432, 0.04);
-  addCylPart(parts, 0.019, 0.019, 0.024, 6, -0.14, 0.430, -0.05);
+  addCylPart(parts, 0.036, 0.036, 0.028, 6, 0.13, 0.442, 0.04);
+  addCylPart(parts, 0.019, 0.019, 0.024, 6, -0.14, 0.440, -0.05);
   return mergeGeometries(parts, false)!;
 }
 
@@ -375,17 +370,13 @@ let cachedCrateGeo: THREE.BufferGeometry | null = null;
 function makeCrateGeo(): THREE.BufferGeometry {
   if (cachedCrateGeo) return cachedCrateGeo;
   const parts: THREE.BufferGeometry[] = [];
-  // Slightly recessed inner plank core
+  // Recessed timber panel core + top/bottom edge bands + 4 corner vertical battens
   addBoxPart(parts, 0.94, 0.94, 0.94, 0, 0, 0);
-  // 12 raised perimeter timber frame battens around all edges
-  const b = 0.075;
-  const e = 0.5 - b / 2;
-  for (const sy of [-e, e]) {
-    for (const sz of [-e, e]) addBoxPart(parts, 1.0, b, b, 0, sy, sz);
-    for (const sx of [-e, e]) addBoxPart(parts, b, b, 1.0 - b * 2, sx, sy, 0);
-  }
+  addBoxPart(parts, 1.0, 0.08, 1.0, 0, 0.46, 0);
+  addBoxPart(parts, 1.0, 0.08, 1.0, 0, -0.46, 0);
+  const e = 0.46;
   for (const sx of [-e, e]) {
-    for (const sz of [-e, e]) addBoxPart(parts, b, 1.0 - b * 2, b, sx, 0, sz);
+    for (const sz of [-e, e]) addBoxPart(parts, 0.08, 0.84, 0.08, sx, 0, sz);
   }
   cachedCrateGeo = mergeGeometries(parts, false)!;
   return cachedCrateGeo;
@@ -622,8 +613,8 @@ function buildPipeBundles(group: THREE.Group): void {
     [22, 15, 1.55],
     [-9, 18.2, 0.05],
     [9, -18.2, -0.08],
-    [-19.5, 13.2, 0.06],
-    [19.5, -13.2, -0.06],
+    [-19.5, 17.8, 0.06],
+    [19.5, -17.8, -0.06],
   ];
   const mesh = new THREE.InstancedMesh(geo, getMaterial('pipe'), spots.length * 3);
   mesh.name = 'pipe-bundles';
@@ -708,8 +699,8 @@ function buildMarkings(group: THREE.Group): void {
     [-14.2, -1.8, 2.6, 1.0, 0.12],
     [14.2, 1.8, 2.6, 1.0, -0.12],
   ];
-  bands.forEach(([x, z, w, d, ry], i) =>
-    setInst(stripes, i, x, 0.017, z, w, d, 1, ry, -Math.PI / 2),
+  bands.forEach(([x, z, w, d, yaw], i) =>
+    setInst(stripes, i, x, 0.017, z, w, d, 1, 0, -Math.PI / 2, yaw),
   );
   stripes.receiveShadow = true;
   group.add(stripes);
@@ -726,7 +717,7 @@ function buildMarkings(group: THREE.Group): void {
     [-14.5, 13.2, 1.35],
     [14.5, -13.0, -1.2],
   ];
-  spots.forEach(([x, z, ry], i) => setInst(skids, i, x, 0.019, z, 1, 1, 1, ry, -Math.PI / 2));
+  spots.forEach(([x, z, yaw], i) => setInst(skids, i, x, 0.019, z, 1, 1, 1, 0, -Math.PI / 2, yaw));
   skids.renderOrder = 3;
   group.add(skids);
 
@@ -995,24 +986,21 @@ function buildCranes(group: THREE.Group): void {
   group.add(onShip, onShipGlass);
 }
 
-/** Self-lit local light anchors + subtle point pools. */
+/** Self-lit local light anchors on central containers + subtle point pools.
+ *  (Tower work lamps now live inside buildSteelTowers() under each hanging hood.) */
 function buildLightAnchors(group: THREE.Group): void {
   const bulbGeo = new THREE.SphereGeometry(0.13, 8, 6);
-  const warm = new THREE.InstancedMesh(bulbGeo, getMaterial('lamp'), 4);
+  const warm = new THREE.InstancedMesh(bulbGeo, getMaterial('lamp'), 2);
   warm.name = 'anchor-warm';
   const warmSpots: [number, number, number][] = [
-    [23.65, 2.9, -11.65],
-    [-23.65, 2.9, 11.65],
     [3.05, 2.72, 5.32],
     [-3.05, 2.72, -5.32],
   ];
   warmSpots.forEach(([x, y, z], i) => setInst(warm, i, x, y, z, 1, 1, 1));
   group.add(warm);
   const warmLight: [number, number, number, number][] = [
-    [23.65, 2.8, -11.65, 2.4],
-    [-23.65, 2.8, 11.65, 2.4],
-    [3.05, 2.72, 5.45, 1.6],
-    [-3.05, 2.72, -5.45, 1.6],
+    [3.05, 2.72, 5.45, 1.8],
+    [-3.05, 2.72, -5.45, 1.8],
   ];
   for (const [x, y, z, i] of warmLight) {
     const l = new THREE.PointLight(PALETTE.lampWarm, i, 13, 2);
@@ -1241,8 +1229,7 @@ function buildSteelTowers(group: THREE.Group): {
       addBoxPart(frameParts, 0.50, 0.045, 0.50, cx, 0.0225, cz);
       for (const bx of [-0.17, 0.17]) {
         for (const bz of [-0.17, 0.17]) {
-          addCylPart(frameParts, 0.026, 0.026, 0.065, 6, cx + bx, 0.055, cz + bz);
-          addBoxPart(frameParts, 0.075, 0.012, 0.075, cx + bx, 0.048, cz + bz);
+          addCylPart(frameParts, 0.028, 0.028, 0.065, 6, cx + bx, 0.055, cz + bz);
         }
       }
       addBoxPart(frameParts, 0.36, 0.22, 0.024, cx, 0.15, cz);
@@ -1331,7 +1318,7 @@ function buildSteelTowers(group: THREE.Group): {
   // Corner drainage scupper collars (排水孔护圈)
   for (const dx of [-1.84, 1.84]) {
     for (const dz of [-1.84, 1.84]) {
-      const ring = new THREE.TorusGeometry(0.065, 0.014, 6, 12);
+      const ring = new THREE.TorusGeometry(0.065, 0.014, 5, 8);
       frameParts.push(prepGeo(ring, dx, 3.304, dz, Math.PI / 2));
     }
   }
@@ -1361,20 +1348,20 @@ function buildSteelTowers(group: THREE.Group): {
     [RAIL_XY, 0.80],
   ];
   for (const [px, pz] of postCoords) {
-    addCylPart(railParts, R_PIPE, R_PIPE, 1.03, 8, px, 3.815, pz);
+    addCylPart(railParts, R_PIPE, R_PIPE, 1.03, 6, px, 3.815, pz);
     addBoxPart(frameParts, 0.11, 0.016, 0.11, px, 3.308, pz); // welded base flange
   }
 
   // Double horizontal Ø48mm pipes + 90° curved corner elbows
   for (const ry of [TOP_Y, MID_Y]) {
     // Back rail (z ∈ [-2.05+E, +2.05-E])
-    addSegmentPart(railParts, [-RAIL_XY, ry, -RAIL_XY + ELBOW_R], [-RAIL_XY, ry, RAIL_XY - ELBOW_R], R_PIPE, 8);
+    addSegmentPart(railParts, [-RAIL_XY, ry, -RAIL_XY + ELBOW_R], [-RAIL_XY, ry, RAIL_XY - ELBOW_R], R_PIPE, 6);
     // Left & right rails (x ∈ [-2.05+E, +2.05-E])
-    addSegmentPart(railParts, [-RAIL_XY + ELBOW_R, ry, -RAIL_XY], [RAIL_XY - ELBOW_R, ry, -RAIL_XY], R_PIPE, 8);
-    addSegmentPart(railParts, [-RAIL_XY + ELBOW_R, ry, RAIL_XY], [RAIL_XY - ELBOW_R, ry, RAIL_XY], R_PIPE, 8);
+    addSegmentPart(railParts, [-RAIL_XY + ELBOW_R, ry, -RAIL_XY], [RAIL_XY - ELBOW_R, ry, -RAIL_XY], R_PIPE, 6);
+    addSegmentPart(railParts, [-RAIL_XY + ELBOW_R, ry, RAIL_XY], [RAIL_XY - ELBOW_R, ry, RAIL_XY], R_PIPE, 6);
     // Front entry stubs (stopping at z = ±0.80)
-    addSegmentPart(railParts, [RAIL_XY, ry, -RAIL_XY + ELBOW_R], [RAIL_XY, ry, -0.80], R_PIPE, 8);
-    addSegmentPart(railParts, [RAIL_XY, ry, 0.80], [RAIL_XY, ry, RAIL_XY - ELBOW_R], R_PIPE, 8);
+    addSegmentPart(railParts, [RAIL_XY, ry, -RAIL_XY + ELBOW_R], [RAIL_XY, ry, -0.80], R_PIPE, 6);
+    addSegmentPart(railParts, [RAIL_XY, ry, 0.80], [RAIL_XY, ry, RAIL_XY - ELBOW_R], R_PIPE, 6);
 
     // 4 curved 90° corner elbows (torus quarter-arcs)
     const corners: [number, number, number][] = [
@@ -1384,7 +1371,7 @@ function buildSteelTowers(group: THREE.Group): {
       [-RAIL_XY + ELBOW_R, RAIL_XY - ELBOW_R, -Math.PI / 2],
     ];
     for (const [ex, ez, rotY] of corners) {
-      const elbow = new THREE.TorusGeometry(ELBOW_R, R_PIPE, 6, 8, Math.PI / 2);
+      const elbow = new THREE.TorusGeometry(ELBOW_R, R_PIPE, 5, 6, Math.PI / 2);
       railParts.push(prepGeo(elbow, ex, ry, ez, Math.PI / 2, rotY, 0));
     }
   }
@@ -1474,11 +1461,11 @@ function buildSteelTowers(group: THREE.Group): {
       const f = p / 4;
       const sx = ST_X1 - f * ST_DX;
       const sy = ST_Y1 - f * ST_DY;
-      addCylPart(railParts, R_HAND, R_HAND, H_HAND, 8, sx, sy + H_HAND * 0.5, sz);
+      addCylPart(railParts, R_HAND, R_HAND, H_HAND, 6, sx, sy + H_HAND * 0.5, sz);
     }
     // Sloped top Ø42mm handrail + sloped mid knee-rail + smooth join into platform jamb post
-    addSegmentPart(railParts, [ST_X1, ST_Y1 + H_HAND, sz], [ST_X0, ST_Y0 + H_HAND, sz], R_HAND, 8);
-    addSegmentPart(railParts, [ST_X0, ST_Y0 + H_HAND, sz], [RAIL_XY, TOP_Y, sz], R_HAND, 8);
+    addSegmentPart(railParts, [ST_X1, ST_Y1 + H_HAND, sz], [ST_X0, ST_Y0 + H_HAND, sz], R_HAND, 6);
+    addSegmentPart(railParts, [ST_X0, ST_Y0 + H_HAND, sz], [RAIL_XY, TOP_Y, sz], R_HAND, 6);
     addSegmentPart(
       railParts,
       [ST_X1, ST_Y1 + H_HAND * 0.52, sz],

@@ -43,8 +43,8 @@ vec3 horizonColor(vec3 d){
   // Base horizon anchored near uFogCol so sea & distant cranes fade with zero hard seam
   vec3 away = mix(uHorAway, uFogCol, 0.55);
   vec3 c = mix(away, away * 1.10 + vec3(0.05, 0.035, 0.015), smoothstep(0.18, 0.72, ts));
-  c = mix(c, uHor * vec3(1.22, 1.02, 0.80), pow(ts, 4.5));
-  c = mix(c, vec3(1.0, 0.76, 0.46) * 1.65, pow(ts, 22.0));
+  c = mix(c, uHor * vec3(1.12, 0.94, 0.74), pow(ts, 4.5));
+  c = mix(c, vec3(0.95, 0.72, 0.44) * 1.15, pow(ts, 22.0));
   return c;
 }
 `;
@@ -69,12 +69,12 @@ void main(){
   vec3 clearC = mix(hc, midC, smoothstep(0.0, 0.18, h));
   clearC = mix(clearC, uZen, smoothstep(0.14, 0.62, h));
 
-  // Mie forward-scattering aureole around low sun (filmic, avoids white-out)
-  clearC += uSunCol * vec3(1.0, 0.88, 0.72) * (
-    pow(s, 7.0) * 0.11 +
-    pow(s, 52.0) * 0.36 +
-    pow(s, 480.0) * 1.45 +
-    pow(s, 5000.0) * 8.5
+  // Mie forward-scattering aureole around low sun (filmic, keeps p95 in 150–230 without white-out)
+  clearC += uSunCol * vec3(1.0, 0.85, 0.66) * (
+    pow(s, 7.0) * 0.065 +
+    pow(s, 52.0) * 0.16 +
+    pow(s, 480.0) * 0.55 +
+    pow(s, 5000.0) * 3.0
   );
 
   // ---- 2. Layer A: High wispy cirrus streaks (altitude high, soft warm glow) ----
@@ -114,10 +114,10 @@ void main(){
   coolCloud *= 0.62 + 0.85 * relief * relief;
   coolCloud += vec3(0.11, 0.15, 0.21) * pow(1.0 - thick, 2.5);
 
-  float nearSun = pow(ts, 4.0) * exp(-max(h - edge, 0.0) * 4.2) * 0.95 + pow(s, 6.0) * 0.95;
-  vec3 warmCloud = (uHor * vec3(1.25, 0.86, 0.58)) * nearSun * (0.10 + 2.0 * relief * relief * relief);
+  float nearSun = pow(ts, 4.0) * exp(-max(h - edge, 0.0) * 4.2) * 0.56 + pow(s, 6.0) * 0.52;
+  vec3 warmCloud = (uHor * vec3(0.96, 0.72, 0.50)) * nearSun * (0.10 + 1.25 * relief * relief * relief);
   float rim = cov * (1.0 - cov) * 4.0;
-  warmCloud += uSunCol * rim * pow(ts, 3.0) * (0.55 + 1.5 * pow(s, 5.0)) * (1.0 - 0.8 * hole);
+  warmCloud += uSunCol * rim * pow(ts, 3.0) * (0.30 + 0.72 * pow(s, 5.0)) * (1.0 - 0.8 * hole);
 
   vec3 cloudC = coolCloud + warmCloud;
   // Aerial perspective: far cloud melts into horizon mist
@@ -234,13 +234,13 @@ export function createSkyDome(): SkyDome {
   mesh.receiveShadow = false;
   mesh.matrixAutoUpdate = false;
 
-  // Additive sun halo sprite: radius ~120px on screen, opacity 0.25, fog-free
+  // Additive sun halo sprite: radius ~120px on screen, opacity 0.10, fog-free
   const haloMat = new THREE.SpriteMaterial({
     map: makeSunHaloTexture(),
     color: PALETTE.sun,
     blending: THREE.AdditiveBlending,
     transparent: true,
-    opacity: 0.25,
+    opacity: 0.10,
     depthWrite: false,
     depthTest: true,
     fog: false,
