@@ -52,12 +52,14 @@ declare global {
       magDetached: boolean;
       newMagInHand: boolean;
       swapActive: boolean;
+      simTimeMs: number;
     };
     __vfx: VfxTelemetry;
     __test: {
       hurt(dmg: number): void;
       teleport(x: number, z: number, yawDeg: number, pitchDeg: number, y?: number): void;
       isInsideWalkable(x: number, z: number): boolean;
+      setPaused(paused: boolean): void;
     };
     __match: {
       phase: string;
@@ -91,9 +93,9 @@ const [sx, sy, sz] = spawnPoint('A', 0);
 const player = new Player({ x: sx, y: sy, z: sz });
 const lastSafePos: Vec3 = { x: sx, y: sy, z: sz };
 let fallRespawnPhase: 'none' | 'fadeIn' | 'fadeOut' = 'none';
-let fallRespawnElapsed = 0;
-const FALL_FADE_IN_SEC = 0.4;
-const FALL_FADE_OUT_SEC = 0.3;
+let fallRespawnStartAt = 0;
+const FALL_FADE_IN_MS = 400;
+const FALL_FADE_OUT_MS = 300;
 const FALL_INVINCIBLE_MS = 1000;
 const kb = new KeyboardMouseInput(canvas);
 const touch = new TouchControls(document.body);
@@ -124,6 +126,8 @@ const SHOT_SFX = { rifle: 'shotRifle', sniper: 'shotSniper', shotgun: 'shotShotg
 /** stride length per footstep — interval scales with move speed via distance */
 const STEP_STRIDE = 2.1;
 let stepAcc = 0;
+/** Accumulated delta-time simulation clock (ms) for frame-rate-independent weapon/reload timers. */
+let simNowMs = 0;
 
 const playerEnt = createEntity('player', player.position, 100, PLAYER_RADIUS, MOVE.eyeHeight);
 const entities: Entity[] = []; // enemy bots arrive in a later milestone
@@ -154,7 +158,7 @@ const menu = new Menu(document.body, {
     lastSafePos.y = ry;
     lastSafePos.z = rz;
     fallRespawnPhase = 'none';
-    fallRespawnElapsed = 0;
+    fallRespawnStartAt = 0;
     hud.setFallFade(0);
     view.snap(player);
     rack.index = 0;
@@ -205,6 +209,7 @@ engine.camera = view.camera;
 engine.onResize = (w, h) => view.setAspect(w / h);
 engine.onFrame = (dt) => {
   const now = performance.now();
+  simNowMs += dt * 1000;
   const prevPhase = match.phase;
   match.tick(now);
   const acting = match.canAct(now);
@@ -221,7 +226,7 @@ engine.onFrame = (dt) => {
     // (or spawn), reset velocity, interrupt reload ONLY, 1s invincibility → 0.3s fade-out.
     if (fallRespawnPhase === 'none' && player.position.y < MAP.waterY) {
       fallRespawnPhase = 'fadeIn';
-      fallRespawnElapsed = 0;
+      fallRespawnStartAt = now;
       player.velocity.x = 0;
       player.velocity.y = 0;
       player.velocity.z = 0;
@@ -231,9 +236,9 @@ engine.onFrame = (dt) => {
     }
 
     if (fallRespawnPhase === 'fadeIn') {
-      fallRespawnElapsed += dt;
-      hud.setFallFade(easeInOutCubic(Math.min(1, fallRespawnElapsed / FALL_FADE_IN_SEC)));
-      if (fallRespawnElapsed >= FALL_FADE_IN_SEC) {
+      const fadeInMs = now - fallRespawnStartAt;
+      hud.setFallFade(easeInOutCubic(Math.min(1, fadeInMs / FALL_FADE_IN_MS)));
+      if (fadeInMs >= FALL_FADE_IN_MS) {
         const safeOk =
           lastSafePos.y >= -0.05 &&
           world.isInsideWalkable(lastSafePos.x, lastSafePos.z, PLAYER_RADIUS) &&
@@ -254,14 +259,14 @@ engine.onFrame = (dt) => {
         playerEnt.invincibleUntil = Math.max(playerEnt.invincibleUntil, now + FALL_INVINCIBLE_MS);
         view.snap(player);
         fallRespawnPhase = 'fadeOut';
-        fallRespawnElapsed = 0;
+        fallRespawnStartAt = now;
       }
     } else {
       if (fallRespawnPhase === 'fadeOut') {
-        fallRespawnElapsed += dt;
-        const remain = 1 - easeInOutCubic(Math.min(1, fallRespawnElapsed / FALL_FADE_OUT_SEC));
+        const fadeOutMs = now - fallRespawnStartAt;
+        const remain = 1 - easeInOutCubic(Math.min(1, fadeOutMs / FALL_FADE_OUT_MS));
         hud.setFallFade(remain);
-        if (fallRespawnElapsed >= FALL_FADE_OUT_SEC) {
+        if (fadeOutMs >= FALL_FADE_OUT_MS) {
           fallRespawnPhase = 'none';
           hud.setFallFade(0);
         }
@@ -319,12 +324,12 @@ engine.onFrame = (dt) => {
     }
   }
 
-  const bufferedSwapped = rack.tick(now);
+  const bufferedSwapped = rack.tick(simNowMs);
   if (bufferedSwapped) {
     weaponView.startSwap(bufferedSwapped.spec.id);
   }
   if (acting && playerEnt.alive && inp.swap) {
-    const nextW = rack.requestSwap(now);
+    const nextW = rack.requestSwap(simNowMs);
     if (nextW) weaponView.startSwap(nextW.spec.id);
   }
   const w = rack.current;
@@ -338,16 +343,16 @@ engine.onFrame = (dt) => {
   atmo.update(view.camera.position, view.camera.fov);
 
   if (acting && playerEnt.alive) {
-    if (inp.reload && !rack.swapping(now) && w.reload(now)) sfx.play('reload');
-    if (inp.fire) rack.noteFireIntent(now);
-    const wantsFire = inp.fire || rack.hasBufferedFire(now);
-    if (wantsFire && player.onGround && !rack.swapping(now)) {
+    if (inp.reload && !rack.swapping(simNowMs) && w.reload(simNowMs)) sfx.play('reload');
+    if (inp.fire) rack.noteFireIntent(simNowMs);
+    const wantsFire = inp.fire || rack.hasBufferedFire(simNowMs);
+    if (wantsFire && player.onGround && !rack.swapping(simNowMs)) {
       const eye: Vec3 = {
         x: player.position.x,
         y: player.position.y + player.eyeHeight,
         z: player.position.z,
       };
-      const shots = w.tryFire(now, eye, aimDir());
+      const shots = w.tryFire(simNowMs, eye, aimDir());
       if (shots) {
         rack.clearBufferedFire();
         weaponView.onFire(w.spec.id);
@@ -390,7 +395,7 @@ engine.onFrame = (dt) => {
   }
 
   weaponView.group.visible = playerEnt.alive;
-  weaponView.update(dt, view.bob, w.reloadSnapshot(now), vfxDbg);
+  weaponView.update(dt, view.bob, w.reloadSnapshot(simNowMs), vfxDbg);
   hud.setSwapBlur(weaponView.swapBlurAmount);
   worldVfx.update(dt, view.camera, vfxDbg);
 
@@ -402,7 +407,7 @@ engine.onFrame = (dt) => {
     mag: w.spec.mag,
     reloading: w.reloading,
     weaponName: w.spec.name,
-    spreadPx: Math.tan(w.spreadAt(now)) * focalPx,
+    spreadPx: Math.tan(w.spreadAt(simNowMs)) * focalPx,
     fps: window.__fps,
     dead: !playerEnt.alive,
     respawnIn: (playerEnt.deadUntil - now) / 1000,
@@ -431,6 +436,14 @@ engine.onFrame = (dt) => {
   dbgSfx.muted = sfx.muted;
   dbgSfx.unlocked = sfx.unlocked;
 
+  animDbg.reloadActive = weaponView.animDebug.reloadActive;
+  animDbg.reloadElapsedMs = weaponView.animDebug.reloadElapsedMs;
+  animDbg.reloadDurationMs = weaponView.animDebug.reloadDurationMs;
+  animDbg.magDetached = weaponView.animDebug.magDetached;
+  animDbg.newMagInHand = weaponView.animDebug.newMagInHand;
+  animDbg.swapActive = weaponView.animDebug.swapActive;
+  animDbg.simTimeMs = simNowMs;
+
   mdbg.phase = match.phase;
   mdbg.killsA = match.killsA;
   mdbg.killsB = match.killsB;
@@ -457,7 +470,16 @@ window.__state = dbg;
 const dbgSfx = { counts: sfx.counts, muted: false, unlocked: false };
 window.__sfx = dbgSfx;
 window.__fx = hud.fx;
-window.__anim = weaponView.animDebug;
+const animDbg = {
+  reloadActive: false,
+  reloadElapsedMs: 0,
+  reloadDurationMs: 0,
+  magDetached: false,
+  newMagInHand: false,
+  swapActive: false,
+  simTimeMs: 0,
+};
+window.__anim = animDbg;
 const vfxDbg: VfxTelemetry = {
   muzzleParticles: 0,
   muzzleFlashSlots: 0,
@@ -486,6 +508,10 @@ window.__test = {
     view.snap(player);
   },
   isInsideWalkable: (x: number, z: number) => world.isInsideWalkable(x, z, PLAYER_RADIUS),
+  setPaused: (paused: boolean) => {
+    if (paused) engine.pause();
+    else engine.resume();
+  },
 };
 const mdbg = {
   phase: 'menu',

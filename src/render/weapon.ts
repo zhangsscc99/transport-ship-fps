@@ -309,26 +309,45 @@ function addRightArm(p: Parts): void {
 
 /**
  * Articulated left (support) hand + wrist cuff + forearm rooted at palm center (0,0,0).
- * Forearm extends naturally down-left-back (-X, -Y, +Z) toward bottom-left of screen
- * so bringing a fresh magazine or shell up from bottom-left shows the full hand & forearm.
+ * Forearm runs cleanly from the wrist toward the player's left elbow (-X, -Y, +Z),
+ * exiting smoothly toward bottom-left instead of hanging vertically.
  */
 function buildLeftArmGroup(): THREE.Group {
   const g = new THREE.Group();
   const p: Parts = [];
   // Palm cupping from below
-  box(p, 'glove', 0.052, 0.028, 0.078, -0.002, -0.010, 0);
-  // Hand back on left flank + crisp knuckle edge highlight
-  box(p, 'glove', 0.016, 0.034, 0.074, -0.023, 0.010, 0);
-  box(p, 'edge', 0.004, 0.008, 0.062, -0.031, 0.022, 0);
+  box(p, 'glove', 0.050, 0.026, 0.076, -0.002, -0.010, 0);
+  // Hand back on left flank + subtle knuckle highlight
+  box(p, 'glove', 0.016, 0.032, 0.072, -0.022, 0.009, 0);
+  box(p, 'edge', 0.0035, 0.007, 0.058, -0.030, 0.020, 0);
   // Four fingers curling over top
   for (let i = 0; i < 4; i++) {
-    box(p, 'glove', 0.026, 0.011, 0.014, -0.007, 0.031, 0.026 - i * 0.017, 0, 0, 0.22);
+    box(p, 'glove', 0.025, 0.010, 0.014, -0.007, 0.029, 0.025 - i * 0.017, 0, 0, 0.22);
   }
   // Thumb along right side
-  box(p, 'glove', 0.014, 0.012, 0.032, 0.019, 0.007, 0.010, 0, -0.15, 0);
-  // Bright wrist cuff + substantial forearm angled down-left (-X, -Y, +Z)
-  box(p, 'cuff', 0.060, 0.054, 0.034, -0.036, -0.036, 0.068, 0.55, -0.45, 0);
-  box(p, 'glove', 0.058, 0.052, 0.26, -0.095, -0.125, 0.178, 0.58, -0.48, 0);
+  box(p, 'glove', 0.013, 0.011, 0.030, 0.018, 0.006, 0.010, 0, -0.15, 0);
+
+  // Align cuff & forearm along exact vector from wrist (-0.018,-0.018,0.044) to left elbow (-0.26,-0.145,0.28)
+  const addLimb = (
+    mat: MatKey,
+    a: [number, number, number],
+    b: [number, number, number],
+    w: number,
+    h: number,
+  ) => {
+    const va = new THREE.Vector3(...a);
+    const vb = new THREE.Vector3(...b);
+    const dir = vb.clone().sub(va);
+    const len = dir.length();
+    const mid = va.clone().add(vb).multiplyScalar(0.5);
+    const geo = new THREE.BoxGeometry(w, h, len);
+    const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), dir.normalize());
+    geo.applyMatrix4(new THREE.Matrix4().compose(mid, q, new THREE.Vector3(1, 1, 1)));
+    p.push({ mat, geo });
+  };
+  addLimb('cuff', [-0.016, -0.016, 0.040], [-0.046, -0.032, 0.072], 0.054, 0.048);
+  addLimb('glove', [-0.044, -0.031, 0.070], [-0.265, -0.145, 0.285], 0.054, 0.048);
+
   mergeParts(p, g);
   return g;
 }
