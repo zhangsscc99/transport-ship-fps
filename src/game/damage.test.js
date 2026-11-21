@@ -84,6 +84,46 @@ var at = (o, d, t) => ({
   y: o.y + t * d.y,
   z: o.z + t * d.z
 });
+function boxFaceNormal(p, b) {
+  const dxMin = Math.abs(p.x - (b.x - b.w / 2));
+  const dxMax = Math.abs(p.x - (b.x + b.w / 2));
+  const dyMin = Math.abs(p.y - b.y);
+  const dyMax = Math.abs(p.y - (b.y + b.h));
+  const dzMin = Math.abs(p.z - (b.z - b.d / 2));
+  const dzMax = Math.abs(p.z - (b.z + b.d / 2));
+  let best = dxMin;
+  let nx = -1, ny = 0, nz = 0;
+  if (dxMax < best) {
+    best = dxMax;
+    nx = 1;
+    ny = 0;
+    nz = 0;
+  }
+  if (dyMin < best) {
+    best = dyMin;
+    nx = 0;
+    ny = -1;
+    nz = 0;
+  }
+  if (dyMax < best) {
+    best = dyMax;
+    nx = 0;
+    ny = 1;
+    nz = 0;
+  }
+  if (dzMin < best) {
+    best = dzMin;
+    nx = 0;
+    ny = 0;
+    nz = -1;
+  }
+  if (dzMax < best) {
+    nx = 0;
+    ny = 0;
+    nz = 1;
+  }
+  return { x: nx, y: ny, z: nz };
+}
 function traceHit(ray2, boxes, entities) {
   let boxT = Infinity;
   let hitBox = null;
@@ -114,7 +154,16 @@ function traceHit(ray2, boxes, entities) {
       headshot: point.y - hitEnt.pos.y > hitEnt.height * HEADSHOT_ZONE
     };
   }
-  if (hitBox) return { kind: "box", box: hitBox, point: at(ray2.origin, ray2.dir, boxT), dist: boxT };
+  if (hitBox) {
+    const point = at(ray2.origin, ray2.dir, boxT);
+    return {
+      kind: "box",
+      box: hitBox,
+      point,
+      normal: boxFaceNormal(point, hitBox),
+      dist: boxT
+    };
+  }
   return null;
 }
 function falloffFactor(spec, dist) {

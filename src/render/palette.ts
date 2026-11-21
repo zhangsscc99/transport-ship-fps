@@ -44,7 +44,14 @@ export const PALETTE = {
   glove: '#5d6167', // 手臂——比枪身亮，分出层次
   brass: '#d8b054', // 弹壳 / 弹匣顶弹黄铜
   shellRed: '#b8322a', // 霰弹红色弹体
-  flashCore: '#ffd9a0', // 枪口焰心
+  flashCore: '#fffdf2', // 枪口白热星形核心
+  flashMid: '#ff9626', // 枪口中层橙黄锥形火焰
+  flashOuter: '#ff4812', // 枪口火焰外缘灼橙
+  muzzleSmoke: '#cfe8f5', // 枪口外层淡青白短烟
+  muzzleLight: '#ffb066', // 枪口 PointLight 暖光
+  spark: '#ffd26a', // 命中火花
+  dust: '#a6b0b8', // 命中微尘
+  bulletHole: '#14171c', // 弹孔中心焦黑
   tracer: '#ffd670', // 曳光亮条
   crosshair: '#f2f6fa',
   crosshairHit: '#ff4655',

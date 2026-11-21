@@ -10,7 +10,8 @@ import { setAnisotropyCap } from './render/textures';
 import { buildMap } from './render/map';
 import { updateWater } from './render/materials';
 import { PlayerCamera } from './render/camera';
-import { WeaponView, TracerPool } from './render/weapon';
+import { WeaponView } from './render/weapon';
+import { WorldVfx, type VfxTelemetry } from './render/vfx';
 import { Hud } from './render/hud';
 import { Player, MOVE, type Vec3 } from './game/player';
 import { MAP, spawnPoint } from './game/map';
@@ -51,6 +52,7 @@ declare global {
       newMagInHand: boolean;
       swapActive: boolean;
     };
+    __vfx: VfxTelemetry;
     __test: {
       hurt(dmg: number): void;
       teleport(x: number, z: number, yawDeg: number, pitchDeg: number, y?: number): void;
@@ -93,8 +95,14 @@ const rack = new WeaponRack();
 const weaponView = new WeaponView();
 view.camera.add(weaponView.group);
 engine.scene.add(view.camera);
-const tracers = new TracerPool(engine.scene);
+const worldVfx = new WorldVfx(engine.scene, MAP.boxes);
 const hud = new Hud(document.body, touch.enabled);
+
+const RECOIL_SPEC = {
+  rifle: { deg: 2.5, sec: 0.11 },
+  sniper: { deg: 8.0, sec: 0.26 },
+  shotgun: { deg: 6.0, sec: 0.20 },
+} as const;
 
 const sfx = createSfx();
 hud.setMuted(sfx.muted);
@@ -146,6 +154,9 @@ const menu = new Menu(document.body, {
 menu.show();
 
 const scratchMuzzle = new THREE.Vector3();
+const scratchEject = new THREE.Vector3();
+const scratchRight = new THREE.Vector3();
+const scratchFwd = new THREE.Vector3();
 const rayEnd = (ray: Ray, dist: number): Vec3 => ({
   x: ray.origin.x + ray.dir.x * dist,
   y: ray.origin.y + ray.dir.y * dist,
@@ -257,12 +268,27 @@ engine.onFrame = (dt) => {
         weaponView.onFire(w.spec.id);
         touch.pulseFire();
         sfx.play(SHOT_SFX[w.spec.id]);
+        // Camera recoil separated from visual gun kick (20% kept, 80% easeOutQuad recovery)
+        const rc = RECOIL_SPEC[w.spec.id];
+        const pitchRad = (rc.deg * Math.PI) / 180;
+        const yawJitter = (Math.random() - 0.5) * pitchRad * 0.24;
+        view.addRecoil(player, pitchRad, rc.sec, yawJitter);
+
+        const dir = aimDir();
         weaponView.muzzleWorld(scratchMuzzle);
+        weaponView.ejectWorld(scratchEject);
+        scratchRight.set(1, 0, 0).applyQuaternion(view.camera.quaternion).normalize();
+        scratchFwd.set(0, 0, -1).applyQuaternion(view.camera.quaternion).normalize();
+        worldVfx.spawnMuzzleSmoke(scratchMuzzle, dir);
+        worldVfx.spawnShell(scratchEject, scratchRight, scratchFwd, player.velocity, w.spec.id);
+
         for (const ray of shots) {
           const hit = traceHit(ray, MAP.boxes, entities);
-          tracers.fire(scratchMuzzle, hit ? hit.point : rayEnd(ray, 80));
+          worldVfx.spawnTracer(scratchMuzzle, hit ? hit.point : rayEnd(ray, 80));
           if (hit) hud.notifyHit(now);
-          if (hit?.kind === 'entity') {
+          if (hit?.kind === 'box') {
+            worldVfx.spawnImpact(hit.point, hit.normal);
+          } else if (hit?.kind === 'entity') {
             const dmg =
               w.spec.dmg *
               falloffFactor(w.spec, hit.dist) *
@@ -279,9 +305,9 @@ engine.onFrame = (dt) => {
   }
 
   weaponView.group.visible = playerEnt.alive;
-  weaponView.update(dt, view.bob, w.reloadSnapshot(now));
+  weaponView.update(dt, view.bob, w.reloadSnapshot(now), vfxDbg);
   hud.setSwapBlur(weaponView.swapBlurAmount);
-  tracers.update(dt);
+  worldVfx.update(dt, view.camera, vfxDbg);
 
   const focalPx = window.innerHeight / 2 / Math.tan((view.camera.fov / 2) * (Math.PI / 180));
   hud.update({
@@ -347,6 +373,18 @@ const dbgSfx = { counts: sfx.counts, muted: false, unlocked: false };
 window.__sfx = dbgSfx;
 window.__fx = hud.fx;
 window.__anim = weaponView.animDebug;
+const vfxDbg: VfxTelemetry = {
+  muzzleParticles: 0,
+  muzzleFlashSlots: 0,
+  muzzleLightsActive: 0,
+  muzzleLightMaxIntensity: 0,
+  shellsActive: 0,
+  shellsGrounded: 0,
+  tracersActive: 0,
+  sparksActive: 0,
+  decalsCount: 0,
+};
+window.__vfx = vfxDbg;
 window.__test = {
   hurt: (dmg: number) => hurtPlayer(dmg),
   // e2e-only camera placement: drop the player at (x,z[,y]) facing yaw/pitch

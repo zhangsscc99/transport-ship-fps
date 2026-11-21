@@ -17,7 +17,7 @@ export interface Ray {
 
 export type Hit =
   | { kind: 'entity'; entity: Entity; point: Vec3; dist: number; headshot: boolean }
-  | { kind: 'box'; box: Box; point: Vec3; dist: number };
+  | { kind: 'box'; box: Box; point: Vec3; normal: Vec3; dist: number };
 
 const EPS = 1e-6;
 /** Fraction of body height above which a hit counts as a headshot. */
@@ -94,6 +94,24 @@ const at = (o: Vec3, d: Vec3, t: number): Vec3 => ({
   z: o.z + t * d.z,
 });
 
+/** Outward unit normal of the box face closest to surface `point`. */
+function boxFaceNormal(p: Vec3, b: Box): Vec3 {
+  const dxMin = Math.abs(p.x - (b.x - b.w / 2));
+  const dxMax = Math.abs(p.x - (b.x + b.w / 2));
+  const dyMin = Math.abs(p.y - b.y);
+  const dyMax = Math.abs(p.y - (b.y + b.h));
+  const dzMin = Math.abs(p.z - (b.z - b.d / 2));
+  const dzMax = Math.abs(p.z - (b.z + b.d / 2));
+  let best = dxMin;
+  let nx = -1, ny = 0, nz = 0;
+  if (dxMax < best) { best = dxMax; nx = 1; ny = 0; nz = 0; }
+  if (dyMin < best) { best = dyMin; nx = 0; ny = -1; nz = 0; }
+  if (dyMax < best) { best = dyMax; nx = 0; ny = 1; nz = 0; }
+  if (dzMin < best) { best = dzMin; nx = 0; ny = 0; nz = -1; }
+  if (dzMax < best) { nx = 0; ny = 0; nz = 1; }
+  return { x: nx, y: ny, z: nz };
+}
+
 /**
  * Nearest thing a shot ray hits: a box (cover/occluder) or a living entity.
  * Entities behind a nearer box are occluded — boxes win ties by distance.
@@ -128,7 +146,16 @@ export function traceHit(ray: Ray, boxes: readonly Box[], entities: readonly Ent
       headshot: point.y - hitEnt.pos.y > hitEnt.height * HEADSHOT_ZONE,
     };
   }
-  if (hitBox) return { kind: 'box', box: hitBox, point: at(ray.origin, ray.dir, boxT), dist: boxT };
+  if (hitBox) {
+    const point = at(ray.origin, ray.dir, boxT);
+    return {
+      kind: 'box',
+      box: hitBox,
+      point,
+      normal: boxFaceNormal(point, hitBox),
+      dist: boxT,
+    };
+  }
   return null;
 }
 

@@ -11,7 +11,7 @@ import { PALETTE } from './palette';
 import { getMaterial } from './materials';
 import type { MaterialKind } from './materials';
 import type { ReloadSnapshot, WeaponSpec } from '../game/weapons';
-import type { Vec3 } from '../game/player';
+import { MuzzleFlashRig, type VfxTelemetry } from './vfx';
 import {
   clamp01,
   damp,
@@ -35,8 +35,6 @@ const std = (kind: MaterialKind, emissiveIntensity: number): THREE.MeshStandardM
 };
 
 const MAT: Record<MatKey, THREE.Material> & {
-  flash: THREE.MeshBasicMaterial;
-  flashCore: THREE.MeshBasicMaterial;
   dropMag: THREE.MeshStandardMaterial;
   dropEdge: THREE.MeshBasicMaterial;
 } = {
@@ -76,20 +74,6 @@ const MAT: Record<MatKey, THREE.Material> & {
     color: PALETTE.gunHi,
     transparent: true,
     opacity: 1,
-  }),
-  flash: new THREE.MeshBasicMaterial({
-    color: PALETTE.accent,
-    transparent: true,
-    opacity: 0,
-    blending: THREE.AdditiveBlending,
-    depthWrite: false,
-  }),
-  flashCore: new THREE.MeshBasicMaterial({
-    color: PALETTE.flashCore,
-    transparent: true,
-    opacity: 0,
-    blending: THREE.AdditiveBlending,
-    depthWrite: false,
   }),
 };
 
@@ -683,12 +667,11 @@ export interface WeaponAnimDebug {
 
 export class WeaponView {
   readonly group = new THREE.Group();
+  readonly muzzleRig = new MuzzleFlashRig();
   private guns = new Map<GunId, ArticulatedGun>();
-  private flash = new THREE.Group();
   private kick = 0;
   private kickDur = 0.11;
   private kickDeg = 2.5;
-  private flashT = 0;
   private time = 0;
   private current: GunId = 'rifle';
 
@@ -728,15 +711,8 @@ export class WeaponView {
       this.guns.set(id, gun);
       this.group.add(gun.root);
     }
-    const plane = new THREE.PlaneGeometry(0.2, 0.2);
-    const p1 = new THREE.Mesh(plane, MAT.flash);
-    const p2 = new THREE.Mesh(plane, MAT.flash);
-    p2.rotation.z = Math.PI / 4;
-    const core = new THREE.Mesh(new THREE.PlaneGeometry(0.09, 0.09), MAT.flashCore);
-    this.flash.add(p1, p2, core);
-    this.flash.visible = false;
-    this.group.add(this.flash);
-    this.flash.position.set(0, 0.012, this.guns.get(this.current)!.muzzleZ);
+    this.muzzleRig.group.position.set(0, 0.012, this.guns.get(this.current)!.muzzleZ);
+    this.group.add(this.muzzleRig.group);
 
     this.group.position.copy(this.basePos);
     this.group.rotation.copy(this.baseRot);
@@ -756,7 +732,7 @@ export class WeaponView {
       this.current = id;
     }
     this.resetReloadPose(this.guns.get(this.current)!);
-    this.flash.position.z = this.guns.get(id)!.muzzleZ;
+    this.muzzleRig.group.position.z = this.guns.get(id)!.muzzleZ;
     this.kick = 0;
     this.reloadBlend = 0;
     this.reloadSightDipRad = 0;
@@ -791,16 +767,13 @@ export class WeaponView {
     this.kick = 1;
     this.kickDur = id === 'sniper' ? 0.26 : id === 'shotgun' ? 0.20 : 0.11;
     this.kickDeg = id === 'sniper' ? 8 : id === 'shotgun' ? 6 : 2.5;
-    this.flashT = 0.055;
-    this.flash.rotation.z = Math.random() * Math.PI;
-    const s = 0.85 + Math.random() * 0.5;
-    this.flash.scale.set(s, s, s);
+    this.muzzleRig.trigger(id);
   }
 
   /** World-space muzzle tip. */
   muzzleWorld(out: THREE.Vector3): THREE.Vector3 {
     this.group.updateWorldMatrix(true, false);
-    return this.flash.getWorldPosition(out);
+    return this.muzzleRig.group.getWorldPosition(out);
   }
 
   /** World-space ejection port position for brass shell spawning. */
@@ -1191,7 +1164,12 @@ export class WeaponView {
     this.animDebug.newMagInHand = shellVisible;
   }
 
-  update(dt: number, bob?: { x: number; y: number }, reload?: ReloadSnapshot): void {
+  update(
+    dt: number,
+    bob?: { x: number; y: number },
+    reload?: ReloadSnapshot,
+    telemetry?: VfxTelemetry,
+  ): void {
     this.time += dt;
     if (this.kick > 0) this.kick = Math.max(0, this.kick - dt / Math.max(0.04, this.kickDur));
     const k = easeOutCubic(this.kick);
@@ -1211,7 +1189,7 @@ export class WeaponView {
         this.current = this.swapPending;
         this.guns.get(this.current)!.root.visible = true;
         this.resetReloadPose(this.guns.get(this.current)!);
-        this.flash.position.z = this.guns.get(this.current)!.muzzleZ;
+        this.muzzleRig.group.position.z = this.guns.get(this.current)!.muzzleZ;
         this.kick = 0;
         this.reloadBlend = 0;
         this.swapPending = null;
@@ -1298,61 +1276,6 @@ export class WeaponView {
       this.baseRot.z + this.reloadGunRot.z * rb,
     );
 
-    if (this.flashT > 0) {
-      this.flashT -= dt;
-      const t = Math.max(0, this.flashT / 0.055);
-      MAT.flash.opacity = t;
-      MAT.flashCore.opacity = t;
-      this.flash.visible = t > 0;
-    } else {
-      this.flash.visible = false;
-    }
-  }
-}
-
-/** Pooled world-space tracer lines (replaced/upgraded in vfx pass). */
-export class TracerPool {
-  private pool: { line: THREE.Line; mat: THREE.LineBasicMaterial; life: number }[] = [];
-  private next = 0;
-  private static readonly LIFE = 0.05;
-
-  constructor(scene: THREE.Scene, count = 12) {
-    for (let i = 0; i < count; i++) {
-      const geo = new THREE.BufferGeometry();
-      geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(6), 3));
-      const mat = new THREE.LineBasicMaterial({
-        color: PALETTE.tracer,
-        transparent: true,
-        opacity: 0,
-        blending: THREE.AdditiveBlending,
-        depthWrite: false,
-      });
-      const line = new THREE.Line(geo, mat);
-      line.frustumCulled = false;
-      line.visible = false;
-      scene.add(line);
-      this.pool.push({ line, mat, life: 0 });
-    }
-  }
-
-  fire(from: Vec3 | THREE.Vector3, to: Vec3 | THREE.Vector3): void {
-    const slot = this.pool[this.next];
-    this.next = (this.next + 1) % this.pool.length;
-    const pos = slot.line.geometry.getAttribute('position') as THREE.BufferAttribute;
-    pos.setXYZ(0, from.x, from.y, from.z);
-    pos.setXYZ(1, to.x, to.y, to.z);
-    pos.needsUpdate = true;
-    slot.life = TracerPool.LIFE;
-    slot.line.visible = true;
-  }
-
-  update(dt: number): void {
-    for (const s of this.pool) {
-      if (s.life <= 0) continue;
-      s.life -= dt;
-      const t = Math.max(0, s.life / TracerPool.LIFE);
-      s.mat.opacity = t * 0.9;
-      if (s.life <= 0) s.line.visible = false;
-    }
+    this.muzzleRig.update(dt, telemetry);
   }
 }
