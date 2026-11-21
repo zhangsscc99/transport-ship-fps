@@ -358,7 +358,7 @@ var Player = class {
     } else {
       this.crouch = input2.crouch;
     }
-    const speed = this.crouch ? MOVE.crouchSpeed : MOVE.walkSpeed;
+    const speed = (this.crouch ? MOVE.crouchSpeed : MOVE.walkSpeed) * (world2.speedMult ?? 1);
     const fwd = this.forward();
     const right = { x: -fwd.z, z: fwd.x };
     let wx = fwd.x * input2.moveZ + right.x * input2.moveX;

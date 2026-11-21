@@ -1,7 +1,7 @@
-// Ammo & reload lifecycle e2e test (Round 3 Part B):
-//   1. Entering a match starts with full mag (rifle=30, sniper=5, shotgun=6)
-//      and DOM ammo readout + lit segment count match `ammo === mag`.
-//   2. Firing one shot drops ammo to `mag - 1` (both state and DOM bar).
+// Ammo & reload lifecycle e2e test (Round 5: rifle + gatling only):
+//   1. Entering a match starts with strictly 2 weapons (rifle=30, gatling=300)
+//      and DOM ammo readout matches `ammo === mag`.
+//   2. Firing one shot on rifle drops ammo to `mag - 1` (both state and DOM bar).
 //   3. Triggering reload refills ammo back to `mag` after reloadMs WITHOUT
 //      requiring another fire press.
 // Usage: node e2e/ammo.mjs  (server must run on 127.0.0.1:3028)
@@ -22,15 +22,20 @@ async function readAmmo(page) {
     const segs = Array.from(document.querySelectorAll('[data-hud="ammo-bar"] > div'));
     const visible = segs.filter((el) => el.style.display !== 'none');
     const lit = visible.filter((el) => el.dataset.lit === '1');
+    const gatRows = Array.from(document.querySelectorAll('[data-gatling-row]'));
     const numEl = document.querySelector('[data-hud="ammo-num"]');
+    const hudMode = document.querySelector('[data-hud="ammo"]')?.getAttribute('data-hud-mode');
     return {
       ammo: window.__state.ammo,
       mag: window.__state.mag,
       weapon: window.__state.weapon,
+      weapons: window.__state.weapons,
       reloading: window.__state.reloading,
       domNum: numEl ? Number(numEl.textContent?.trim()) : NaN,
+      hudMode,
       visibleSegs: visible.length,
       litSegs: lit.length,
+      gatRows: gatRows.length,
     };
   });
 }
@@ -73,7 +78,6 @@ try {
   }
   assert.ok(frames > 15, 'page never rendered frames');
 
-  // Start match
   await page.evaluate(() => {
     const el = document.querySelector('[data-btn="start"]');
     el?.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true }));
@@ -81,11 +85,10 @@ try {
   await page.waitForFunction(() => window.__match?.phase === 'playing', null, { timeout: 30000 });
   await page.waitForTimeout(250);
 
-  // 1. Initial full mag for rifle (30), sniper (5), shotgun (6), back to rifle (30)
+  // 1. Initial full mag for strictly 2 weapons: rifle (30) <-> gatling (300) <-> rifle (30)
   const expected = [
     ['rifle', 30],
-    ['sniper', 5],
-    ['shotgun', 6],
+    ['gatling', 300],
     ['rifle', 30],
   ];
   for (let i = 0; i < expected.length; i++) {
@@ -93,19 +96,24 @@ try {
     if (i > 0) {
       await tapBtn(page, 'swap');
       await page.waitForFunction((id) => window.__state.weapon === id, wId, { timeout: 10000 });
-      await page.waitForTimeout(150);
+      await page.waitForTimeout(200);
     }
     const snap = await readAmmo(page);
+    assert.deepStrictEqual(snap.weapons, ['rifle', 'gatling']);
     assert.strictEqual(snap.weapon, wId, `expected weapon ${wId}, got ${snap.weapon}`);
     assert.strictEqual(snap.mag, mag, `${wId}: mag ${snap.mag} !== ${mag}`);
     assert.strictEqual(snap.ammo, mag, `${wId}: initial ammo ${snap.ammo} !== mag ${mag}`);
     assert.strictEqual(snap.domNum, mag, `${wId}: DOM ammo ${snap.domNum} !== ${mag}`);
-    assert.strictEqual(snap.visibleSegs, mag, `${wId}: visible segments ${snap.visibleSegs} !== ${mag}`);
-    assert.strictEqual(snap.litSegs, mag, `${wId}: lit segments ${snap.litSegs} !== ${mag}`);
+    assert.strictEqual(snap.hudMode, wId, `${wId}: HUD mode mismatch (${snap.hudMode})`);
+    if (wId === 'rifle') {
+      assert.strictEqual(snap.visibleSegs, 30);
+      assert.strictEqual(snap.litSegs, 30);
+    } else {
+      assert.strictEqual(snap.gatRows, 3, 'gatling HUD must have 3×100 rows');
+    }
   }
 
-  // 2. Fire single shot on rifle -> ammo === mag - 1 (29)
-  // Wait for 1 shot cleanly: press fire, wait until ammo drops by 1, release immediately
+  // 2. Fire single shot on rifle -> ammo === 29
   const beforeFire = await readAmmo(page);
   await page.evaluate(() => {
     const el = document.querySelector('[data-btn="fire"]');
@@ -128,31 +136,27 @@ try {
   });
   await page.waitForTimeout(200);
   const afterFire = await readAmmo(page);
-  assert.strictEqual(
-    afterFire.ammo,
-    beforeFire.mag - 1,
-    `expected 1 shot to leave mag-1 (${beforeFire.mag - 1}), got ${afterFire.ammo}`,
-  );
-  assert.strictEqual(afterFire.domNum, afterFire.ammo, 'DOM numeral out of sync after shot');
-  assert.strictEqual(afterFire.litSegs, afterFire.ammo, 'DOM bar out of sync after shot');
+  assert.strictEqual(afterFire.ammo, beforeFire.mag - 1);
+  assert.strictEqual(afterFire.domNum, afterFire.ammo);
+  assert.strictEqual(afterFire.litSegs, afterFire.ammo);
 
-  // 3. Reload -> wait until reload finishes WITHOUT pressing fire -> ammo === mag
+  // 3. Reload -> refills back to 30
   await tapBtn(page, 'reload');
   await page.waitForFunction(() => window.__state.reloading === true, null, { timeout: 10000 });
   await page.waitForFunction(
     (mag) => window.__state.reloading === false && window.__state.ammo === mag,
     beforeFire.mag,
-    { timeout: 10000 },
+    { timeout: 15000 },
   );
   await page.waitForTimeout(200);
   const afterReload = await readAmmo(page);
-  assert.strictEqual(afterReload.ammo, beforeFire.mag, `reload did not restore mag (${afterReload.ammo})`);
-  assert.strictEqual(afterReload.domNum, beforeFire.mag, 'DOM numeral did not restore after reload');
-  assert.strictEqual(afterReload.litSegs, beforeFire.mag, 'DOM segments did not restore after reload');
+  assert.strictEqual(afterReload.ammo, beforeFire.mag);
+  assert.strictEqual(afterReload.domNum, beforeFire.mag);
+  assert.strictEqual(afterReload.litSegs, beforeFire.mag);
 
   assert.strictEqual(errors.length, 0, `JS errors:\n${errors.join('\n')}`);
   console.log(
-    `AMMO OK — rifle 30 / sniper 5 / shotgun 6 initial full, single-shot ${beforeFire.ammo}→${afterFire.ammo}, reload→${afterReload.ammo}, errors=0`,
+    `AMMO OK — rifle 30 / gatling 300 (3×100 HUD), single-shot ${beforeFire.ammo}→${afterFire.ammo}, reload→${afterReload.ammo}, errors=0`,
   );
 } finally {
   await browser.close();

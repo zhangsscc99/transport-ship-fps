@@ -1,11 +1,13 @@
 // VALORANT-inspired minimalist tactical DOM HUD — English uppercase + inline
-// SVG line icons (1.5–2px stroke), zero Chinese buttons, zero external icon
-// deps. Palette: rgba(8,12,18,0.55) panel, 1px rgba(255,255,255,0.18) stroke,
-// #ff4655 accent strictly for danger / fire / low-HP / hit confirmation.
+// SVG line icons (1.5–2px stroke). Dedicated weapon UI branches:
+//   - Rifle: 30-segment magazine bar + precision/burst recoil indicator + 4-line cross
+//   - Gatling: distinct heavy amber HUD with 3×100-round segmented rows (300 total),
+//     live 250ms spin-up gauge, vibration/wide-spread indicator & rotary ring reticle.
 // All non-interactive overlays enforce pointer-events:none so drag/fire stay
 // completely unobstructed in both 390×844 portrait and 844×390 landscape.
 
 import { PALETTE } from './palette';
+import type { WeaponId } from '../game/weapons';
 
 export interface HudState {
   hp: number;
@@ -13,13 +15,18 @@ export interface HudState {
   ammo: number;
   mag?: number;
   reloading: boolean;
+  weaponId?: WeaponId;
   weaponName: string;
+  /** gatling barrel spin-up progress [0..1] */
+  spinLevel?: number;
   /** crosshair gap radius in px — spread projected through the camera */
   spreadPx: number;
   fps: number;
   dead: boolean;
   /** seconds until respawn when dead */
   respawnIn: number;
+  /** optional player kill counter */
+  kills?: number;
 }
 
 export const HUD_FONT = `'DIN Alternate','Bahnschrift','Segoe UI',system-ui,-apple-system,sans-serif`;
@@ -32,9 +39,10 @@ const KILL_MS = 700;
 const HIT_CROSS_MS = 60;
 const PULSE_MS = 1200;
 const PULSE_PEAK = 0.25;
-const MAX_MAG_SEGMENTS = 30;
+const RIFLE_SEGMENTS = 30;
+const GATLING_ROWS = 3;
+const GATLING_CELLS_PER_ROW = 20; // 20 cells × 5 rounds = 100 rounds per row × 3 rows = 300
 
-// Inline SVG line icons (1.75px uniform stroke, round caps/joins, 24×24 grid).
 const svgWrap = (inner: string, size: number): string =>
   `<svg viewBox="0 0 24 24" width="${size}" height="${size}" fill="none" stroke="currentColor" ` +
   `stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ` +
@@ -174,18 +182,37 @@ export class Hud {
   private hpFill: HTMLDivElement;
   private hpNum: HTMLDivElement;
   private hpTag: HTMLDivElement;
+
+  // Shared bottom-right weapon container, with two completely distinct sub-layouts:
   private ammoWrap: HTMLDivElement;
   private ammoText: HTMLDivElement;
   private ammoSub: HTMLDivElement;
+  private riflePanel: HTMLDivElement;
   private ammoSegs: HTMLDivElement[] = [];
-  private lastMag = -1;
+  private rifleHintEl: HTMLDivElement;
+  private rifleStabilityFill: HTMLDivElement;
+
+  // Dedicated Gatling UI (3×100-round rows + spin-up gauge + vibration/spread hint)
+  private gatlingPanel: HTMLDivElement;
+  private gatlingRows: HTMLDivElement[][] = [];
+  private gatlingRowCounts: HTMLDivElement[] = [];
+  private gatlingSpinFill: HTMLDivElement;
+  private gatlingSpinLabel: HTMLDivElement;
+  private gatlingHintEl: HTMLDivElement;
+
+  // Crosshair: rifle precision cross vs gatling rotary ring
+  private crossRifleWrap: HTMLDivElement;
   private crossLines: HTMLDivElement[] = [];
   private crossDot: HTMLDivElement;
+  private crossGatlingWrap: HTMLDivElement;
+  private crossGatlingRing: HTMLDivElement;
+
   private fpsEl: HTMLDivElement;
   private deadEl: HTMLDivElement;
   private swapBlurEl: HTMLDivElement;
   private fpsVisible = true;
   private touchMode: boolean;
+  private lastWeaponMode: WeaponId | null = null;
 
   private hurtEl: HTMLDivElement;
   private lowHpEl: HTMLDivElement;
@@ -221,7 +248,6 @@ export class Hud {
     const ar = (px: number) => `calc(${px}px + env(safe-area-inset-right, 0px))`;
     const at = (px: number) => `calc(${px}px + env(safe-area-inset-top, 0px))`;
 
-    // Lower-screen subtle CSS blur veil (used during weapon swap — zero postprocessing)
     this.swapBlurEl = div(
       `position:absolute;left:0;right:0;bottom:0;height:36%;pointer-events:none;` +
         `opacity:0;display:none;` +
@@ -232,7 +258,7 @@ export class Hud {
       'swap-blur',
     );
 
-    // --- HP panel: bottom-left (numeric + slim 6px bar, breathes red <30%) ---
+    // --- HP panel: bottom-left ---
     this.hpWrap = div(
       `position:absolute;left:${al(16)};bottom:${ab(18)};width:136px;` +
         `background:${PALETTE.uiPanel};border:1px solid ${PALETTE.uiBorder};` +
@@ -265,15 +291,17 @@ export class Hud {
       hpTrack,
     );
 
-    // --- AMMO panel: bottom-right above FIRE cluster (touch) or corner (desktop) ---
+    // --- AMMO panel: bottom-right ---
     this.ammoWrap = div(
-      `position:absolute;right:${ar(16)};bottom:${ab(16)};min-width:154px;` +
+      `position:absolute;right:${ar(16)};bottom:${ab(16)};min-width:162px;` +
         `background:${PALETTE.uiPanel};border:1px solid ${PALETTE.uiBorder};` +
         `border-right:2px solid ${PALETTE.uiText};border-radius:4px;padding:5px 10px 7px;` +
         `text-align:right;box-sizing:border-box;pointer-events:none;`,
       this.root,
       'ammo',
     );
+    this.ammoWrap.dataset.hudMode = 'rifle';
+
     const ammoTop = div(
       `display:flex;align-items:baseline;justify-content:flex-end;gap:6px;pointer-events:none;`,
       this.ammoWrap,
@@ -296,12 +324,15 @@ export class Hud {
       this.ammoWrap,
     );
     this.ammoSub.textContent = 'ASSAULT RIFLE';
+
+    // --- Rifle-specific UI: 30-segment bar + precision/recoil strip ---
+    this.riflePanel = div(`display:block;pointer-events:none;`, this.ammoWrap, 'rifle-ui');
     const segRow = div(
-      `display:flex;align-items:center;gap:1.5px;height:6px;width:134px;margin:6px 0 0 auto;pointer-events:none;`,
-      this.ammoWrap,
+      `display:flex;align-items:center;gap:1.5px;height:6px;width:142px;margin:6px 0 0 auto;pointer-events:none;`,
+      this.riflePanel,
       'ammo-bar',
     );
-    for (let i = 0; i < MAX_MAG_SEGMENTS; i++) {
+    for (let i = 0; i < RIFLE_SEGMENTS; i++) {
       const seg = div(
         `flex:1;height:100%;border-radius:1px;background:${PALETTE.uiText};pointer-events:none;`,
         segRow,
@@ -309,18 +340,106 @@ export class Hud {
       seg.dataset.lit = '1';
       this.ammoSegs.push(seg);
     }
+    this.rifleHintEl = div(
+      `display:flex;align-items:center;justify-content:space-between;gap:6px;margin-top:5px;` +
+        `font-size:8px;font-weight:700;letter-spacing:0.1em;color:${PALETTE.uiDim};pointer-events:none;`,
+      this.riflePanel,
+      'rifle-recoil',
+    );
+    const rifleLbl = div(`pointer-events:none;`, this.rifleHintEl);
+    rifleLbl.textContent = 'ACC HIGH · BURST';
+    const rifleTrack = div(
+      `width:44px;height:3px;background:${PALETTE.uiEmpty};border-radius:1px;overflow:hidden;pointer-events:none;`,
+      this.rifleHintEl,
+    );
+    this.rifleStabilityFill = div(
+      `height:100%;width:100%;background:${PALETTE.uiText};pointer-events:none;`,
+      rifleTrack,
+    );
 
-    // --- Crosshair: center (4 short lines + center dot; ≥120px clear radius) ---
+    // --- Gatling-specific UI: 3×100-round rows + 250ms spin-up bar + heavy vibration/spread readout ---
+    this.gatlingPanel = div(
+      `display:none;flex-direction:column;gap:3px;margin-top:5px;width:176px;pointer-events:none;`,
+      this.ammoWrap,
+      'gatling-ui',
+    );
+    const barsWrap = div(
+      `display:flex;flex-direction:column;gap:2.5px;pointer-events:none;`,
+      this.gatlingPanel,
+      'gatling-bars',
+    );
+    // Row 0 = 201..300 (top), Row 1 = 101..200 (mid), Row 2 = 1..100 (base)
+    const rowLabels = ['300', '200', '100'];
+    for (let r = 0; r < GATLING_ROWS; r++) {
+      const rowLine = div(
+        `display:flex;align-items:center;gap:4px;pointer-events:none;`,
+        barsWrap,
+      );
+      rowLine.dataset.gatlingRow = String(r);
+      const lbl = div(
+        `width:22px;font-size:8px;font-weight:800;font-variant-numeric:tabular-nums;` +
+          `text-align:right;color:${PALETTE.gatlingAccent};opacity:0.88;pointer-events:none;`,
+        rowLine,
+      );
+      lbl.textContent = rowLabels[r];
+      this.gatlingRowCounts.push(lbl);
+      const cellRow = div(
+        `display:flex;flex:1;gap:1.5px;height:5px;pointer-events:none;`,
+        rowLine,
+      );
+      const cells: HTMLDivElement[] = [];
+      for (let c = 0; c < GATLING_CELLS_PER_ROW; c++) {
+        const cell = div(
+          `flex:1;height:100%;border-radius:1px;background:${PALETTE.gatlingAccent};pointer-events:none;`,
+          cellRow,
+        );
+        cell.dataset.lit = '1';
+        cells.push(cell);
+      }
+      this.gatlingRows.push(cells);
+    }
+
+    // Spin-up gauge (250ms pre-heat visual feedback)
+    const spinRow = div(
+      `display:flex;align-items:center;justify-content:space-between;gap:6px;margin-top:3px;pointer-events:none;`,
+      this.gatlingPanel,
+      'gatling-spin',
+    );
+    this.gatlingSpinLabel = div(
+      `font-size:8px;font-weight:800;letter-spacing:0.1em;color:${PALETTE.gatlingAccent};pointer-events:none;`,
+      spinRow,
+    );
+    this.gatlingSpinLabel.textContent = 'ROTOR IDLE · 250MS SPIN';
+    const spinTrack = div(
+      `width:52px;height:4px;border-radius:2px;background:${PALETTE.uiEmpty};overflow:hidden;pointer-events:none;`,
+      spinRow,
+    );
+    this.gatlingSpinFill = div(
+      `height:100%;width:0%;background:${PALETTE.gatlingAccent};pointer-events:none;`,
+      spinTrack,
+    );
+
+    // Distinct Gatling recoil/accuracy/speed tag
+    this.gatlingHintEl = div(
+      `font-size:8px;font-weight:700;letter-spacing:0.08em;color:${PALETTE.uiDim};` +
+        `text-align:right;pointer-events:none;`,
+      this.gatlingPanel,
+      'gatling-recoil',
+    );
+    this.gatlingHintEl.textContent = 'WIDE SPREAD · LOW RECOIL · 0.82× SPD';
+
+    // --- Crosshair: center (Rifle 4-line precision cross vs Gatling rotary ring) ---
     const cross = div(
       `position:absolute;left:50%;top:50%;width:0;height:0;pointer-events:none;`,
       this.root,
       'cross',
     );
+    this.crossRifleWrap = div(`position:absolute;left:0;top:0;width:0;height:0;pointer-events:none;`, cross);
     const mkLine = (w: number, h: number): HTMLDivElement => {
       const el = div(
         `position:absolute;left:${-w / 2}px;top:${-h / 2}px;width:${w}px;height:${h}px;` +
           `background:${PALETTE.crosshair};box-shadow:0 0 0 1px ${PALETTE.crosshairEdge};pointer-events:none;`,
-        cross,
+        this.crossRifleWrap,
       );
       this.crossLines.push(el);
       return el;
@@ -332,10 +451,30 @@ export class Hud {
     this.crossDot = div(
       `position:absolute;left:-1px;top:-1px;width:2px;height:2px;border-radius:50%;` +
         `background:${PALETTE.crosshair};box-shadow:0 0 0 1px ${PALETTE.crosshairEdge};pointer-events:none;`,
-      cross,
+      this.crossRifleWrap,
     );
 
-    // Top-right toggleable FPS readout (sits cleanly left of SOUND; hidden in portrait)
+    // Gatling rotary reticle: wide circle + 6-barrel radial ticks (distinct from rifle cross!)
+    this.crossGatlingWrap = div(
+      `position:absolute;left:0;top:0;width:0;height:0;display:none;pointer-events:none;`,
+      cross,
+      'cross-gatling',
+    );
+    this.crossGatlingRing = div(
+      `position:absolute;left:-20px;top:-20px;width:40px;height:40px;pointer-events:none;`,
+      this.crossGatlingWrap,
+    );
+    this.crossGatlingRing.innerHTML =
+      `<svg viewBox="0 0 48 48" width="100%" height="100%" fill="none">` +
+      `<circle cx="24" cy="24" r="15" stroke="${PALETTE.gatlingAccent}" stroke-width="1.5" stroke-dasharray="6 5" opacity="0.9"/>` +
+      `<circle cx="24" cy="24" r="2" fill="${PALETTE.crosshair}"/>` +
+      `<line x1="24" y1="3" x2="24" y2="8" stroke="${PALETTE.crosshair}" stroke-width="1.8"/>` +
+      `<line x1="24" y1="40" x2="24" y2="45" stroke="${PALETTE.crosshair}" stroke-width="1.8"/>` +
+      `<line x1="3" y1="24" x2="8" y2="24" stroke="${PALETTE.crosshair}" stroke-width="1.8"/>` +
+      `<line x1="40" y1="24" x2="45" y2="24" stroke="${PALETTE.crosshair}" stroke-width="1.8"/>` +
+      `</svg>`;
+
+    // Top-right toggleable FPS readout
     this.fpsEl = div(
       `position:absolute;right:${ar(62)};top:${at(26)};` +
         `font-size:10px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;` +
@@ -354,7 +493,7 @@ export class Hud {
       'dead',
     );
 
-    // --- Feedback overlays (prebuilt, opacity animated only; zero per-frame alloc) ---
+    // --- Feedback overlays ---
     this.hurtEl = div(`position:absolute;inset:0;background:${HURT_BG};opacity:0;pointer-events:none;`, this.root);
     this.hurtEl.dataset.fx = 'hurt';
     this.lowHpEl = div(`position:absolute;inset:0;background:${HURT_BG};opacity:0;pointer-events:none;`, this.root);
@@ -387,7 +526,7 @@ export class Hud {
     this.killEl.dataset.fx = 'kill';
     this.killEl.textContent = 'ELIMINATED';
 
-    // --- Top-right SOUND small icon (40×40 visible badge inside 44×44 touch target) ---
+    // --- Top-right SOUND icon ---
     this.muteBtn = document.createElement('div');
     this.muteBtn.dataset.btn = 'mute';
     this.muteBtn.style.cssText =
@@ -414,7 +553,6 @@ export class Hud {
     window.addEventListener('orientationchange', () => this.applyLayout());
   }
 
-  /** Portrait (390×844) vs landscape (844×390) HUD anchor placement. */
   private applyLayout(): void {
     const portrait = window.innerHeight > window.innerWidth;
     if (portrait === this.lastPortrait) return;
@@ -423,12 +561,9 @@ export class Hud {
     const al = (px: number) => `calc(${px}px + env(safe-area-inset-left, 0px))`;
     const ar = (px: number) => `calc(${px}px + env(safe-area-inset-right, 0px))`;
 
-    // HP stays bottom-left; tighter bottom margin in landscape
     this.hpWrap.style.left = al(16);
     this.hpWrap.style.bottom = ab(portrait ? 18 : 14);
 
-    // AMMO sits cleanly above the right-hand FIRE/JUMP/CROUCH cluster on touch,
-    // or anchored bottom-right on desktop.
     this.ammoWrap.style.right = ar(16);
     if (this.touchMode) {
       this.ammoWrap.style.bottom = ab(portrait ? 228 : 204);
@@ -437,7 +572,6 @@ export class Hud {
     }
   }
 
-  /** Damage feedback: edge flash + directional hit arc. */
   hitFrom(angleRad: number, now: number): void {
     this.hurtAt = now;
     this.arcAt = now;
@@ -445,7 +579,6 @@ export class Hud {
     this.fx.hits++;
   }
 
-  /** Target hit confirmation: crosshair turns Valorant red and expands for 60ms. */
   notifyHit(now: number): void {
     this.hitCrossAt = now;
   }
@@ -455,7 +588,6 @@ export class Hud {
     this.fx.kills++;
   }
 
-  /** Subtle lower-screen CSS blur amount [0..1] during weapon swap transition. */
   setSwapBlur(amount: number): void {
     if (amount <= 0.01) {
       if (this.swapBlurEl.style.display !== 'none') {
@@ -468,7 +600,6 @@ export class Hud {
     this.swapBlurEl.style.opacity = `${Math.min(1, amount).toFixed(2)}`;
   }
 
-  /** Black vignette fade [0..1] used during fall-respawn safety recovery. */
   setFallFade(amount: number): void {
     const a = Math.max(0, Math.min(1, amount));
     if (a <= 0.005) {
@@ -508,50 +639,125 @@ export class Hud {
       this.hpWrap.classList.toggle('val-lowhp-breathe', lowHp);
     }
 
-    // Ammo numeral + weapon label + per-round segmented bar
-    const mag = Math.min(MAX_MAG_SEGMENTS, Math.max(1, s.mag ?? 30));
-    const lowAmmo = s.ammo <= Math.max(1, Math.ceil(mag * 0.2));
+    const mode: WeaponId = s.weaponId ?? (s.mag && s.mag > 60 ? 'gatling' : 'rifle');
+    const isGatling = mode === 'gatling';
+    const mag = Math.max(1, s.mag ?? (isGatling ? 300 : 30));
+    const lowAmmo = s.ammo <= Math.max(1, Math.ceil(mag * 0.18));
+
+    if (mode !== this.lastWeaponMode) {
+      this.lastWeaponMode = mode;
+      this.ammoWrap.dataset.hudMode = mode;
+      this.ammoWrap.style.borderRightColor = isGatling ? PALETTE.gatlingAccent : PALETTE.uiText;
+      this.riflePanel.style.display = isGatling ? 'none' : 'block';
+      this.gatlingPanel.style.display = isGatling ? 'flex' : 'none';
+      this.crossRifleWrap.style.display = isGatling ? 'none' : 'block';
+      this.crossGatlingWrap.style.display = isGatling ? 'block' : 'none';
+    }
+
     this.ammoText.textContent = `${s.ammo}`;
-    this.ammoText.style.color = s.reloading || lowAmmo ? PALETTE.accent : PALETTE.uiText;
-    this.ammoSub.textContent = s.reloading ? 'RELOADING' : s.weaponName;
+    this.ammoText.style.color = s.reloading || lowAmmo
+      ? PALETTE.accent
+      : isGatling
+        ? PALETTE.gatlingAccent
+        : PALETTE.uiText;
+    this.ammoSub.textContent = s.reloading
+      ? isGatling
+        ? 'SWAPPING DRUM (3.2S)'
+        : 'RELOADING'
+      : s.weaponName;
     this.ammoSub.style.color = s.reloading ? PALETTE.accent : PALETTE.uiDim;
 
-    if (mag !== this.lastMag) {
-      this.lastMag = mag;
-      for (let i = 0; i < MAX_MAG_SEGMENTS; i++) {
-        this.ammoSegs[i].style.display = i < mag ? 'block' : 'none';
+    if (!isGatling) {
+      // Rifle 30-segment magazine bar + burst accuracy stability indicator
+      const litColor = lowAmmo ? PALETTE.accent : PALETTE.uiText;
+      const emptyColor = s.ammo === 0 ? 'rgba(255,255,255,0.09)' : PALETTE.uiEmpty;
+      for (let i = 0; i < RIFLE_SEGMENTS; i++) {
+        const lit = i < s.ammo;
+        this.ammoSegs[i].style.background = lit ? litColor : emptyColor;
+        this.ammoSegs[i].dataset.lit = lit ? '1' : '0';
+      }
+      const stability = Math.max(15, Math.min(100, 100 - s.spreadPx * 3.2));
+      this.rifleStabilityFill.style.width = `${stability.toFixed(0)}%`;
+      this.rifleStabilityFill.style.background = stability < 45 ? PALETTE.accent : PALETTE.uiText;
+    } else {
+      // Gatling 3×100-round rows (Row 0: 201..300, Row 1: 101..200, Row 2: 1..100)
+      for (let r = 0; r < GATLING_ROWS; r++) {
+        const rowBase = (GATLING_ROWS - 1 - r) * 100; // 200, 100, 0
+        const inRow = Math.max(0, Math.min(100, s.ammo - rowBase));
+        const cells = this.gatlingRows[r];
+        const perCell = 100 / GATLING_CELLS_PER_ROW; // 5 rounds/cell
+        const litColor = lowAmmo ? PALETTE.accent : PALETTE.gatlingAccent;
+        for (let c = 0; c < GATLING_CELLS_PER_ROW; c++) {
+          const cellLo = c * perCell;
+          const lit = inRow > cellLo;
+          const partial = lit && inRow < cellLo + perCell;
+          cells[c].style.background = lit ? litColor : PALETTE.uiEmpty;
+          cells[c].style.opacity = partial ? '0.55' : '1';
+          cells[c].dataset.lit = lit ? '1' : '0';
+        }
+        this.gatlingRowCounts[r].textContent = `${inRow}`;
+        this.gatlingRowCounts[r].style.color = inRow === 0 ? PALETTE.uiDim : lowAmmo ? PALETTE.accent : PALETTE.gatlingAccent;
+      }
+
+      const spin = Math.max(0, Math.min(1, s.spinLevel ?? 0));
+      this.gatlingSpinFill.style.width = `${(spin * 100).toFixed(0)}%`;
+      if (s.reloading) {
+        this.gatlingSpinLabel.textContent = 'RELOAD LOCKED';
+        this.gatlingSpinLabel.style.color = PALETTE.accent;
+        this.gatlingSpinFill.style.background = PALETTE.accent;
+      } else if (spin >= 0.99) {
+        this.gatlingSpinLabel.textContent = 'ROTOR READY · 900 RPM';
+        this.gatlingSpinLabel.style.color = PALETTE.gatlingReady;
+        this.gatlingSpinFill.style.background = PALETTE.gatlingReady;
+      } else if (spin > 0.02) {
+        this.gatlingSpinLabel.textContent = `SPINNING UP ${(spin * 100).toFixed(0)}%`;
+        this.gatlingSpinLabel.style.color = PALETTE.gatlingAccent;
+        this.gatlingSpinFill.style.background = PALETTE.gatlingAccent;
+      } else {
+        this.gatlingSpinLabel.textContent = 'ROTOR IDLE · 250MS SPIN';
+        this.gatlingSpinLabel.style.color = PALETTE.uiDim;
+        this.gatlingSpinFill.style.background = PALETTE.gatlingAccent;
       }
     }
-    const litColor = lowAmmo ? PALETTE.accent : PALETTE.uiText;
-    const emptyColor = s.ammo === 0 ? 'rgba(255,255,255,0.09)' : PALETTE.uiEmpty;
-    for (let i = 0; i < mag; i++) {
-      const lit = i < s.ammo;
-      this.ammoSegs[i].style.background = lit ? litColor : emptyColor;
-      this.ammoSegs[i].dataset.lit = lit ? '1' : '0';
-    }
 
-    // Crosshair: 4 short lines + dot, hit confirms in red + expands 60ms
+    // --- Crosshair update ---
     const hitActive = this.hitCrossAt >= 0 && now - this.hitCrossAt <= HIT_CROSS_MS;
     const hitExpand = hitActive ? 5 * (1 - (now - this.hitCrossAt) / HIT_CROSS_MS) : 0;
-    const g = Math.min(22, 4 + s.spreadPx) + hitExpand;
     const crossCol = hitActive ? PALETTE.crosshairHit : PALETTE.crosshair;
-    const [top, bottom, left, right] = this.crossLines;
-    top.style.transform = `translateY(${-g - 3.5}px)`;
-    bottom.style.transform = `translateY(${g + 3.5}px)`;
-    left.style.transform = `translateX(${-g - 3.5}px)`;
-    right.style.transform = `translateX(${g + 3.5}px)`;
-    for (const l of this.crossLines) l.style.background = crossCol;
-    this.crossDot.style.background = crossCol;
+    if (!isGatling) {
+      const g = Math.min(22, 4 + s.spreadPx) + hitExpand;
+      const [top, bottom, left, right] = this.crossLines;
+      top.style.transform = `translateY(${-g - 3.5}px)`;
+      bottom.style.transform = `translateY(${g + 3.5}px)`;
+      left.style.transform = `translateX(${-g - 3.5}px)`;
+      right.style.transform = `translateX(${g + 3.5}px)`;
+      for (const l of this.crossLines) l.style.background = crossCol;
+      this.crossDot.style.background = crossCol;
+    } else {
+      const spin = Math.max(0, Math.min(1, s.spinLevel ?? 0));
+      const dia = Math.min(64, Math.max(36, 26 + s.spreadPx * 1.4 + hitExpand * 2));
+      const half = dia * 0.5;
+      this.crossGatlingRing.style.width = `${dia.toFixed(0)}px`;
+      this.crossGatlingRing.style.height = `${dia.toFixed(0)}px`;
+      this.crossGatlingRing.style.left = `${(-half).toFixed(0)}px`;
+      this.crossGatlingRing.style.top = `${(-half).toFixed(0)}px`;
+      const rotDeg = (now * 0.35 * (0.1 + spin)) % 360;
+      this.crossGatlingRing.style.transform = `rotate(${rotDeg.toFixed(1)}deg)`;
+      this.crossGatlingRing.style.filter = hitActive
+        ? `drop-shadow(0 0 4px ${PALETTE.accent})`
+        : 'none';
+    }
 
-    // Portrait hides FPS readout so top bar only shows the SOUND icon
     const portrait = window.innerHeight > window.innerWidth;
     if (portrait !== this.lastPortrait) this.applyLayout();
     this.fpsEl.style.display = !portrait && this.fpsVisible ? '' : 'none';
     this.fpsEl.textContent = this.fpsVisible ? `${s.fps.toFixed(0)} FPS` : '';
-    this.deadEl.style.display = s.dead ? 'block' : 'none';
-    if (s.dead) this.deadEl.textContent = `ELIMINATED · RESPAWN ${Math.max(0, s.respawnIn).toFixed(1)}S`;
+    this.deadEl.style.display = s.dead && s.respawnIn > 0 ? 'block' : 'none';
+    if (s.dead && s.respawnIn > 0) {
+      this.deadEl.textContent = `ELIMINATED · RESPAWN ${Math.max(0, s.respawnIn).toFixed(1)}S`;
+    }
 
-    // --- Feedback decay (opacity animated only) ---
+    // --- Feedback decay ---
     const flash = this.hurtAt < 0 ? 0 : Math.max(0, 0.35 * (1 - (now - this.hurtAt) / HURT_MS));
     this.hurtEl.style.opacity = `${flash}`;
     this.fx.flashOpacity = flash;

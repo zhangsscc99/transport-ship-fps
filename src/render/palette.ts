@@ -42,8 +42,10 @@ export const PALETTE = {
   gunDark: '#252b32', // 弹匣/小件：偏暗哑光
   gunHi: '#8ea0b0', // 枪身高光条 emissive
   glove: '#5d6167', // 手臂——比枪身亮，分出层次
-  brass: '#d8b054', // 弹壳 / 弹匣顶弹黄铜
-  shellRed: '#b8322a', // 霰弹红色弹体
+  brass: '#d8b054', // 弹壳 / 弹匣顶弹 / 加特林弹链黄铜
+  gatlingAccent: '#f5b041', // 加特林重武 HUD 琥珀橙
+  gatlingReady: '#5ee39a', // 加特林预热就绪绿
+  gatlingBlur: '#9ab4cc', // 加特林枪管高速旋转残影
   flashCore: '#fffdf2', // 枪口白热星形核心
   flashMid: '#ff9626', // 枪口中层橙黄锥形火焰
   flashOuter: '#ff4812', // 枪口火焰外缘灼橙

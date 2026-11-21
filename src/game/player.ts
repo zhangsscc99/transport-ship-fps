@@ -55,6 +55,8 @@ export interface WorldQuery {
   groundHeight?: (x: number, z: number) => number;
   /** Full cylinder-vs-AABB world (CollisionWorld); takes precedence when set. */
   collider?: Collider;
+  /** Movement speed multiplier from active weapon (1.0 rifle, 0.82 gatling). */
+  speedMult?: number;
 }
 
 /** Structural type of CollisionWorld — keeps player.ts free of the import. */
@@ -118,7 +120,7 @@ export class Player {
     } else {
       this.crouch = input.crouch;
     }
-    const speed = this.crouch ? MOVE.crouchSpeed : MOVE.walkSpeed;
+    const speed = (this.crouch ? MOVE.crouchSpeed : MOVE.walkSpeed) * (world.speedMult ?? 1);
 
     const fwd = this.forward();
     const right = { x: -fwd.z, z: fwd.x };

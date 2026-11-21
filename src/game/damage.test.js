@@ -202,34 +202,27 @@ var WEAPONS = [
     reloadMs: 1100,
     spread: 6e-3,
     recoil: 45e-4,
-    pellets: 1
-  },
-  {
-    id: "sniper",
-    name: "SNIPER RIFLE",
-    dmg: 95,
-    rpm: 45,
-    mag: 5,
-    reloadMs: 1550,
-    spread: 15e-4,
-    recoil: 0.09,
+    maxSpread: 0.055,
     pellets: 1,
-    noFalloff: true,
-    // 400ms bolt open + 350ms/shell + 400ms bolt slap + 400ms return = 1550ms for 1 round
-    shellByShell: { leadMs: 400, perShellMs: 350, slapMs: 400, settleMs: 400 }
+    moveSpeedMult: 1,
+    swapMs: 350
   },
   {
-    id: "shotgun",
-    name: "SHOTGUN",
-    dmg: 12,
-    rpm: 60,
-    mag: 6,
-    reloadMs: 950,
-    spread: 0.055,
-    recoil: 0.02,
-    pellets: 8,
-    // 100ms tilt + 350ms/shell + 400ms pump slap + 100ms return = 950ms for 1 shell
-    shellByShell: { leadMs: 100, perShellMs: 350, slapMs: 400, settleMs: 100 }
+    id: "gatling",
+    name: "M134 GATLING",
+    dmg: 14,
+    rpm: 900,
+    mag: 300,
+    reloadMs: 3200,
+    spread: 0.018,
+    recoil: 12e-4,
+    maxSpread: 0.045,
+    pellets: 1,
+    moveSpeedMult: 0.82,
+    swapMs: 450,
+    spinUpMs: 250,
+    spinDownMs: 450,
+    noEarlyFire: true
   }
 ];
 
@@ -281,15 +274,15 @@ test("dead entities are ignored by traceHit", () => {
   const e = entAt(0, -10, { alive: false });
   assert.equal(traceHit(ray(0, 1, 0, 0, 0, -1), NO_BOXES, [e]), null);
 });
-test("damage falls off past 25m to a 0.6 floor; sniper is exempt", () => {
+test("damage falls off past 25m to a 0.6 floor", () => {
   const rifle = WEAPONS[0];
-  const sniper = WEAPONS[1];
+  const gatling = WEAPONS[1];
   assert.equal(falloffFactor(rifle, 20), 1);
   assert.equal(falloffFactor(rifle, 25), 1);
   const mid = falloffFactor(rifle, 37.5);
   assert.ok(Math.abs(mid - 0.8) < 1e-9, `mid ${mid}`);
   assert.equal(falloffFactor(rifle, 60), FALLOFF_FLOOR);
-  assert.equal(falloffFactor(sniper, 200), 1);
+  assert.equal(falloffFactor(gatling, 60), FALLOFF_FLOOR);
 });
 test("applyDamage drains hp; lethal damage kills and starts the 3s timer", () => {
   const e = entAt(0, 0);
@@ -325,30 +318,22 @@ test("headshot doubles the pellet damage end-to-end", () => {
   applyDamage(e, dmg, 0);
   assert.equal(e.hp, 100 - 48);
 });
-test("each shotgun pellet damages independently", () => {
-  const e = entAt(0, -5);
-  const pellets = [
+test("gatling rapid burst accumulates damage independently per round", () => {
+  const e = entAt(0, -10);
+  const shots = [
     ray(0, 1, 0, 0, 0, -1),
-    ray(0, 1, 0, 0.05, 0, -1),
-    ray(0, 1.6, 0, 0, 0, -1),
-    ray(0, 1, 0, 1, 0, 0),
-    ray(0, 1, 0, 0, 1, -0.2),
-    ray(0, 1, 0, -1, 0, 0),
-    ray(0, 1, 0, 0, 0, 1),
-    ray(0, 1, 0, 0.9, 0.9, -0.1)
+    ray(0, 1, 0, 0.02, 0, -1),
+    ray(0, 1.6, 0, 0, 0, -1)
   ];
   let total = 0;
-  let hits = 0;
-  for (const p of pellets) {
-    const h = traceHit(p, NO_BOXES, [e]);
+  for (const s of shots) {
+    const h = traceHit(s, NO_BOXES, [e]);
     if (h?.kind === "entity") {
-      hits++;
-      const dmg = WEAPONS[2].dmg * falloffFactor(WEAPONS[2], h.dist) * (h.headshot ? HEADSHOT_MULT : 1);
+      const dmg = WEAPONS[1].dmg * falloffFactor(WEAPONS[1], h.dist) * (h.headshot ? HEADSHOT_MULT : 1);
       applyDamage(e, dmg, 0);
       total += dmg;
     }
   }
-  assert.equal(hits, 3);
-  assert.equal(e.hp, 100 - total);
-  assert.ok(Math.abs(total - 48) < 1e-6, `total ${total}`);
+  assert.equal(total, 56);
+  assert.equal(e.hp, 44);
 });

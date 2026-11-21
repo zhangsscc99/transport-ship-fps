@@ -12,6 +12,8 @@ export interface CameraMotionState {
   reloading: boolean;
   /** subtle downward sight dip (radians, typically negative) during reload */
   reloadPitchDip?: number;
+  /** gatling continuous fire micro-vibration intensity [0..1] (±0.15° @ 8Hz) */
+  gatlingFireShake?: number;
 }
 
 export class PlayerCamera {
@@ -38,6 +40,10 @@ export class PlayerCamera {
   private readonly wallBumpDur = 0.08;
   private readonly wallBumpPeak = -(0.5 * Math.PI) / 180;
 
+  // Gatling continuous 8Hz micro-vibration (±0.15° pitch & yaw)
+  private shakeClock = 0;
+  private shakeSmooth = 0;
+
   /** weighted walk bob exposed so WeaponView shares the exact same decoupled rhythm */
   readonly bob = { x: 0, y: 0, weight: 1 };
 
@@ -61,7 +67,7 @@ export class PlayerCamera {
 
   /**
    * Apply camera recoil for one shot:
-   * `pitchRad` is the total kick (rifle 2.5° / sniper 8° / shotgun 6°);
+   * `pitchRad` is the total kick (rifle 2.5° / gatling 0.28°);
    * 20% stays permanently in `player.pitch`, 80% recovers via easeOutQuad over `durationSec`.
    */
   addRecoil(player: Player, pitchRad: number, durationSec: number, yawRad = 0): void {
@@ -138,12 +144,24 @@ export class PlayerCamera {
     this.bob.y = bobY;
     this.bob.weight = this.bobWeight;
 
+    // Gatling continuous micro-shake: ±0.15° at 8Hz while firing
+    this.shakeClock += dt;
+    this.shakeSmooth = damp(this.shakeSmooth, clamp01(motion?.gatlingFireShake ?? 0), 22, dt);
+    const vibAmp = ((0.15 * Math.PI) / 180) * this.shakeSmooth;
+    const vibOmega = Math.PI * 2 * 8; // 8Hz
+    const vibPitch = vibAmp * Math.sin(this.shakeClock * vibOmega);
+    const vibYaw = vibAmp * Math.cos(this.shakeClock * vibOmega * 1.13 + 0.7);
+    const vibRoll = vibAmp * 0.55 * Math.sin(this.shakeClock * vibOmega * 0.87 + 1.4);
+
     const finalPitch = Math.max(
       -(87 * Math.PI) / 180,
-      Math.min((87 * Math.PI) / 180, player.pitch + this.reloadDipSmooth + this.recoilPitch + wallPitch),
+      Math.min(
+        (87 * Math.PI) / 180,
+        player.pitch + this.reloadDipSmooth + this.recoilPitch + wallPitch + vibPitch,
+      ),
     );
     this.camera.position.set(p.x, this.eyeY + bobY, p.z);
-    this.camera.rotation.set(finalPitch, player.yaw + this.recoilYaw, roll);
+    this.camera.rotation.set(finalPitch, player.yaw + this.recoilYaw + vibYaw, roll + vibRoll);
   }
 
   /** Snap to the player (used on spawn/respawn, no lerp). */

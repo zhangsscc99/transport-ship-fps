@@ -1,7 +1,7 @@
 // Hit tracing & damage — pure logic, no three.js / DOM.
 // traceHit resolves a shot ray against map boxes (occlusion first) and
 // entity cylinders (side + caps). Headshots = hits in the top 15% of the
-// body ×2. Damage falls off linearly past 25m to a 0.6 floor (sniper exempt).
+// body ×2. Damage falls off linearly past 25m to a 0.6 floor.
 // applyDamage drives hp / death; updateRespawn handles the 3s respawn with
 // 1.5s spawn protection.
 
@@ -159,7 +159,7 @@ export function traceHit(ray: Ray, boxes: readonly Box[], entities: readonly Ent
   return null;
 }
 
-/** Damage multiplier for range. Sniper (noFalloff) is exempt. */
+/** Damage multiplier for range. */
 export function falloffFactor(spec: Pick<WeaponSpec, 'noFalloff'>, dist: number): number {
   if (spec.noFalloff || dist <= FALLOFF_START) return 1;
   if (dist >= FALLOFF_END) return FALLOFF_FLOOR;

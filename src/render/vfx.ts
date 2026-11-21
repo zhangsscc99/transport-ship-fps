@@ -489,7 +489,7 @@ export class MuzzleFlashRig {
 
   /** Trigger a new 3-layer muzzle flash + exponential muzzle light for weapon `id`. */
   trigger(id: GunId): void {
-    const weaponScale = id === 'sniper' ? 1.38 : id === 'shotgun' ? 1.32 : 1.0;
+    const weaponScale = id === 'gatling' ? 1.18 : 1.0;
 
     // 60ms burst stacking: reuse current slot if <60ms elapsed, otherwise pick free or oldest slot
     let slotIdx = this.lastSlotIdx;
@@ -990,8 +990,9 @@ export class WorldVfx {
     s.vry = spin * 0.55;
     s.vrz = spin * 0.45 * (Math.random() < 0.5 ? 1 : -1);
 
-    // Brass for rifle/sniper, red-brass tint for shotgun
-    this.shellMesh.setColorAt(idx, tmpColor.set(weaponId === 'shotgun' ? PALETTE.shellRed : PALETTE.brass));
+    // Gleaming 7.62 brass for both rifle & gatling
+    void weaponId;
+    this.shellMesh.setColorAt(idx, tmpColor.set(PALETTE.brass));
     this.shellMesh.instanceColor!.needsUpdate = true;
   }
 

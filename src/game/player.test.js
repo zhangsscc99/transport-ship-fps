@@ -66,7 +66,7 @@ var Player = class {
     } else {
       this.crouch = input2.crouch;
     }
-    const speed = this.crouch ? MOVE.crouchSpeed : MOVE.walkSpeed;
+    const speed = (this.crouch ? MOVE.crouchSpeed : MOVE.walkSpeed) * (world.speedMult ?? 1);
     const fwd = this.forward();
     const right = { x: -fwd.z, z: fwd.x };
     let wx = fwd.x * input2.moveZ + right.x * input2.moveX;
@@ -322,4 +322,10 @@ test("falls back to ground height when airborne", () => {
   assert.equal(p.position.y, 0);
   assert.equal(p.onGround, true);
   assert.equal(p.velocity.y, 0);
+});
+test("weapon speedMult (0.82 for gatling) scales walk speed proportionally", () => {
+  const p = new Player({ x: 0, y: 0, z: 0 });
+  step(p, input({ moveZ: 1 }), 0.3, { speedMult: 0.82 });
+  const speed = Math.hypot(p.velocity.x, p.velocity.z);
+  assert.ok(Math.abs(speed - MOVE.walkSpeed * 0.82) < 1e-6, `gatling speed ${speed}`);
 });

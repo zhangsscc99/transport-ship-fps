@@ -7,8 +7,7 @@
 
 export type SfxName =
   | 'shotRifle'
-  | 'shotSniper'
-  | 'shotShotgun'
+  | 'shotGatling'
   | 'reload'
   | 'hit'
   | 'hurt'
@@ -61,8 +60,7 @@ export function createSfx(): Sfx {
   const counts: Record<string, number> = {
     shot: 0,
     shotRifle: 0,
-    shotSniper: 0,
-    shotShotgun: 0,
+    shotGatling: 0,
     reload: 0,
     hit: 0,
     hurt: 0,
@@ -178,20 +176,16 @@ export function createSfx(): Sfx {
     }
   }
 
-  // Recipes — durations capped per ART-SPEC §4 (rifle ≤120ms, sniper ≤400ms,
-  // shotgun ≤200ms, reload ≤150ms, hit ≤80ms, hurt ≤150ms, step ≤60ms, kill ≤200ms).
+  // Recipes — procedural combat sound synthesis (rifle + gatling + hit/hurt/step/reload).
   const RECIPES: Record<SfxName, (v: Voice, t0: number, vol: number) => void> = {
     shotRifle(v, t0, vol) {
       burst(v, t0, 0.1, 0.5 * vol, { type: 'lowpass', f0: 1400, f1: 320 });
       tone(v, 'square', 190, 90, t0, 0.045, 0.1 * vol);
     },
-    shotSniper(v, t0, vol) {
-      tone(v, 'sine', 85, 45, t0, 0.3, 0.6 * vol);
-      burst(v, t0, 0.36, 0.38 * vol, { type: 'lowpass', f0: 1100, f1: 200 });
-    },
-    shotShotgun(v, t0, vol) {
-      burst(v, t0, 0.12, 0.55 * vol, { type: 'lowpass', f0: 2800, f1: 500 });
-      burst(v, t0 + 0.045, 0.14, 0.4 * vol, { type: 'bandpass', f0: 640, q: 0.8 });
+    shotGatling(v, t0, vol) {
+      burst(v, t0, 0.065, 0.42 * vol, { type: 'bandpass', f0: 1650, f1: 520, q: 0.9 });
+      tone(v, 'sawtooth', 145, 68, t0, 0.045, 0.18 * vol);
+      tone(v, 'square', 2400, 1100, t0, 0.018, 0.12 * vol);
     },
     reload(v, t0, vol) {
       tone(v, 'square', 1600, 1600, t0, 0.02, 0.16 * vol);

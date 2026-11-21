@@ -37,6 +37,8 @@ declare global {
       ammo: number;
       mag: number;
       weapon: string;
+      weapons: string[];
+      spinLevel: number;
       reloading: boolean;
       dead: boolean;
       yaw: number;
@@ -110,8 +112,7 @@ const hud = new Hud(document.body, touch.enabled);
 
 const RECOIL_SPEC = {
   rifle: { deg: 2.5, sec: 0.11 },
-  sniper: { deg: 8.0, sec: 0.26 },
-  shotgun: { deg: 6.0, sec: 0.20 },
+  gatling: { deg: 0.28, sec: 0.06 },
 } as const;
 
 const sfx = createSfx();
@@ -122,7 +123,7 @@ const onFirstGesture = () => void sfx.unlock();
 window.addEventListener('pointerdown', onFirstGesture, { once: true });
 window.addEventListener('keydown', onFirstGesture, { once: true });
 
-const SHOT_SFX = { rifle: 'shotRifle', sniper: 'shotSniper', shotgun: 'shotShotgun' } as const;
+const SHOT_SFX = { rifle: 'shotRifle', gatling: 'shotGatling' } as const;
 /** stride length per footstep — interval scales with move speed via distance */
 const STEP_STRIDE = 2.1;
 let stepAcc = 0;
@@ -272,7 +273,10 @@ engine.onFrame = (dt) => {
         }
       }
 
-      player.update(dt, inp, { collider: world });
+      player.update(dt, inp, {
+        collider: world,
+        speedMult: rack.current.spec.moveSpeedMult,
+      });
       if (player.hitAirWall) view.triggerWallBump();
 
       // Record latest valid grounded position for fall-respawn fallback
@@ -324,19 +328,32 @@ engine.onFrame = (dt) => {
     }
   }
 
-  const bufferedSwapped = rack.tick(simNowMs);
+  const activeTriggerHeld = acting && playerEnt.alive && inp.fire && player.onGround;
+  const bufferedSwapped = rack.tick(simNowMs, activeTriggerHeld);
   if (bufferedSwapped) {
-    weaponView.startSwap(bufferedSwapped.spec.id);
+    weaponView.startSwap(bufferedSwapped.spec.id, bufferedSwapped.spec.swapMs / 1000);
   }
   if (acting && playerEnt.alive && inp.swap) {
     const nextW = rack.requestSwap(simNowMs);
-    if (nextW) weaponView.startSwap(nextW.spec.id);
+    if (nextW) weaponView.startSwap(nextW.spec.id, nextW.spec.swapMs / 1000);
   }
   const w = rack.current;
+
+  const gatlingActivelyFiring =
+    acting &&
+    playerEnt.alive &&
+    w.spec.id === 'gatling' &&
+    !rack.swapping(simNowMs) &&
+    !w.reloading &&
+    w.ammo > 0 &&
+    inp.fire &&
+    player.onGround &&
+    w.spinLevel >= 0.99;
 
   view.update(player, dt, {
     reloading: w.reloading,
     reloadPitchDip: weaponView.reloadPitchDip,
+    gatlingFireShake: gatlingActivelyFiring ? 1 : 0,
   });
   lights.update(now * 0.001, view.camera.position);
   updateWater(now * 0.001);
@@ -395,7 +412,10 @@ engine.onFrame = (dt) => {
   }
 
   weaponView.group.visible = playerEnt.alive;
-  weaponView.update(dt, view.bob, w.reloadSnapshot(simNowMs), vfxDbg);
+  weaponView.update(dt, view.bob, w.reloadSnapshot(simNowMs), vfxDbg, {
+    spinLevel: w.spinLevel,
+    firing: gatlingActivelyFiring,
+  });
   hud.setSwapBlur(weaponView.swapBlurAmount);
   worldVfx.update(dt, view.camera, vfxDbg);
 
@@ -406,7 +426,9 @@ engine.onFrame = (dt) => {
     ammo: w.ammo,
     mag: w.spec.mag,
     reloading: w.reloading,
+    weaponId: w.spec.id,
     weaponName: w.spec.name,
+    spinLevel: w.spinLevel,
     spreadPx: Math.tan(w.spreadAt(simNowMs)) * focalPx,
     fps: window.__fps,
     dead: !playerEnt.alive,
@@ -428,6 +450,7 @@ engine.onFrame = (dt) => {
   dbg.ammo = w.ammo;
   dbg.mag = w.spec.mag;
   dbg.weapon = w.spec.id;
+  dbg.spinLevel = w.spinLevel;
   dbg.reloading = w.reloading;
   dbg.dead = !playerEnt.alive;
   dbg.yaw = player.yaw;
@@ -460,6 +483,8 @@ const dbg = {
   ammo: rack.current.ammo,
   mag: rack.current.spec.mag,
   weapon: rack.current.spec.id as string,
+  weapons: rack.list.map((w) => w.spec.id) as string[],
+  spinLevel: 0,
   reloading: false,
   dead: false,
   yaw: 0,
@@ -531,7 +556,9 @@ hud.update({
   ammo: rack.current.ammo,
   mag: rack.current.spec.mag,
   reloading: rack.current.reloading,
+  weaponId: rack.current.spec.id,
   weaponName: rack.current.spec.name,
+  spinLevel: rack.current.spinLevel,
   spreadPx: 0,
   fps: 60,
   dead: false,

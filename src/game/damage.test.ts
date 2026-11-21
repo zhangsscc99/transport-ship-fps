@@ -70,15 +70,15 @@ test('dead entities are ignored by traceHit', () => {
   assert.equal(traceHit(ray(0, 1.0, 0, 0, 0, -1), NO_BOXES, [e]), null);
 });
 
-test('damage falls off past 25m to a 0.6 floor; sniper is exempt', () => {
+test('damage falls off past 25m to a 0.6 floor', () => {
   const rifle = WEAPONS[0];
-  const sniper = WEAPONS[1];
+  const gatling = WEAPONS[1];
   assert.equal(falloffFactor(rifle, 20), 1);
   assert.equal(falloffFactor(rifle, 25), 1);
   const mid = falloffFactor(rifle, 37.5);
   assert.ok(Math.abs(mid - 0.8) < 1e-9, `mid ${mid}`);
   assert.equal(falloffFactor(rifle, 60), FALLOFF_FLOOR);
-  assert.equal(falloffFactor(sniper, 200), 1);
+  assert.equal(falloffFactor(gatling, 60), FALLOFF_FLOOR);
 });
 
 test('applyDamage drains hp; lethal damage kills and starts the 3s timer', () => {
@@ -121,32 +121,23 @@ test('headshot doubles the pellet damage end-to-end', () => {
   assert.equal(e.hp, 100 - 48);
 });
 
-test('each shotgun pellet damages independently', () => {
-  const e = entAt(0, -5);
-  // 3 pellets on target (one head-level), 5 pellets wide of the mark
-  const pellets: Ray[] = [
+test('gatling rapid burst accumulates damage independently per round', () => {
+  const e = entAt(0, -10);
+  const shots: Ray[] = [
     ray(0, 1.0, 0, 0, 0, -1),
-    ray(0, 1.0, 0, 0.05, 0, -1),
+    ray(0, 1.0, 0, 0.02, 0, -1),
     ray(0, 1.6, 0, 0, 0, -1),
-    ray(0, 1.0, 0, 1, 0, 0),
-    ray(0, 1.0, 0, 0, 1, -0.2),
-    ray(0, 1.0, 0, -1, 0, 0),
-    ray(0, 1.0, 0, 0, 0, 1),
-    ray(0, 1.0, 0, 0.9, 0.9, -0.1),
   ];
   let total = 0;
-  let hits = 0;
-  for (const p of pellets) {
-    const h = traceHit(p, NO_BOXES, [e]);
+  for (const s of shots) {
+    const h = traceHit(s, NO_BOXES, [e]);
     if (h?.kind === 'entity') {
-      hits++;
-      const dmg = WEAPONS[2].dmg * falloffFactor(WEAPONS[2], h.dist) * (h.headshot ? HEADSHOT_MULT : 1);
+      const dmg = WEAPONS[1].dmg * falloffFactor(WEAPONS[1], h.dist) * (h.headshot ? HEADSHOT_MULT : 1);
       applyDamage(e, dmg, 0);
       total += dmg;
     }
   }
-  assert.equal(hits, 3);
-  // pellet ray 2 hits at head height (1.6 > 0.85·1.7) → 12+12+24 = 48
-  assert.equal(e.hp, 100 - total);
-  assert.ok(Math.abs(total - 48) < 1e-6, `total ${total}`);
+  // 2 body hits (14+14) + 1 headshot (28) = 56
+  assert.equal(total, 56);
+  assert.equal(e.hp, 44);
 });

@@ -80,7 +80,7 @@ async function look(dx, dy) {
 await look(0, 260); // pitch down ~1.5 rad clamped to deck view
 await look(150, 0); // slight yaw for a 3/4 view of the scene
 
-const names = ['rifle', 'sniper', 'shotgun'];
+const names = ['rifle', 'gatling'];
 for (let i = 0; i < names.length; i++) {
   await page.screenshot({ path: `${OUT}/gun-${names[i]}.png` });
   // tap the touch 切枪 button to swap
