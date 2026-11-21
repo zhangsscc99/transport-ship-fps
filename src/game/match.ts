@@ -19,6 +19,8 @@ export interface MatchOptions {
 
 export interface Match {
   readonly phase: Phase;
+  /** kills a team needs to win outright (the HUD objective target) */
+  readonly killsToWin: number;
   readonly killsA: number;
   readonly killsB: number;
   readonly winner: Winner;
@@ -61,6 +63,9 @@ export function createMatch(opts: MatchOptions = {}): Match {
   return {
     get phase() {
       return phase;
+    },
+    get killsToWin() {
+      return killsToWin;
     },
     get killsA() {
       return killsA;

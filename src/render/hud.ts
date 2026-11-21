@@ -8,6 +8,18 @@
 
 import { PALETTE } from './palette';
 import type { WeaponId } from '../game/weapons';
+import type { Phase } from '../game/match';
+import { formatClock, isClockUrgent, isClockPulsing } from '../game/objective';
+
+/** live match score/clock for the top-centre objective bar */
+export interface HudObjective {
+  phase: Phase;
+  killsA: number;
+  killsB: number;
+  /** win target — always pass match.killsToWin, never a literal */
+  killsToWin: number;
+  timeLeftMs: number;
+}
 
 export interface HudState {
   hp: number;
@@ -28,6 +40,8 @@ export interface HudState {
   respawnIn: number;
   /** optional player kill counter */
   kills?: number;
+  /** match objective bar (hidden when omitted or in 'menu') */
+  objective?: HudObjective;
 }
 
 export const HUD_FONT = `'DIN Alternate','Bahnschrift','Segoe UI',system-ui,-apple-system,sans-serif`;
@@ -119,7 +133,12 @@ export function ensureHudStyles(): void {
   0% { box-shadow: 0 0 0 0 rgba(255,70,85,0.72), inset 0 0 14px rgba(255,70,85,0.28); transform: scale(0.95); }
   100% { box-shadow: 0 0 0 14px rgba(255,70,85,0), inset 0 0 4px rgba(255,70,85,0.08); transform: scale(1); }
 }
+@keyframes valObjUrgent {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.09); opacity: 0.72; }
+}
 .val-lowhp-breathe { animation: valLowHpBreathe 1.2s ease-in-out infinite; }
+.val-obj-urgent { animation: valObjUrgent 0.9s ease-in-out infinite; }
 .val-fire-pulse { animation: valFirePulse 160ms ease-out; }
 `;
   document.head.appendChild(st);
@@ -212,6 +231,15 @@ export class Hud {
   private crossGatlingRing: HTMLDivElement;
 
   private fpsEl: HTMLDivElement;
+  // Top-centre objective bar: 我方 a/25 · M:SS · 敌方 b
+  private objWrap: HTMLDivElement;
+  private objA: HTMLDivElement;
+  private objANum: HTMLSpanElement;
+  private objAGoal: HTMLSpanElement;
+  private objTime: HTMLDivElement;
+  private objB: HTMLDivElement;
+  private objBNum: HTMLSpanElement;
+  private objKey = '';
   private deadEl: HTMLDivElement;
   private swapBlurEl: HTMLDivElement;
   private fpsVisible = true;
@@ -550,6 +578,47 @@ export class Hud {
       'fps',
     );
 
+    // --- Objective bar: top-centre, between the left edge and the FPS/mute
+    // cluster on the right. Width capped at 62vw so on a 390px portrait
+    // screen it ends ≥18px left of the 44px mute hit-box (right:12px). ---
+    this.objWrap = div(
+      `position:absolute;left:50%;top:${at(10)};transform:translateX(-50%);` +
+        `display:none;align-items:center;justify-content:center;gap:10px;` +
+        `max-width:62vw;box-sizing:border-box;padding:4px 12px;white-space:nowrap;overflow:hidden;` +
+        `background:${PALETTE.uiPanel};border:1px solid ${PALETTE.uiBorder};border-radius:4px;` +
+        `font-size:13px;font-weight:800;letter-spacing:0.06em;line-height:1.15;` +
+        `font-variant-numeric:tabular-nums;pointer-events:none;`,
+      this.root,
+      'objective',
+    );
+    const objSide = (key: 'a' | 'b', label: string, color: string): [HTMLDivElement, HTMLSpanElement] => {
+      const el = div(
+        `display:flex;align-items:baseline;gap:4px;border-${key === 'a' ? 'left' : 'right'}:3px solid ${color};` +
+          `padding-${key === 'a' ? 'left' : 'right'}:6px;pointer-events:none;`,
+        this.objWrap,
+      );
+      el.dataset.obj = key;
+      const lbl = document.createElement('span');
+      lbl.textContent = label;
+      lbl.style.cssText = `font-size:12px;font-weight:700;color:${PALETTE.uiDim};`;
+      const num = document.createElement('span');
+      num.textContent = '0';
+      num.style.cssText = `font-size:15px;color:${color};`;
+      el.append(lbl, num);
+      return [el, num];
+    };
+    [this.objA, this.objANum] = objSide('a', '我方', PALETTE.teamA);
+    this.objAGoal = document.createElement('span');
+    this.objAGoal.style.cssText = `font-size:12px;color:${PALETTE.uiDim};margin-left:-3px;`;
+    this.objA.appendChild(this.objAGoal);
+    this.objTime = div(
+      `font-size:16px;font-weight:800;color:${PALETTE.uiText};min-width:3.2em;text-align:center;` +
+        `transform-origin:50% 50%;pointer-events:none;`,
+      this.objWrap,
+    );
+    this.objTime.dataset.obj = 'time';
+    [this.objB, this.objBNum] = objSide('b', '敌方', PALETTE.teamB);
+
     this.deadEl = div(
       `position:absolute;left:50%;top:36%;transform:translate(-50%,-50%);` +
         `background:${PALETTE.deadVeil};border:1px solid ${PALETTE.accent};` +
@@ -707,6 +776,36 @@ export class Hud {
     this.muteBadge.style.color = m ? PALETTE.accent : PALETTE.uiText;
   }
 
+  /** Objective bar: writes text + dataset.v only when a displayed value changes. */
+  private updateObjective(o: HudObjective | undefined): void {
+    if (!o || o.phase === 'menu') {
+      if (this.objKey !== 'hidden') {
+        this.objKey = 'hidden';
+        this.objWrap.style.display = 'none';
+        this.objTime.classList.remove('val-obj-urgent');
+      }
+      return;
+    }
+    const clock = formatClock(o.timeLeftMs);
+    const urgent = isClockUrgent(o.timeLeftMs, o.phase);
+    const pulsing = isClockPulsing(o.timeLeftMs, o.phase);
+    const key = `${o.killsA}|${o.killsB}|${o.killsToWin}|${clock}|${urgent}|${pulsing}|${o.phase}`;
+    if (key === this.objKey) return;
+    this.objKey = key;
+    this.objWrap.style.display = 'flex';
+    this.objWrap.dataset.phase = o.phase;
+    this.objANum.textContent = String(o.killsA);
+    this.objAGoal.textContent = `/${o.killsToWin}`;
+    this.objA.dataset.v = String(o.killsA);
+    this.objBNum.textContent = String(o.killsB);
+    this.objB.dataset.v = String(o.killsB);
+    this.objTime.textContent = clock;
+    this.objTime.dataset.v = String(Math.max(0, Math.ceil(o.timeLeftMs / 1000)));
+    this.objTime.dataset.urgent = urgent ? '1' : '0';
+    this.objTime.style.color = urgent ? PALETTE.accent : PALETTE.uiText;
+    this.objTime.classList.toggle('val-obj-urgent', pulsing);
+  }
+
   setFpsVisible(v: boolean): void {
     this.fpsVisible = v;
   }
@@ -844,6 +943,8 @@ export class Hud {
         ? `drop-shadow(0 0 4px ${PALETTE.accent})`
         : 'none';
     }
+
+    this.updateObjective(s.objective);
 
     const portrait = window.innerHeight > window.innerWidth;
     if (portrait !== this.lastPortrait) this.applyLayout();

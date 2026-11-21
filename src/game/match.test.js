@@ -24,6 +24,9 @@ function createMatch(opts = {}) {
     get phase() {
       return phase;
     },
+    get killsToWin() {
+      return killsToWin;
+    },
     get killsA() {
       return killsA;
     },
@@ -95,6 +98,28 @@ test("a fresh match sits in menu with zeroed counters", () => {
   assert.equal(m.winner, null);
   assert.equal(m.timeLeftMs, 5 * 6e4);
   assert.equal(m.canAct(0), false);
+});
+test("killsToWin exposes the win target (default 25, overridable, read-only)", () => {
+  assert.equal(createMatch().killsToWin, 25);
+  const m = createMatch(FAST);
+  assert.equal(m.killsToWin, FAST.teamKillsToWin);
+  assert.throws(() => {
+    m.killsToWin = 99;
+  }, TypeError);
+  assert.equal(m.killsToWin, FAST.teamKillsToWin);
+});
+test("timeLeftMs freezes once the match is over (by kills) and ticks no longer advance it", () => {
+  const m = createMatch(FAST);
+  m.start(0);
+  m.tick(FAST.countdownMs);
+  m.tick(FAST.countdownMs + 1e4);
+  for (let i = 0; i < FAST.teamKillsToWin; i++) m.registerKill("A", FAST.countdownMs + 1e4);
+  assert.equal(m.phase, "over");
+  const frozen = m.timeLeftMs;
+  assert.equal(frozen, FAST.durationMs - 1e4);
+  m.tick(FAST.countdownMs + 3e4);
+  m.tick(FAST.countdownMs + 9e4);
+  assert.equal(m.timeLeftMs, frozen);
 });
 test("start() enters the countdown; it is a no-op while running", () => {
   const m = createMatch(FAST);

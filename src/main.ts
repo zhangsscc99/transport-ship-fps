@@ -33,6 +33,7 @@ import {
   type Ray,
 } from './game/damage';
 import { createMatch } from './game/match';
+import { scorePlayerDeath } from './game/objective';
 import { EnemyManager, type Faction } from './game/ai';
 import { parseDifficulty, type DifficultyId } from './game/difficulty';
 import { EnemyRenderer } from './render/enemies';
@@ -115,6 +116,7 @@ declare global {
       killsB: number;
       timeLeftMs: number;
       winner: string | null;
+      killsToWin: number;
     };
     __renderInfo: {
       calls: number;
@@ -337,6 +339,8 @@ function hurtPlayer(dmg: number, angleRad?: number): void {
   hud.hitFrom(angleRad ?? Math.random() * Math.PI * 2, now);
   sfx.play('hurt');
   if (killed) {
+    // enemy team scores once — `killed` is only true on the lethal applyDamage
+    scorePlayerDeath(match, killed, simNowMs);
     playerDeathSimAt = simNowMs;
     deathPanelShown = false;
     sfx.play('death');
@@ -344,6 +348,23 @@ function hurtPlayer(dmg: number, angleRad?: number): void {
     document.exitPointerLock?.();
   }
 }
+
+/** shared enemy-kill path (real shots and window.__test.damageEnemy) */
+function onEnemyKilled(now: number): void {
+  roundKills++;
+  match.registerKill('A', simNowMs);
+  sfx.play('kill');
+  hud.notifyKill(now);
+}
+
+/** per-frame snapshot for the HUD objective bar (target always from match) */
+const objectiveState = () => ({
+  phase: match.phase,
+  killsA: match.killsA,
+  killsB: match.killsB,
+  killsToWin: match.killsToWin,
+  timeLeftMs: match.timeLeftMs,
+});
 
 engine.camera = view.camera;
 engine.onResize = (w, h) => view.setAspect(w / h);
@@ -592,12 +613,7 @@ engine.onFrame = (dt) => {
             sfx.play(hit.headshot ? 'headshot' : 'hit');
             const killed = applyDamage(hit.entity, dmg, simNowMs);
             enemyMgr.onBotDamaged(hit.entity, player.position, simNowMs);
-            if (killed) {
-              roundKills++;
-              match.registerKill('A', simNowMs);
-              sfx.play('kill');
-              hud.notifyKill(now);
-            }
+            if (killed) onEnemyKilled(now);
           }
         }
       }
@@ -670,6 +686,7 @@ engine.onFrame = (dt) => {
     fps: window.__fps,
     dead: !playerEnt.alive,
     respawnIn: 0,
+    objective: objectiveState(),
   });
 
   const ri = engine.renderer.info;
@@ -719,6 +736,7 @@ engine.onFrame = (dt) => {
   mdbg.killsB = match.killsB;
   mdbg.timeLeftMs = match.timeLeftMs;
   mdbg.winner = match.winner;
+  mdbg.killsToWin = match.killsToWin;
 
   enemiesDbg.length = 0;
   for (const b of enemyMgr.bots) {
@@ -835,8 +853,9 @@ window.__test = {
   damageEnemy: (id: string, dmg: number) => {
     const b = enemyMgr.bots.find((e) => e.id === id);
     if (!b) return;
-    applyDamage(b.entity, dmg, simNowMs);
+    const killed = applyDamage(b.entity, dmg, simNowMs);
     enemyMgr.onBotDamaged(b.entity, player.position, simNowMs);
+    if (killed) onEnemyKilled(performance.now());
   },
 };
 const mdbg = {
@@ -845,6 +864,7 @@ const mdbg = {
   killsB: 0,
   timeLeftMs: 0,
   winner: null as string | null,
+  killsToWin: match.killsToWin,
 };
 window.__match = mdbg;
 const rinfo = { calls: 0, triangles: 0, points: 0, lines: 0, geometries: 0, textures: 0 };
@@ -864,6 +884,7 @@ hud.update({
   fps: 60,
   dead: false,
   respawnIn: 0,
+  objective: objectiveState(),
 });
 
 view.snap(player);
