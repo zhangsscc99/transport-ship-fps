@@ -95,86 +95,87 @@ function build(kind: Exclude<MaterialKind, 'deck'>): THREE.Material {
         map: getTexture('container'),
         roughnessMap: getTexture('containerRough'),
         normalMap: getTexture('containerNormal'),
-        normalScale: new THREE.Vector2(1, 1),
-        roughness: 1,
-        metalness: 0.25,
+        normalScale: new THREE.Vector2(0.55, 0.55),
+        roughness: 1.0,
+        metalness: 0.36,
+        envMapIntensity: 1.15,
       });
-      // Per-instance tiling: aSize = the box's world dims, so the skin repeats
-      // every ~2.4 m on each face (a 6 m side gets more rib columns instead of
-      // one stretched tile); aUvOffset decorrelates instances, and a
-      // normal-keyed phase keeps the six faces of one box from lining up.
+      // Per-instance tiling + vertical rust gradient + distinct top-face grime:
+      // aSize = world dims so ribs repeat cleanly per metre, aUvOffset decorrelates
+      // wear/rust patterns between boxes, and vIsTop flags upward-facing roofs for
+      // accumulated maritime grime & water-stain patina.
       m.onBeforeCompile = (shader) => {
         shader.uniforms.uWear = { value: getTexture('containerWear') };
         shader.vertexShader = shader.vertexShader
           .replace(
             '#include <common>',
-            '#include <common>\nattribute vec3 aSize;\nattribute vec2 aUvOffset;\nvarying vec2 vWearUv;\nvarying float vFaceV;',
+            '#include <common>\nattribute vec3 aSize;\nattribute vec2 aUvOffset;\nvarying vec2 vWearUv;\nvarying float vFaceV;\nvarying float vIsTop;',
           )
           .replace(
             '#include <uv_vertex>',
             `#include <uv_vertex>
 {
 	vec2 cFace = abs( normal.x ) > 0.5 ? aSize.zy : ( abs( normal.z ) > 0.5 ? aSize.xy : aSize.xz );
-	vec2 cUv = uv * ( cFace / 2.4 ) + aUvOffset;
-	cUv += vec2( dot( normal, vec3( 0.31, 0.71, 0.53 ) ), dot( normal, vec3( 0.17, 0.43, 0.29 ) ) );
+	vec2 cUv = vec2( uv.x * ( cFace.x / 2.4 ) + aUvOffset.x, uv.y );
+	if ( abs( normal.y ) > 0.5 ) {
+		cUv = uv * ( cFace / 2.4 ) + aUvOffset;
+	}
+	cUv.x += dot( normal, vec3( 0.31, 0.71, 0.53 ) );
 	vMapUv = cUv;
 	vRoughnessMapUv = cUv;
 	vNormalMapUv = cUv;
-	// wear mask: ~6 skin tiles per repeat + a big per-instance phase, so the
-	// metre-scale grime shapes differ between adjacent boxes
-	vWearUv = cUv * ( 1.0 / 6.0 ) + aUvOffset * vec2( 13.73, 9.17 );
-	vFaceV = uv.y; // 0 bottom → 1 top of the face, before any tiling offset
+	vWearUv = uv * ( cFace / 5.5 ) + aUvOffset * vec2( 13.73, 9.17 );
+	vFaceV = uv.y; // 0 bottom → 1 top of vertical face
+	vIsTop = step( 0.5, normal.y );
 }`,
           );
         shader.fragmentShader = shader.fragmentShader
           .replace(
             '#include <common>',
-            '#include <common>\nuniform sampler2D uWear;\nvarying vec2 vWearUv;\nvarying float vFaceV;',
+            '#include <common>\nuniform sampler2D uWear;\nvarying vec2 vWearUv;\nvarying float vFaceV;\nvarying float vIsTop;',
           )
           .replace(
             '#include <map_fragment>',
             `#include <map_fragment>
 {
-	float wear = smoothstep( 0.26, 0.68, texture2D( uWear, vWearUv ).r );
-	diffuseColor.rgb *= mix( vec3( 1.0 ), vec3( 0.7, 0.62, 0.56 ), wear ); // damp grime darkens ~0.75
-	diffuseColor.rgb = mix( diffuseColor.rgb, vec3( 0.28, 0.17, 0.1 ), wear * 0.72 ); // rust-wash staining
+	float wear = smoothstep( 0.28, 0.72, texture2D( uWear, vWearUv ).r );
+	diffuseColor.rgb *= mix( vec3( 1.0 ), vec3( 0.78, 0.73, 0.68 ), wear * 0.75 );
 }`,
           )
           .replace(
             '#include <color_fragment>',
             `#include <color_fragment>
-// rust mask (.g of the wear map) applied AFTER the per-instance tint — oxide
-// painted into the colour map was being multiplied by instanceColor, so it
-// never read warm. Two scales of the same channel keep the scabs mottled,
-// and a soft gate biases rust toward the corrugation roots (skin-tex
-// troughs at x = 19.5 + 26k).
-float rustG2 = texture2D( uWear, vMapUv * 0.83 + vec2( 0.37, 0.61 ) ).g;
-float rustMask = smoothstep( 0.30, 0.70, texture2D( uWear, vWearUv ).g );
-rustMask *= 0.75 + 0.25 * smoothstep( 0.3, 0.75, rustG2 );
-float rustRib = abs( fract( ( vMapUv.x * 256.0 - 19.5 ) / 26.0 + 0.5 ) - 0.5 ) * 26.0;
-rustMask *= 0.75 + 0.25 * smoothstep( 7.0, 2.5, rustRib );
-// oxide hue kept saturated — a flatter brown washes out warm once blended
-// onto green/blue paint, and a brighter tone reads lighter than the paint
-// around it instead of as staining. Pitted cores run a shade deeper than
-// the stained halo, and rust gathers in the run-off band just under the
-// top lip of the face where the weep starts
-float rustM = rustMask * ( 0.45 + 0.55 * rustMask ) * 0.88; // strong cores, faint halo
-float rustBand = smoothstep( 0.30, 0.62, vFaceV ) * ( 1.0 - smoothstep( 0.82, 0.97, vFaceV ) );
-rustM *= 0.55 + 0.45 * rustBand;
-diffuseColor.rgb = mix( diffuseColor.rgb, vec3( 0.30, 0.15, 0.05 ) * 0.95, rustM );`,
+// Vertical rust gradient + mottled oxide scabs (applied AFTER per-instance
+// paint tint so rust reads warm oxide across red, blue, olive & ochre boxes).
+float rustG1 = texture2D( uWear, vWearUv ).g;
+float rustG2 = texture2D( uWear, vMapUv * 0.9 + vec2( 0.37, 0.61 ) ).g;
+float rustNoise = smoothstep( 0.28, 0.72, rustG1 ) * ( 0.65 + 0.35 * smoothstep( 0.25, 0.75, rustG2 ) );
+// Strongest oxidation near bottom deck-splash zone & top rain-weep lip
+float botGrad = 1.0 - smoothstep( 0.0, 0.34, vFaceV );
+float topGrad = smoothstep( 0.74, 0.98, vFaceV );
+float gradBias = clamp( 0.28 + botGrad * 0.85 + topGrad * 0.55, 0.0, 1.2 );
+float rustMask = clamp( rustNoise * gradBias, 0.0, 1.0 );
+float rustRib = abs( fract( ( vMapUv.x * 256.0 - 16.0 ) / 32.0 + 0.5 ) - 0.5 ) * 32.0;
+rustMask *= 0.8 + 0.2 * smoothstep( 8.0, 2.5, rustRib );
+float rustBlend = rustMask * ( 0.42 + 0.48 * rustMask ) * 0.68;
+diffuseColor.rgb = mix( diffuseColor.rgb, vec3( 0.34, 0.16, 0.07 ), rustBlend );
+
+// Top-face accumulated grime, dust & weathered roof patina
+float topDirt = vIsTop * ( 0.45 + 0.50 * smoothstep( 0.20, 0.75, texture2D( uWear, vWearUv * 1.15 ).r ) );
+diffuseColor.rgb = mix( diffuseColor.rgb, vec3( 0.24, 0.23, 0.22 ), topDirt * 0.65 );`,
           )
           .replace(
             '#include <roughnessmap_fragment>',
             `#include <roughnessmap_fragment>
-	roughnessFactor = mix( roughnessFactor, 0.95, rustMask ); // rust is matte`,
+	roughnessFactor = mix( roughnessFactor, 0.94, max( rustMask * 0.85, topDirt ) );`,
           )
           .replace(
             '#include <metalnessmap_fragment>',
             `#include <metalnessmap_fragment>
-	metalnessFactor = mix( metalnessFactor, 0.0, rustMask ); // oxide, not steel`,
+	metalnessFactor = mix( metalnessFactor, 0.04, max( rustMask * 0.9, topDirt ) );`,
           );
       };
-      m.customProgramCacheKey = () => 'container-tiled';
+      m.customProgramCacheKey = () => 'container-tiled-v2';
       return m;
     }
     case 'tower':
@@ -488,14 +489,18 @@ export function getStencilMaterial(cell: number): THREE.MeshStandardMaterial {
   let m = stencilMats[i];
   if (!m) {
     const tex = getTexture('stencil').clone();
-    tex.repeat.set(0.25, 1);
-    tex.offset.set(i * 0.25, 0);
+    tex.wrapS = THREE.ClampToEdgeWrapping;
+    tex.wrapT = THREE.ClampToEdgeWrapping;
+    tex.repeat.set(0.242, 1);
+    tex.offset.set(i * 0.25 + 0.004, 0);
+    tex.colorSpace = THREE.SRGBColorSpace;
     tex.needsUpdate = true;
     m = new THREE.MeshStandardMaterial({
       map: tex,
       transparent: true,
-      roughness: 0.9,
-      metalness: 0,
+      roughness: 0.88,
+      metalness: 0.02,
+      envMapIntensity: 0.9,
       depthWrite: false,
       polygonOffset: true,
       polygonOffsetFactor: -2,

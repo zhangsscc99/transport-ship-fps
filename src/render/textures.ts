@@ -134,9 +134,9 @@ function genDeckNormal(): HTMLCanvasElement {
   return c;
 }
 
-// --- 256² container corrugation normal map: ribs at the same 26px period as
-// genContainer's sine shading + the 6.5px fine wave, so the lit/shadowed rib
-// faces land exactly on the painted corrugation ---
+// --- 256² container corrugation normal map: trapezoidal ISO-panel ribs at
+// 32px period with moderate slope (no harsh zebra-black self-shadowing) and
+// flat structural header/footer rails along top & bottom edges ---
 function genContainerNormal(): HTMLCanvasElement {
   const size = 256;
   const [c, ctx] = makeCanvas(size);
@@ -144,13 +144,15 @@ function genContainerNormal(): HTMLCanvasElement {
   const d = img.data;
   const rnd = mulberry32(43);
   for (let y = 0; y < size; y++) {
+    // Flat header/footer beams in top 20px and bottom 16px
+    const railFade =
+      y < 18 ? 0 : y < 24 ? (y - 18) / 6 : y > size - 14 ? 0 : y > size - 20 ? (size - 14 - y) / 6 : 1;
     for (let x = 0; x < size; x++) {
-      // slope of the rib height field (analytic derivative of the shade fn)
       const gx =
-        Math.cos((x * Math.PI * 2) / 26) * 2.6 +
-        Math.cos((x * Math.PI * 2) / 6.5 + 1.3) * 1.1 +
-        (rnd() - 0.5) * 0.35;
-      const gy = (rnd() - 0.5) * 0.15;
+        (Math.cos((x * Math.PI * 2) / 32) * 0.65 + Math.cos((x * Math.PI * 2) / 16) * 0.16) *
+          railFade +
+        (rnd() - 0.5) * 0.1;
+      const gy = (y === 20 || y === size - 16 ? 0.55 : 0) + (rnd() - 0.5) * 0.08;
       const il = 1 / Math.hypot(gx, gy, 1);
       const i = (y * size + x) * 4;
       d[i] = (-gx * il * 0.5 + 0.5) * 255;
@@ -186,36 +188,47 @@ function genStripes(): HTMLCanvasElement {
   return c;
 }
 
-// --- 512×64 stencil atlas: four shipping-code cells (128×64 each), worn
-// white paint on transparent — containers pick a cell per decal ---
+// --- 512×128 stencil atlas: four shipping-code cells (128×128 each), worn
+// off-white stencil paint with generous margins so characters never clip ---
 function genStencil(): HTMLCanvasElement {
   const w = 512;
-  const h = 64;
+  const h = 128;
   const c = document.createElement('canvas');
   c.width = w;
   c.height = h;
   const ctx = c.getContext('2d')!;
   const rnd = mulberry32(71);
-  const codes = ['MSKU 481-07', 'CSNU 730-2', 'TGHU 055-9', 'OCLU 216-4'];
-  const subs = ['MAX 30480 KG', '22G1 · NET 28200', 'TARE 2180 KG', 'CSC-24 · SEALED'];
+  const codes = ['MSKU 4817', 'CSNU 7302', 'TGHU 0559', 'OCLU 2164'];
+  const iso = ['22G1', '45G1', '22G1', '42G1'];
+  const subs = ['MAX 30480 KG', 'NET 28200 KG', 'TARE 2180 KG', 'CSC-24 SEAL'];
   ctx.clearRect(0, 0, w, h);
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   codes.forEach((code, i) => {
-    const cx = i * 128 + 64;
-    ctx.fillStyle = 'rgba(228,232,238,0.92)';
-    ctx.font = "700 26px 'Courier New',monospace";
-    // stencil breaks: draw glyph-by-glyph isn't needed — erode after instead
-    ctx.fillText(code, cx, 22);
-    ctx.font = "600 13px 'Courier New',monospace";
-    ctx.fillStyle = 'rgba(228,232,238,0.8)';
-    ctx.fillText(subs[i], cx, 48);
+    const x0 = i * 128;
+    const cx = x0 + 64;
+    // subtle corner bracket line
+    ctx.strokeStyle = 'rgba(232,236,240,0.72)';
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(x0 + 12, 16, 104, 92);
+    // primary container reporting mark
+    ctx.fillStyle = 'rgba(236,240,244,0.94)';
+    ctx.font = "700 17px 'Courier New',monospace";
+    ctx.fillText(code, cx, 42);
+    // ISO size/type badge
+    ctx.font = "700 12px 'Courier New',monospace";
+    ctx.fillStyle = 'rgba(232,236,240,0.85)';
+    ctx.fillText(iso[i], cx, 66);
+    // gross/tare spec line
+    ctx.font = "600 11px 'Courier New',monospace";
+    ctx.fillStyle = 'rgba(226,230,236,0.78)';
+    ctx.fillText(subs[i], cx, 90);
   });
-  // paint erosion: destination-out speckle so letters read sprayed-on
+  // sprayed-paint erosion speckle
   ctx.globalCompositeOperation = 'destination-out';
-  for (let i = 0; i < 700; i++) {
-    ctx.globalAlpha = 0.15 + rnd() * 0.5;
-    const s = 0.5 + rnd() * 1.6;
+  for (let i = 0; i < 650; i++) {
+    ctx.globalAlpha = 0.12 + rnd() * 0.42;
+    const s = 0.6 + rnd() * 1.5;
     ctx.fillRect(rnd() * w, rnd() * h, s, s);
   }
   ctx.globalCompositeOperation = 'source-over';
@@ -608,17 +621,25 @@ function genContainer(): HTMLCanvasElement {
   }
   ctx.globalAlpha = 1;
 
-  // corrugation: ~10 sine ribs across the sheet + a finer secondary wave
+  // corrugation: subtle 32px sine ribs matching genContainerNormal (no harsh black bars)
   const shade = (x: number) =>
-    1 + 0.11 * Math.sin((x * Math.PI * 2) / 26) + 0.05 * Math.sin((x * Math.PI * 2) / 6.5 + 1.3);
-  grain(ctx, size, rnd, 0.04, shade);
+    1 + 0.055 * Math.sin((x * Math.PI * 2) / 32) + 0.02 * Math.sin((x * Math.PI * 2) / 16 + 0.8);
+  grain(ctx, size, rnd, 0.035, shade);
 
-  // top dark band + bottom grime gradient
+  // structural top/bottom header rail bands + weld seam shadow
+  ctx.fillStyle = 'rgba(228,232,238,0.6)';
+  ctx.fillRect(0, 0, size, 18);
+  ctx.fillRect(0, size - 14, size, 14);
+  ctx.fillStyle = 'rgba(24,28,34,0.34)';
+  ctx.fillRect(0, 18, size, 3);
+  ctx.fillRect(0, size - 16, size, 2);
+
+  // top grime band + bottom splash gradient (lifted >= #181c22, never pure black)
   const g = ctx.createLinearGradient(0, 0, 0, size);
-  g.addColorStop(0, 'rgba(10,14,18,0.55)');
-  g.addColorStop(0.14, 'rgba(10,14,18,0)');
-  g.addColorStop(0.85, 'rgba(10,14,18,0)');
-  g.addColorStop(1, 'rgba(10,14,18,0.42)');
+  g.addColorStop(0, 'rgba(24,28,34,0.42)');
+  g.addColorStop(0.16, 'rgba(24,28,34,0)');
+  g.addColorStop(0.82, 'rgba(24,28,34,0)');
+  g.addColorStop(1, 'rgba(24,28,34,0.38)');
   ctx.fillStyle = g;
   ctx.fillRect(0, 0, size, size);
 
