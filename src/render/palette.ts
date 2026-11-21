@@ -29,6 +29,7 @@ export const PALETTE = {
   teamA: '#4fa4f1', // 我方：蓝
   teamB: '#ff4655', // 敌方：红
   hpFull: '#ece8e1', // VALORANT 灰白血条（非饱和色块）
+  hpSeg2: '#b8e0ff', // 第二段 100–200 护甲级战术亮蓝白
   hpMid: '#d5d1ca',
   hpLow: '#ff4655', // 仅低血量/危险使用 Valorant 红
   uiPanel: 'rgba(8,12,18,0.55)',
@@ -52,13 +53,19 @@ export const PALETTE = {
   tacVelcro: '#171c22', // 袖口魔术贴
   tacStitch: '#6c7c8e', // 袖口双排缝线
   blSuit: '#1c1f25', // 潜伏者：黑红战术服底色
+  blTeam: '#b3221f', // 潜伏者：TeamColour 暗红染色
   blRed: '#d4262e', // 潜伏者：战术红甲/肩带/臂章
   blMask: '#131519', // 潜伏者：黑色战术面罩
   blEye: '#ff2836', // 潜伏者：红眼灯
+  blTagBg: 'rgba(155, 28, 25, 0.88)', // 潜伏者头顶标签暗红底
+  blTagBorder: 'rgba(255, 92, 86, 0.9)',
   grSuit: '#213f68', // 保卫者：深蓝战术服
+  grTeam: '#2f6fb0', // 保卫者：TeamColour 战术蓝染色
   grWhite: '#e6ecf2', // 保卫者：白色防弹胸甲/护肩
   grHelmet: '#1a2e4a', // 保卫者：蓝色战术头盔
   grEye: '#2ec4ff', // 保卫者：蓝眼灯
+  grTagBg: 'rgba(35, 90, 148, 0.88)', // 保卫者头顶标签战术蓝底
+  grTagBorder: 'rgba(94, 180, 255, 0.9)',
   bootDark: '#17191d', // 战术军靴
   brass: '#d8b054', // 弹壳 / 弹匣顶弹 / 加特林弹链黄铜
   gatlingAccent: '#f5b041', // 加特林重武 HUD 琥珀橙
