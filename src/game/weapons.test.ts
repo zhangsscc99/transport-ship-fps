@@ -1,6 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { Weapon, WeaponRack, WEAPONS, SPREAD_RECOVER_MS } from './weapons.ts';
+import {
+  Weapon,
+  WeaponRack,
+  WEAPONS,
+  SPREAD_RECOVER_MS,
+  EARLY_FIRE_WINDOW_MS,
+  SWAP_DURATION_MS,
+} from './weapons.ts';
 import type { Vec3 } from './player.ts';
 
 const ORG: Vec3 = { x: 0, y: 1.7, z: 0 };
@@ -10,20 +17,20 @@ const rng = () => 0.5; // deterministic mid-disc spread for deviation asserts
 const angle = (a: Vec3, b: Vec3): number =>
   Math.acos(Math.min(1, a.x * b.x + a.y * b.y + a.z * b.z));
 
-test('spec table matches SPEC: rifle / sniper / shotgun', () => {
+test('spec table matches SPEC: rifle / sniper / shotgun & reload timings', () => {
   assert.equal(WEAPONS.length, 3);
   const [r, s, g] = WEAPONS;
   assert.deepEqual(
-    { dmg: r.dmg, rpm: r.rpm, mag: r.mag, pellets: r.pellets },
-    { dmg: 24, rpm: 700, mag: 30, pellets: 1 },
+    { dmg: r.dmg, rpm: r.rpm, mag: r.mag, pellets: r.pellets, reloadMs: r.reloadMs },
+    { dmg: 24, rpm: 700, mag: 30, pellets: 1, reloadMs: 1100 },
   );
   assert.deepEqual(
-    { dmg: s.dmg, rpm: s.rpm, mag: s.mag, pellets: s.pellets, noFalloff: s.noFalloff },
-    { dmg: 95, rpm: 45, mag: 5, pellets: 1, noFalloff: true },
+    { dmg: s.dmg, rpm: s.rpm, mag: s.mag, pellets: s.pellets, noFalloff: s.noFalloff, reloadMs: s.reloadMs },
+    { dmg: 95, rpm: 45, mag: 5, pellets: 1, noFalloff: true, reloadMs: 1550 },
   );
   assert.deepEqual(
-    { dmg: g.dmg, rpm: g.rpm, mag: g.mag, pellets: g.pellets },
-    { dmg: 12, rpm: 60, mag: 6, pellets: 8 },
+    { dmg: g.dmg, rpm: g.rpm, mag: g.mag, pellets: g.pellets, reloadMs: g.reloadMs },
+    { dmg: 12, rpm: 60, mag: 6, pellets: 8, reloadMs: 950 },
   );
 });
 
@@ -84,16 +91,45 @@ test('all weapons initialize with a full magazine (30 / 5 / 6)', () => {
   );
 });
 
-test('trigger press during reload interrupts it without firing', () => {
-  const w = new Weapon(WEAPONS[0], rng);
-  w.ammo = 5;
-  w.reload(0);
-  assert.equal(w.tryFire(100, ORG, DIR), null);
-  assert.equal(w.reloading, false, 'reload was not interrupted');
-  assert.equal(w.ammo, 5, 'lost the remaining ammo');
-  // next press (past the rate interval) fires leftover ammo
-  assert.ok(w.tryFire(300, ORG, DIR));
-  assert.equal(w.ammo, 4);
+test('fire during 0..900ms of rifle reload does NOT cancel reload or consume ammo; last 100ms allows early fire', () => {
+  const w = new Weapon(WEAPONS[0], rng); // 1100ms
+  w.ammo = 10;
+  assert.equal(w.reload(0), true);
+  for (const t of [50, 200, 500, 900, 999]) {
+    assert.equal(w.tryFire(t, ORG, DIR), null, `should not fire at ${t}ms`);
+    assert.equal(w.reloading, true, `reload must stay active at ${t}ms`);
+    assert.equal(w.ammo, 10, `ammo must not drop at ${t}ms`);
+  }
+  // Last 100ms (1000..1100ms): early fire completes reload & shoots immediately
+  const shot = w.tryFire(1100 - EARLY_FIRE_WINDOW_MS + 10, ORG, DIR);
+  assert.ok(shot, 'expected early fire in last 100ms');
+  assert.equal(w.reloading, false);
+  assert.equal(w.ammo, WEAPONS[0].mag - 1);
+});
+
+test('shotgun & sniper reload shell-by-shell (350ms/shell + 400ms slap)', () => {
+  const sg = new Weapon(WEAPONS[2], rng);
+  sg.ammo = 4; // 2 missing shells -> 100 + 2*350 + 400 + 100 = 1300ms
+  assert.equal(sg.reload(0), true);
+  sg.tick(450); // 100 + 350 -> 1st shell loaded
+  assert.equal(sg.ammo, 5);
+  assert.equal(sg.reloading, true);
+  sg.tick(800); // 100 + 700 -> 2nd shell loaded
+  assert.equal(sg.ammo, 6);
+  assert.equal(sg.reloading, true); // still in 400ms slap + 100ms return
+  sg.tick(1300);
+  assert.equal(sg.reloading, false);
+  assert.equal(sg.ammo, 6);
+
+  // 1 missing shell matches exact base reloadMs (shotgun 950ms, sniper 1550ms)
+  sg.ammo = 5;
+  sg.reload(2000);
+  assert.equal(sg.reloadRemaining(2000), 950);
+
+  const sn = new Weapon(WEAPONS[1], rng);
+  sn.ammo = 4;
+  sn.reload(0);
+  assert.equal(sn.reloadRemaining(0), 1550);
 });
 
 test('reload on a full mag is a no-op', () => {
@@ -113,7 +149,6 @@ test('first shot is precise; consecutive shots spread more', () => {
   const dev3 = angle(d3, DIR);
   assert.ok(dev2 > dev1, `dev2 ${dev2} !> dev1 ${dev1}`);
   assert.ok(dev3 > dev2, `dev3 ${dev3} !> dev2 ${dev2}`);
-  // deviation ≈ 0.707·(spread + recoil·n) with rng()=0.5
   assert.ok(dev3 < WEAPONS[0].spread + WEAPONS[0].recoil * 2 + 1e-6);
 });
 
@@ -140,13 +175,26 @@ test('shotgun fires all 8 pellets on one trigger pull', () => {
   }
 });
 
-test('WeaponRack cycles weapons and cancels the outgoing reload', () => {
+test('WeaponRack cycles weapons, cancels early reload, and buffers swap in last 100ms', () => {
   const rack = new WeaponRack(rng);
   rack.current.ammo = 2;
   rack.current.reload(0);
   assert.equal(rack.current.reloading, true);
+  // Early swap cancels reload
   assert.equal(rack.swap().spec.id, 'sniper');
   assert.equal(rack.list[0].reloading, false, 'outgoing reload kept running');
   assert.equal(rack.swap().spec.id, 'shotgun');
-  assert.equal(rack.swap().spec.id, 'rifle');
+  assert.equal(rack.swap(1000).spec.id, 'rifle');
+  assert.equal(rack.swapping(1000), true);
+  assert.equal(rack.swapping(1000 + SWAP_DURATION_MS), false);
+
+  // Swap requested inside final 100ms of reload buffers until reload completes
+  rack.current.ammo = 5;
+  rack.current.reload(2000); // ends at 3100
+  assert.equal(rack.requestSwap(3040), null, 'should buffer swap inside last 100ms');
+  assert.equal(rack.current.spec.id, 'rifle');
+  const swapped = rack.tick(3100);
+  assert.ok(swapped, 'buffered swap should trigger when reload completes');
+  assert.equal(swapped.spec.id, 'sniper');
+  assert.equal(rack.list[0].ammo, WEAPONS[0].mag, 'rifle finished reloading before swap');
 });

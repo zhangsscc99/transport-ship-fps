@@ -144,9 +144,44 @@ function updateRespawn(e, now, spawn) {
 
 // src/game/weapons.ts
 var WEAPONS = [
-  { id: "rifle", name: "ASSAULT RIFLE", dmg: 24, rpm: 700, mag: 30, reloadMs: 1900, spread: 6e-3, recoil: 45e-4, pellets: 1 },
-  { id: "sniper", name: "SNIPER RIFLE", dmg: 95, rpm: 45, mag: 5, reloadMs: 3200, spread: 15e-4, recoil: 0.09, pellets: 1, noFalloff: true },
-  { id: "shotgun", name: "SHOTGUN", dmg: 12, rpm: 60, mag: 6, reloadMs: 2600, spread: 0.055, recoil: 0.02, pellets: 8 }
+  {
+    id: "rifle",
+    name: "ASSAULT RIFLE",
+    dmg: 24,
+    rpm: 700,
+    mag: 30,
+    reloadMs: 1100,
+    spread: 6e-3,
+    recoil: 45e-4,
+    pellets: 1
+  },
+  {
+    id: "sniper",
+    name: "SNIPER RIFLE",
+    dmg: 95,
+    rpm: 45,
+    mag: 5,
+    reloadMs: 1550,
+    spread: 15e-4,
+    recoil: 0.09,
+    pellets: 1,
+    noFalloff: true,
+    // 400ms bolt open + 350ms/shell + 400ms bolt slap + 400ms return = 1550ms for 1 round
+    shellByShell: { leadMs: 400, perShellMs: 350, slapMs: 400, settleMs: 400 }
+  },
+  {
+    id: "shotgun",
+    name: "SHOTGUN",
+    dmg: 12,
+    rpm: 60,
+    mag: 6,
+    reloadMs: 950,
+    spread: 0.055,
+    recoil: 0.02,
+    pellets: 8,
+    // 100ms tilt + 350ms/shell + 400ms pump slap + 100ms return = 950ms for 1 shell
+    shellByShell: { leadMs: 100, perShellMs: 350, slapMs: 400, settleMs: 100 }
+  }
 ];
 
 // src/game/damage.test.ts

@@ -127,6 +127,7 @@ const menu = new Menu(document.body, {
     player.pitch = 0;
     view.snap(player);
     rack.index = 0;
+    rack.resetSwap();
     weaponView.setWeapon(rack.current.spec.id);
     for (const w of rack.list) {
       w.ammo = w.spec.mag;
@@ -214,19 +215,26 @@ engine.onFrame = (dt) => {
     }
   }
 
-  view.update(player, dt);
+  const bufferedSwapped = rack.tick(now);
+  if (bufferedSwapped) {
+    weaponView.startSwap(bufferedSwapped.spec.id);
+  }
+  if (acting && playerEnt.alive && inp.swap) {
+    const nextW = rack.requestSwap(now);
+    if (nextW) weaponView.startSwap(nextW.spec.id);
+  }
+  const w = rack.current;
+
+  view.update(player, dt, { reloading: w.reloading });
   lights.update(now * 0.001, view.camera.position);
   updateWater(now * 0.001);
   atmo.update(view.camera.position, view.camera.fov);
 
-  if (acting && playerEnt.alive && inp.swap) {
-    weaponView.setWeapon(rack.swap().spec.id);
-  }
-  const w = rack.current;
-  w.tick(now);
   if (acting && playerEnt.alive) {
-    if (inp.reload && w.reload(now)) sfx.play('reload');
-    if (inp.fire && player.onGround) {
+    if (inp.reload && !rack.swapping(now) && w.reload(now)) sfx.play('reload');
+    if (inp.fire) rack.noteFireIntent(now);
+    const wantsFire = inp.fire || rack.hasBufferedFire(now);
+    if (wantsFire && player.onGround && !rack.swapping(now)) {
       const eye: Vec3 = {
         x: player.position.x,
         y: player.position.y + player.eyeHeight,
@@ -234,6 +242,7 @@ engine.onFrame = (dt) => {
       };
       const shots = w.tryFire(now, eye, aimDir());
       if (shots) {
+        rack.clearBufferedFire();
         weaponView.onFire();
         touch.pulseFire();
         sfx.play(SHOT_SFX[w.spec.id]);
@@ -259,7 +268,8 @@ engine.onFrame = (dt) => {
   }
 
   weaponView.group.visible = playerEnt.alive;
-  weaponView.update(dt);
+  weaponView.update(dt, view.bob);
+  hud.setSwapBlur(weaponView.swapBlurAmount);
   tracers.update(dt);
 
   const focalPx = window.innerHeight / 2 / Math.tan((view.camera.fov / 2) * (Math.PI / 180));

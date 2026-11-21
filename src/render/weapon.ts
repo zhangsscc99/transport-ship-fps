@@ -17,6 +17,7 @@ import { getMaterial } from './materials';
 import type { MaterialKind } from './materials';
 import type { WeaponSpec } from '../game/weapons';
 import type { Vec3 } from '../game/player';
+import { clamp01, damp, easeInCubic, easeOutBack, easeOutCubic } from './tween';
 
 type GunId = WeaponSpec['id'];
 type MatKey = 'metal' | 'poly' | 'mag' | 'edge' | 'glove' | 'cuff';
@@ -477,6 +478,15 @@ export class WeaponView {
   private flashT = 0;
   private time = 0;
   private current: GunId = 'rifle';
+  // Continuous 0.35s weapon swap (0..0.175s old gun drops, 0.175..0.35s new gun rises)
+  private swapActive = false;
+  private swapElapsed = 0;
+  private readonly swapDuration = 0.35;
+  private swapPending: GunId | null = null;
+  private swapDropY = 0;
+  private swapDropPitch = 0;
+  private bobX = 0;
+  private bobY = 0;
   // pushed right/down so the muzzle never covers the crosshair's lower half;
   // muzzle cants up ~7° like the Saltline viewmodel, yaw turns the ejection
   // side toward the camera so the body reads as a gun, not a stick
@@ -506,13 +516,40 @@ export class WeaponView {
     this.group.rotation.copy(this.baseRot);
   }
 
+  /** Instant switch (used on match start / respawn). */
   setWeapon(id: GunId): void {
+    this.swapActive = false;
+    this.swapPending = null;
+    this.swapElapsed = 0;
+    this.swapDropY = 0;
+    this.swapDropPitch = 0;
     if (id === this.current) return;
     this.models.get(this.current)!.visible = false;
     this.models.get(id)!.visible = true;
     this.current = id;
     this.flash.position.z = this.muzzles.get(id)!;
     this.kick = 0;
+  }
+
+  /** Smooth 0.35s swap: old gun drops out of frame → new gun rises continuously. */
+  startSwap(id: GunId): void {
+    if (id === this.current && !this.swapActive) return;
+    this.swapPending = id;
+    if (!this.swapActive) {
+      this.swapActive = true;
+      this.swapElapsed = 0;
+    } else if (this.swapElapsed >= this.swapDuration * 0.5) {
+      // Mid-raise interrupted by another swap: smoothly mirror back into the drop half
+      const remainingRise = 1 - (this.swapElapsed - this.swapDuration * 0.5) / (this.swapDuration * 0.5);
+      this.swapElapsed = remainingRise * this.swapDuration * 0.5;
+    }
+  }
+
+  /** Normalized swap blur intensity [0..1] peaking at the bottom of the swap arc. */
+  get swapBlurAmount(): number {
+    if (!this.swapActive) return 0;
+    const u = clamp01(this.swapElapsed / this.swapDuration);
+    return Math.sin(u * Math.PI) * 0.65;
   }
 
   onFire(): void {
@@ -528,10 +565,44 @@ export class WeaponView {
     return this.flash.getWorldPosition(out);
   }
 
-  update(dt: number): void {
+  update(dt: number, bob?: { x: number; y: number }): void {
     this.time += dt;
     if (this.kick > 0) this.kick = Math.max(0, this.kick - dt * 7);
-    const k = this.kick * this.kick; // ease-out feel
+    const k = easeOutCubic(this.kick);
+    // Smooth weapon walk-bob fed from decoupled PlayerCamera bob
+    this.bobX = damp(this.bobX, (bob?.x ?? 0) * 0.85, 14, dt);
+    this.bobY = damp(this.bobY, (bob?.y ?? 0) * 0.75, 14, dt);
+
+    // Continuous 0.35s swap arc
+    if (this.swapActive) {
+      const half = this.swapDuration * 0.5;
+      const prev = this.swapElapsed;
+      this.swapElapsed = Math.min(this.swapDuration, this.swapElapsed + dt);
+      if (prev < half && this.swapElapsed >= half && this.swapPending) {
+        this.models.get(this.current)!.visible = false;
+        this.current = this.swapPending;
+        this.models.get(this.current)!.visible = true;
+        this.flash.position.z = this.muzzles.get(this.current)!;
+        this.kick = 0;
+        this.swapPending = null;
+      }
+      if (this.swapElapsed < half) {
+        const u = easeInCubic(this.swapElapsed / half);
+        this.swapDropY = -0.36 * u;
+        this.swapDropPitch = -0.48 * u;
+      } else {
+        const u = clamp01((this.swapElapsed - half) / half);
+        const rise = 1 - easeOutBack(u, 0.9);
+        this.swapDropY = -0.36 * rise;
+        this.swapDropPitch = -0.48 * rise;
+      }
+      if (this.swapElapsed >= this.swapDuration) {
+        this.swapActive = false;
+        this.swapDropY = 0;
+        this.swapDropPitch = 0;
+      }
+    }
+
     // idle breathing — a few mm of drift so the gun doesn't look frozen
     const breathe = Math.sin(this.time * 1.7) * 0.002;
     const sway = Math.sin(this.time * 1.15) * 0.0015;
@@ -544,12 +615,12 @@ export class WeaponView {
       px = Math.min(px, Math.max(0.11, halfW * 0.7));
     }
     this.group.position.set(
-      px + sway,
-      this.basePos.y - k * 0.02 + breathe,
+      px + sway + this.bobX,
+      this.basePos.y - k * 0.02 + breathe + this.bobY + this.swapDropY,
       this.basePos.z + k * 0.07,
     );
     this.group.rotation.set(
-      this.baseRot.x + k * 0.09 + breathe * 0.6,
+      this.baseRot.x + k * 0.09 + breathe * 0.6 + this.swapDropPitch,
       this.baseRot.y + sway * 0.5,
       this.baseRot.z,
     ); // muzzle rises
