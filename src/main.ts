@@ -29,6 +29,7 @@ import { EnemyRenderer } from './render/enemies';
 import { Menu } from './render/menu';
 import { PALETTE } from './render/palette';
 import { createSfx } from './audio/sfx';
+import { BgmController, type BgmTelemetry } from './audio/bgm';
 
 declare global {
   interface Window {
@@ -53,6 +54,7 @@ declare global {
       firing: boolean;
     };
     __sfx: { counts: Record<string, number>; muted: boolean; unlocked: boolean };
+    __bgm: BgmTelemetry;
     __fx: { hits: number; kills: number; flashOpacity: number; lowHpPulse: number };
     __anim: {
       reloadActive: boolean;
@@ -144,10 +146,17 @@ const RECOIL_SPEC = {
 } as const;
 
 const sfx = createSfx();
+const bgm = new BgmController(document.body);
+worldVfx.onShellBounce = (spd) => {
+  if (spd > 0.6) sfx.play('shellClink', { volume: Math.min(1, spd * 0.25) });
+};
 hud.setMuted(sfx.muted);
-hud.onMuteToggle = (m) => sfx.setMuted(m);
-// AudioContext unlock must happen inside a real user gesture (autoplay policy)
-const onFirstGesture = () => void sfx.unlock();
+bgm.setMuted(sfx.muted);
+// AudioContext + BGM unlock must happen inside a real user gesture (autoplay policy)
+const onFirstGesture = () => {
+  void sfx.unlock();
+  bgm.unlock();
+};
 window.addEventListener('pointerdown', onFirstGesture, { once: true });
 window.addEventListener('keydown', onFirstGesture, { once: true });
 
@@ -155,6 +164,8 @@ const SHOT_SFX = { rifle: 'shotRifle', gatling: 'shotGatling' } as const;
 /** stride length per footstep — interval scales with move speed via distance */
 const STEP_STRIDE = 2.1;
 let stepAcc = 0;
+let lastHeartbeatMs = 0;
+let lastReloadStageSfx = 0;
 /** Accumulated delta-time simulation clock (ms) for frame-rate-independent weapon/reload timers. */
 let simNowMs = 0;
 
@@ -174,6 +185,10 @@ const startRound = (settings: { difficulty: DifficultyId; muted: boolean; musicE
   currentDifficulty = parseDifficulty(settings.difficulty);
   enemyMgr.setDifficulty(currentDifficulty);
   sfx.setMuted(settings.muted);
+  bgm.setMuted(settings.muted);
+  bgm.setEnabled(settings.musicEnabled);
+  bgm.unlock();
+  bgm.setTrack('battle');
   hud.setMuted(settings.muted);
   match.resetToMenu();
   match.start(performance.now());
@@ -223,6 +238,8 @@ const menu = new Menu(document.body, {
   onRetry: startRound,
   onReturnMenu: () => {
     match.resetToMenu();
+    bgm.setTrack('menu');
+    sfx.setGatlingMotor(0, false);
     playerEnt.alive = true;
     playerEnt.hp = playerEnt.maxHp;
     playerDeathSimAt = -1;
@@ -242,13 +259,18 @@ const menu = new Menu(document.body, {
     currentDifficulty = parseDifficulty(s.difficulty);
     enemyMgr.setDifficulty(currentDifficulty);
     sfx.setMuted(s.muted);
+    bgm.setMuted(s.muted);
+    bgm.setEnabled(s.musicEnabled);
     hud.setMuted(s.muted);
   },
 });
 currentDifficulty = menu.settings.difficulty;
 enemyMgr.setDifficulty(currentDifficulty);
+bgm.setEnabled(menu.settings.musicEnabled);
+bgm.setMuted(menu.settings.muted);
 hud.onMuteToggle = (m) => {
   sfx.setMuted(m);
+  bgm.setMuted(m);
   menu.syncMuted(m);
 };
 menu.show();
@@ -287,6 +309,8 @@ function hurtPlayer(dmg: number, angleRad?: number): void {
   if (killed) {
     playerDeathSimAt = simNowMs;
     deathPanelShown = false;
+    sfx.play('death');
+    sfx.setGatlingMotor(0, false);
     document.exitPointerLock?.();
   }
 }
@@ -303,8 +327,11 @@ engine.onFrame = (dt) => {
 
   menu.setCountdown(match.phase === 'countdown' ? match.countdownLeftMs : null);
   if (match.phase === 'over' && prevPhase !== 'over') {
+    bgm.setTrack('menu');
+    sfx.setGatlingMotor(0, false);
     menu.showResult({ winner: match.winner, killsA: match.killsA, killsB: match.killsB });
   }
+  bgm.update(dt);
 
   if (acting && playerEnt.alive) {
     // Fallback safety recovery if player ever drops below y < -2:
@@ -382,16 +409,23 @@ engine.onFrame = (dt) => {
         lastSafePos.z = player.position.z;
       }
 
-      // footsteps — throttled by distance travelled, so interval follows speed
+      // footsteps — throttled by distance travelled; differentiate metal deck vs wooden crates
       const hSpeed = Math.hypot(player.velocity.x, player.velocity.z);
       if (player.onGround && hSpeed > 0.5) {
         stepAcc += hSpeed * dt;
         if (stepAcc >= STEP_STRIDE) {
           stepAcc = 0;
-          sfx.play('footstep');
+          const onWoodCrate = player.position.y > 0.15 && player.position.y < 2.25;
+          sfx.play(onWoodCrate ? 'footstepWood' : 'footstepMetal');
         }
       } else {
         stepAcc = 0;
+      }
+
+      // Low-HP heartbeat pulse when 0 < hp <= 30
+      if (playerEnt.hp > 0 && playerEnt.hp <= 30 && simNowMs - lastHeartbeatMs > 950) {
+        lastHeartbeatMs = simNowMs;
+        sfx.play('heartbeat', { volume: 0.75 });
       }
     }
   }
@@ -442,6 +476,20 @@ engine.onFrame = (dt) => {
   updateWater(now * 0.001);
   atmo.update(view.camera.position, view.camera.fov);
 
+  sfx.setGatlingMotor(
+    acting && playerEnt.alive && w.spec.id === 'gatling' && !rack.swapping(simNowMs) ? w.spinLevel : 0,
+    gatlingActivelyFiring,
+  );
+
+  // Trigger reload mechanical audio cues cleanly on stage transitions
+  const curStage = weaponView.handsTelemetry.reloadStage;
+  if (curStage !== lastReloadStageSfx) {
+    if (curStage === 2) sfx.play('reloadMagOut');
+    else if (curStage === 4) sfx.play('reloadMagIn');
+    else if (curStage === 5) sfx.play('reloadBolt');
+    lastReloadStageSfx = curStage;
+  }
+
   let playerFiredThisFrame = false;
   if (acting && playerEnt.alive) {
     if (inp.reload && !rack.swapping(simNowMs) && w.reload(simNowMs)) sfx.play('reload');
@@ -460,6 +508,7 @@ engine.onFrame = (dt) => {
         weaponView.onFire(w.spec.id);
         touch.pulseFire();
         sfx.play(SHOT_SFX[w.spec.id]);
+        bgm.notifyFire();
         // Camera recoil separated from visual gun kick (20% kept, 80% easeOutQuad recovery)
         const rc = RECOIL_SPEC[w.spec.id];
         const pitchRad = (rc.deg * Math.PI) / 180;
@@ -485,7 +534,7 @@ engine.onFrame = (dt) => {
               w.spec.dmg *
               falloffFactor(w.spec, hit.dist) *
               (hit.headshot ? HEADSHOT_MULT : 1);
-            sfx.play('hit');
+            sfx.play(hit.headshot ? 'headshot' : 'hit');
             const killed = applyDamage(hit.entity, dmg, simNowMs);
             enemyMgr.onBotDamaged(hit.entity, player.position, simNowMs);
             if (killed) {
@@ -520,16 +569,17 @@ engine.onFrame = (dt) => {
       boxes: MAP.boxes,
       collider: world,
     });
+    const fwd = player.forward();
+    const rightX = -fwd.z;
+    const rightZ = fwd.x;
     for (const es of enemyShots) {
       worldVfx.spawnTracer(es.origin, es.target);
-      sfx.play('shotRifle', { distance: es.dist, volume: 0.72 });
+      const dx = es.origin.x - player.position.x;
+      const dz = es.origin.z - player.position.z;
+      const dLen = Math.hypot(dx, dz) || 1;
+      const stereoPan = Math.max(-1, Math.min(1, (dx * rightX + dz * rightZ) / dLen));
+      sfx.play('shotEnemy', { distance: es.dist, maxRange: 60, pan: stereoPan, volume: 0.78 });
       if (es.hit && playerEnt.alive) {
-        // Screen-relative bearing from player forward to attacker
-        const dx = es.origin.x - player.position.x;
-        const dz = es.origin.z - player.position.z;
-        const fwd = player.forward();
-        const rightX = -fwd.z;
-        const rightZ = fwd.x;
         const localF = dx * fwd.x + dz * fwd.z;
         const localR = dx * rightX + dz * rightZ;
         const angleRad = Math.atan2(localR, localF);
@@ -655,6 +705,7 @@ const dbg = {
 window.__state = dbg;
 const dbgSfx = { counts: sfx.counts, muted: false, unlocked: false };
 window.__sfx = dbgSfx;
+window.__bgm = bgm.telemetry;
 window.__fx = hud.fx;
 const animDbg = {
   reloadActive: false,

@@ -1,5 +1,5 @@
 // Transport Ship FPS server: zero-dependency static server.
-// Serves the built client at /transport/ plus a tiny health API.
+// Serves the built client at /transport/ plus /audio/ direct alias and a health API.
 // Listens on 127.0.0.1:3028 only (behind the openfolio.uk gateway).
 
 import http from 'node:http';
@@ -29,6 +29,10 @@ const MIME = {
   '.woff': 'font/woff',
   '.woff2': 'font/woff2',
   '.txt': 'text/plain; charset=utf-8',
+  '.md': 'text/markdown; charset=utf-8',
+  '.mp3': 'audio/mpeg',
+  '.ogg': 'audio/ogg',
+  '.wav': 'audio/wav',
 };
 
 function send(res, status, body, headers = {}) {
@@ -41,7 +45,7 @@ function health(_req, res) {
 }
 
 // Static file under DIST. `urlPath` must already be stripped of the /transport prefix.
-function serveStatic(req, res, urlPath) {
+function serveStatic(req, res, urlPath, allowSpaFallback = true) {
   let rel = decodeURIComponent(urlPath.split('?')[0]);
   if (rel === '/' || rel === '') rel = '/index.html';
   const file = path.normalize(path.join(DIST, rel));
@@ -50,19 +54,45 @@ function serveStatic(req, res, urlPath) {
   }
   fs.stat(file, (err, st) => {
     if (err || !st.isFile()) {
-      // SPA-ish fallback: anything that isn't a real file gets index.html.
+      if (!allowSpaFallback) return send(res, 404, 'not found');
       const index = path.join(DIST, 'index.html');
       if (!fs.existsSync(index)) return send(res, 404, 'not found');
       res.writeHead(200, { 'Content-Type': MIME['.html'], 'Cache-Control': 'no-cache' });
+      if (req.method === 'HEAD') return res.end();
       return fs.createReadStream(index).pipe(res);
     }
     const ext = path.extname(file).toLowerCase();
-    const headers = {
-      'Content-Type': MIME[ext] || 'application/octet-stream',
-      // Hashed assets cache hard; index.html always revalidates.
-      'Cache-Control': ext === '.html' ? 'no-cache' : 'public, max-age=3600',
-    };
-    res.writeHead(200, headers);
+    const contentType = MIME[ext] || 'application/octet-stream';
+    const cacheControl = ext === '.html' ? 'no-cache' : 'public, max-age=3600';
+    const size = st.size;
+    const range = req.headers.range;
+
+    if (range && typeof range === 'string') {
+      const m = /^bytes=(\d*)-(\d*)$/.exec(range.trim());
+      if (m) {
+        const start = m[1] ? parseInt(m[1], 10) : 0;
+        const end = m[2] ? Math.min(size - 1, parseInt(m[2], 10)) : size - 1;
+        if (start <= end && start < size) {
+          res.writeHead(206, {
+            'Content-Type': contentType,
+            'Accept-Ranges': 'bytes',
+            'Content-Range': `bytes ${start}-${end}/${size}`,
+            'Content-Length': end - start + 1,
+            'Cache-Control': cacheControl,
+          });
+          if (req.method === 'HEAD') return res.end();
+          return fs.createReadStream(file, { start, end }).pipe(res);
+        }
+      }
+    }
+
+    res.writeHead(200, {
+      'Content-Type': contentType,
+      'Content-Length': size,
+      'Accept-Ranges': 'bytes',
+      'Cache-Control': cacheControl,
+    });
+    if (req.method === 'HEAD') return res.end();
     fs.createReadStream(file).pipe(res);
   });
 }
@@ -81,7 +111,10 @@ const server = http.createServer((req, res) => {
     return send(res, 301, '', { Location: `${PREFIX}/` });
   }
   if (pathname.startsWith(PREFIX + '/')) {
-    return serveStatic(req, res, pathname.slice(PREFIX.length));
+    return serveStatic(req, res, pathname.slice(PREFIX.length), true);
+  }
+  if (pathname.startsWith('/audio/')) {
+    return serveStatic(req, res, pathname, false);
   }
   return send(res, 404, 'not found');
 });

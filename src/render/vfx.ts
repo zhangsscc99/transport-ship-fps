@@ -728,6 +728,8 @@ function floorHeightAt(boxes: readonly Box[], x: number, y: number, z: number): 
 
 export class WorldVfx {
   private readonly boxes: readonly Box[];
+  /** Optional callback fired when a brass shell casing bounces on the deck (for shell clink SFX). */
+  onShellBounce: ((speed: number) => void) | null = null;
 
   // Muzzle smoke + impact micro-dust (shared billboard InstancedMesh? Keep separate for clean telemetry & colors!)
   private smokeMesh: THREE.InstancedMesh;
@@ -1150,6 +1152,7 @@ export class WorldVfx {
 
         const floorY = floorHeightAt(this.boxes, s.x, s.y, s.z);
         if (s.y <= floorY + SHELL_R && s.vy < 0) {
+          this.onShellBounce?.(Math.abs(s.vy));
           s.y = floorY + SHELL_R;
           s.bounces++;
           if (s.bounces >= 2) {
