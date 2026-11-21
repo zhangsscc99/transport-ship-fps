@@ -135,9 +135,9 @@ export function createSea(): THREE.Mesh {
 
   const mat = new THREE.MeshStandardMaterial({
     color: 0xffffff,
-    roughness: 0.1,
-    metalness: 0.0,
-    envMapIntensity: 1.0,
+    roughness: 0.12,
+    metalness: 0.05,
+    envMapIntensity: 1.4,
   });
   mat.name = 'sea';
   mat.onBeforeCompile = (shader) => {

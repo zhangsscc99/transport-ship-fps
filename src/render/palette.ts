@@ -2,24 +2,24 @@
 // Source: docs/ART-SPEC.md §1. Every render material must pull from here.
 
 export const PALETTE = {
-  deck: ['#2e343a', '#3a3f45', '#4c555f'], // 甲板钢板：暗/中/亮 3 档
-  deckLine: '#c9a227', // 甲板警示黄线
-  container: ['#7a3b2e', '#2f5d50', '#41506b', '#6b5a3e'], // 集装箱 4 主色
-  containerTop: '#8a8a8a',
-  rust: '#6b3a22',
-  tower: ['#48535f', '#5a6673'],
-  pipe: '#39434d', // 管件/系缆桩——逆光面也不许压到纯黑
-  sea: ['#16242e', '#1b2833', '#2b4252'],
-  sky: ['#2b3a49', '#42566a'], // [0] 天顶，[1] 半球光上色
-  skyHorizon: '#78889a', // 地平线雾霾亮灰蓝 — 画面里最亮的底色
-  // Saltline sky palette — linear-space RGB triples (NOT sRGB hex), ported
-  // verbatim from the reference shader's environment constants.
-  skyZen: [0.055, 0.085, 0.13],
-  skyHor: [0.95, 0.55, 0.28],
-  skyHorAway: [0.16, 0.22, 0.3],
-  fill: '#8899aa', // 反向补光（冷灰蓝）
-  fog: '#5b6b78', // 雾色必须贴近天空，不许是黑
-  sun: '#ffb36b', // 主方向光：黄昏低角度暖阳（Saltline 1.0/0.72/0.42 附近）
+  deck: ['#323940', '#3f4750', '#545f6b'], // 甲板钢板：暗/中/亮 3 档
+  deckLine: '#d1a82e', // 甲板警示黄线
+  container: ['#8f3b2e', '#2b4d6f', '#3f5940', '#7d6138'], // 集装箱 4 主色：锈红 / 深蓝 / 橄榄绿 / 赭黄
+  containerTop: '#6e7378',
+  rust: '#7a3f22',
+  tower: ['#5d656d', '#6e7780'], // 混凝土哨塔（中性偏冷灰）
+  pipe: '#485460', // 管件/系缆桩——金属高光吃 IBL
+  sea: ['#192a36', '#213544', '#314c60'],
+  sky: ['#384c63', '#6f8db3'], // [0] 天顶，[1] 半球光天光色
+  skyGround: '#2a2622', // 半球光地面反弹色（暖暗甲板）
+  skyHorizon: '#8ca1b6', // 地平线雾霾亮灰蓝 — 与雾色贴合
+  // Saltline-inspired dusk/maritime sky — linear-space RGB triples
+  skyZen: [0.09, 0.14, 0.22],
+  skyHor: [0.98, 0.72, 0.44],
+  skyHorAway: [0.24, 0.33, 0.44],
+  fill: '#5b7fb3', // 冷色反方向补光
+  fog: '#788da3', // 指数雾色：取地平线灰蓝，与远景吊机/海面自然融出
+  sun: '#ffe6c4', // 主方向光：低角度暖白太阳（15° 仰角）
   teamA: '#4fa4f1', // 我方：蓝
   teamB: '#d9534f', // 敌方：红
   hpFull: '#5fd35f',
@@ -42,10 +42,10 @@ export const PALETTE = {
   hurtVeil: 'rgba(178,44,38,0.85)', // 受击/低血 屏幕边缘红晕外缘
   lampRed: '#e4553f', // 船头红色警示灯
   lampWarm: '#ffc27a', // 哨塔暖黄工作灯 / 亮窗
-  wood: '#6d5637', // 木托盘
-  crane: '#27333d', // 远处起重机剪影
-  hull: '#2b3238', // 船体外板——比甲板再暗一档，挂金属反光
-  hullBand: '#74301f', // 水线防污漆——暗氧化红
-  cone: '#d2691e', // 警示锥——安全橙
-  rope: '#8a7350', // 缆绳卷——麻色
+  wood: '#785e3c', // 木托盘/木箱
+  crane: '#354352', // 远处港口吊机剪影（靠指数雾自然淡入地平线）
+  hull: '#353e47', // 船体外板——深海灰钢，吃金属 IBL 反光
+  hullBand: '#7a3222', // 水线防污漆——氧化红
+  cone: '#d66d22', // 警示锥——安全橙
+  rope: '#917a55', // 缆绳卷——麻色
 } as const;
