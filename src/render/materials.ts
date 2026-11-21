@@ -40,7 +40,9 @@ export type MaterialKind =
   | 'checker'
   | 'steelFrame'
   | 'kickplate'
-  | 'elecBox';
+  | 'elecBox'
+  | 'cabGlass'
+  | 'oilStain';
 
 const cache = new Map<MaterialKind, THREE.Material>();
 
@@ -242,33 +244,39 @@ diffuseColor.rgb = mix( diffuseColor.rgb, vec3( 0.24, 0.23, 0.22 ), topDirt * 0.
       return new THREE.MeshStandardMaterial({
         color: PALETTE.wood,
         map: getTexture('wood'),
-        roughness: 0.86,
+        normalMap: getTexture('woodNormal'),
+        normalScale: new THREE.Vector2(0.55, 0.55),
+        roughness: 0.84,
         metalness: 0.0,
-        envMapIntensity: 0.7,
+        envMapIntensity: 0.72,
       });
     case 'crate':
       return new THREE.MeshStandardMaterial({
         color: PALETTE.wood,
         map: getTexture('crate'),
-        roughness: 0.84,
+        normalMap: getTexture('woodNormal'),
+        normalScale: new THREE.Vector2(0.65, 0.65),
+        roughness: 0.82,
         metalness: 0.0,
-        envMapIntensity: 0.72,
+        envMapIntensity: 0.75,
       });
     case 'crane':
       // Distant harbour cranes & freighters — subtly textured, naturally faded by FogExp2
       return new THREE.MeshStandardMaterial({
         color: PALETTE.crane,
         map: getTexture('craneTex'),
-        roughness: 0.82,
-        metalness: 0.25,
-        envMapIntensity: 0.65,
+        roughness: 0.78,
+        metalness: 0.34,
+        envMapIntensity: 0.75,
       });
     case 'barrel':
-      // Steel oil drums — rolling-hoop texture, white base tinted per-instance
+      // Steel oil drums — 3D hoops + normal map + hazmat decals, white base tinted per-instance
       return new THREE.MeshStandardMaterial({
         map: getTexture('barrel'),
-        roughness: 0.32,
-        metalness: 0.8,
+        normalMap: getTexture('barrelNormal'),
+        normalScale: new THREE.Vector2(0.65, 0.65),
+        roughness: 0.34,
+        metalness: 0.78,
         envMapIntensity: 1.4,
       });
     case 'grate':
@@ -523,6 +531,31 @@ uniform vec3 uSunCol;`,
         roughness: 0.46,
         metalness: 0.48,
         envMapIntensity: 1.15,
+      });
+    case 'cabGlass':
+      // Harbour crane operator-cab reflective tinted glazing (subtle warm glow)
+      return new THREE.MeshStandardMaterial({
+        color: PALETTE.cabGlass,
+        emissive: PALETTE.lampWarm,
+        emissiveIntensity: 0.38,
+        roughness: 0.08,
+        metalness: 0.68,
+        envMapIntensity: 2.0,
+      });
+    case 'oilStain':
+      // Glossy dark oil spill slicks on the deck near barrels & platforms
+      return new THREE.MeshStandardMaterial({
+        color: PALETTE.oilStain,
+        map: getTexture('oilStain'),
+        transparent: true,
+        opacity: 0.92,
+        roughness: 0.14,
+        metalness: 0.42,
+        envMapIntensity: 1.65,
+        depthWrite: false,
+        polygonOffset: true,
+        polygonOffsetFactor: -1,
+        polygonOffsetUnits: -1,
       });
   }
 }

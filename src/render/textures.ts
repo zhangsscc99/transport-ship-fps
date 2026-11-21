@@ -37,7 +37,10 @@ export type TextureKey =
   | 'steelFrame'
   | 'steelFrameNormal'
   | 'kickplate'
-  | 'elecBox';
+  | 'elecBox'
+  | 'woodNormal'
+  | 'barrelNormal'
+  | 'oilStain';
 
 const cache = new Map<TextureKey, THREE.Texture>();
 
@@ -242,35 +245,55 @@ function genStencil(): HTMLCanvasElement {
   return c;
 }
 
-// --- 256² tyre-scuff decal: transparent sheet, a few dark slate arcing streaks ---
+// --- 256² dual-wheel heavy forklift/tractor tyre-track decal (轮胎痕) ---
 function genSkid(): HTMLCanvasElement {
   const size = 256;
   const [c, ctx] = makeCanvas(size);
   const rnd = mulberry32(89);
   ctx.clearRect(0, 0, size, size);
-  for (let i = 0; i < 5; i++) {
-    const x0 = rnd() * size;
-    const y0 = rnd() * size;
-    const arc = (rnd() - 0.5) * 1.6;
-    const len = 90 + rnd() * 120;
-    const w = 9 + rnd() * 9;
-    ctx.strokeStyle = 'rgba(20,25,31,0.42)';
-    ctx.lineWidth = w;
-    ctx.lineCap = 'round';
-    ctx.beginPath();
-    ctx.moveTo(x0, y0);
-    ctx.quadraticCurveTo(
-      x0 + Math.cos(arc) * len * 0.5,
-      y0 + Math.sin(arc) * len * 0.5 + (rnd() - 0.5) * 30,
-      x0 + Math.cos(arc) * len,
-      y0 + Math.sin(arc) * len,
-    );
-    ctx.stroke();
+
+  // Two pairs of parallel curving tyre tracks with rubber tread lugs
+  const pairs: { y0: number; y1: number; bend: number; gap: number }[] = [
+    { y0: 56, y1: 112, bend: -26, gap: 28 },
+    { y0: 150, y1: 198, bend: 22, gap: 26 },
+  ];
+  for (const p of pairs) {
+    for (const side of [-0.5, 0.5]) {
+      const oy = side * p.gap;
+      // Soft rubber smudge bed
+      ctx.strokeStyle = 'rgba(18,22,28,0.34)';
+      ctx.lineWidth = 11;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(10, p.y0 + oy);
+      ctx.quadraticCurveTo(size * 0.5, (p.y0 + p.y1) * 0.5 + p.bend + oy, size - 10, p.y1 + oy);
+      ctx.stroke();
+
+      // Stamped transverse tyre tread lugs along the curve
+      ctx.strokeStyle = 'rgba(14,18,22,0.52)';
+      ctx.lineWidth = 2.5;
+      for (let s = 0; s <= 32; s++) {
+        const t = s / 32;
+        const inv = 1 - t;
+        const x = inv * inv * 10 + 2 * inv * t * (size * 0.5) + t * t * (size - 10);
+        const ym = (p.y0 + p.y1) * 0.5 + p.bend + oy;
+        const y = inv * inv * (p.y0 + oy) + 2 * inv * t * ym + t * t * (p.y1 + oy);
+        const dx = 2 * inv * (size * 0.5 - 10) + 2 * t * (size - 10 - size * 0.5);
+        const dy = 2 * inv * (ym - (p.y0 + oy)) + 2 * t * (p.y1 + oy - ym);
+        const l = Math.hypot(dx, dy) || 1;
+        const nx = (-dy / l) * 5.2;
+        const ny = (dx / l) * 5.2;
+        ctx.beginPath();
+        ctx.moveTo(x - nx, y - ny);
+        ctx.lineTo(x + nx, y + ny);
+        ctx.stroke();
+      }
+    }
   }
-  // feather the edges with soft speckle
-  for (let i = 0; i < 60; i++) {
-    ctx.fillStyle = `rgba(20,25,31,${0.05 + rnd() * 0.16})`;
-    const s = 2 + rnd() * 7;
+  // Scuff dust speckle
+  for (let i = 0; i < 70; i++) {
+    ctx.fillStyle = `rgba(18,22,28,${0.05 + rnd() * 0.14})`;
+    const s = 1.5 + rnd() * 5;
     ctx.fillRect(rnd() * size, rnd() * size, s, s);
   }
   return c;
@@ -298,16 +321,49 @@ function genDeck(): HTMLCanvasElement {
 
   grain(ctx, size, rnd, 0.1);
 
-  // plate seams every 128px → 4×4 plates per tile (≈2m plates at repeat 8×5)
+  // plate / concrete expansion seams every 128px → 4×4 slabs per tile (≈2m slabs)
   for (let p = 128; p < size; p += 128) {
+    // subtle per-slab tone step & spalled joint shoulder
     ctx.fillStyle = PALETTE.deck[0];
-    ctx.globalAlpha = 0.75;
-    ctx.fillRect(p - 1, 0, 2, size);
-    ctx.fillRect(0, p - 1, size, 2);
+    ctx.globalAlpha = 0.85;
+    ctx.fillRect(p - 2, 0, 3, size);
+    ctx.fillRect(0, p - 2, size, 3);
     ctx.fillStyle = PALETTE.deck[2];
-    ctx.globalAlpha = 0.28;
-    ctx.fillRect(p + 1, 0, 1, size);
-    ctx.fillRect(0, p + 1, size, 1);
+    ctx.globalAlpha = 0.34;
+    ctx.fillRect(p + 1, 0, 1.5, size);
+    ctx.fillRect(0, p + 1, size, 1.5);
+  }
+  // Fine hairline concrete/deck stress cracks branching from expansion joints
+  ctx.strokeStyle = PALETTE.deck[0];
+  for (let i = 0; i < 18; i++) {
+    let cx = (Math.floor(rnd() * 4) + 1) * 128 - 128;
+    let cy = rnd() * size;
+    if (rnd() < 0.5) [cx, cy] = [cy, cx];
+    ctx.globalAlpha = 0.25 + rnd() * 0.28;
+    ctx.lineWidth = 0.8 + rnd() * 0.8;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    for (let s = 0; s < 4; s++) {
+      cx += (rnd() - 0.5) * 26;
+      cy += (rnd() - 0.5) * 26;
+      ctx.lineTo(cx, cy);
+    }
+    ctx.stroke();
+  }
+  // Subtle dark oil drip stains embedded in deck surface
+  for (let i = 0; i < 8; i++) {
+    const ox = rnd() * size;
+    const oy = rnd() * size;
+    const or = 10 + rnd() * 24;
+    const og = ctx.createRadialGradient(ox, oy, 1, ox, oy, or);
+    og.addColorStop(0, 'rgba(14,18,24,0.42)');
+    og.addColorStop(0.6, 'rgba(18,22,28,0.18)');
+    og.addColorStop(1, 'rgba(18,22,28,0)');
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = og;
+    ctx.beginPath();
+    ctx.arc(ox, oy, or, 0, Math.PI * 2);
+    ctx.fill();
   }
   ctx.globalAlpha = 1;
 
@@ -915,80 +971,172 @@ function genConcrete(): HTMLCanvasElement {
   return c;
 }
 
-// --- 256² slatted timber planks (pallets & cable reels) ---
+// --- 256² slatted timber planks: rich wood grain, knots, metallic nail heads & edge wear ---
 function genWood(): HTMLCanvasElement {
   const size = 256;
   const [c, ctx] = makeCanvas(size);
   const rnd = mulberry32(149);
-  ctx.fillStyle = '#d6c8b4';
+  ctx.fillStyle = '#d4c3aa';
   ctx.fillRect(0, 0, size, size);
 
   const plankH = 32;
   for (let row = 0; row < size / plankH; row++) {
     const y = row * plankH;
-    const shade = 0.88 + rnd() * 0.24;
-    ctx.fillStyle = `rgb(${Math.round(212 * shade)},${Math.round(196 * shade)},${Math.round(172 * shade)})`;
+    const shade = 0.84 + rnd() * 0.30;
+    ctx.fillStyle = `rgb(${Math.round(212 * shade)},${Math.round(192 * shade)},${Math.round(164 * shade)})`;
     ctx.fillRect(0, y, size, plankH - 2);
-    // wood grain lines
-    for (let k = 0; k < 14; k++) {
-      ctx.strokeStyle = rnd() < 0.5 ? 'rgba(65,45,25,0.14)' : 'rgba(245,235,215,0.12)';
-      ctx.lineWidth = 0.7 + rnd() * 1.2;
+
+    // Worn lighter splintered chamfer along plank top/bottom edges
+    ctx.fillStyle = 'rgba(246,236,216,0.22)';
+    ctx.fillRect(0, y, size, 2.5);
+    ctx.fillStyle = 'rgba(54,38,24,0.22)';
+    ctx.fillRect(0, y + plankH - 5, size, 3);
+
+    // Deep fibrous wood grain lines + occasional dark timber knot
+    for (let k = 0; k < 18; k++) {
+      ctx.strokeStyle = rnd() < 0.58 ? 'rgba(62,42,22,0.18)' : 'rgba(248,236,212,0.15)';
+      ctx.lineWidth = 0.7 + rnd() * 1.4;
       ctx.beginPath();
       const gy = y + 2 + rnd() * (plankH - 5);
       ctx.moveTo(0, gy);
-      ctx.bezierCurveTo(size * 0.33, gy + (rnd() - 0.5) * 4, size * 0.66, gy + (rnd() - 0.5) * 4, size, gy);
+      ctx.bezierCurveTo(size * 0.33, gy + (rnd() - 0.5) * 5, size * 0.66, gy + (rnd() - 0.5) * 5, size, gy);
       ctx.stroke();
     }
-    // dark plank gap + nails
-    ctx.fillStyle = 'rgba(32,24,18,0.65)';
-    ctx.fillRect(0, y + plankH - 2, size, 2);
-    ctx.fillStyle = 'rgba(36,34,32,0.55)';
-    for (const nx of [18, size - 18]) {
-      ctx.fillRect(nx, y + 6, 3, 3);
-      ctx.fillRect(nx, y + plankH - 11, 3, 3);
+    if (rnd() < 0.45) {
+      const kx = 36 + rnd() * (size - 72);
+      const ky = y + 7 + rnd() * (plankH - 14);
+      ctx.fillStyle = 'rgba(54,34,18,0.42)';
+      ctx.beginPath();
+      ctx.ellipse(kx, ky, 7 + rnd() * 6, 3 + rnd() * 2, (rnd() - 0.5) * 0.3, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // Deep plank gap + crisp metallic nail heads (dark washer rim + bright cap)
+    ctx.fillStyle = 'rgba(28,20,14,0.78)';
+    ctx.fillRect(0, y + plankH - 2.5, size, 2.5);
+    for (const nx of [14, size * 0.5, size - 14]) {
+      for (const ny of [y + 7, y + plankH - 10]) {
+        ctx.fillStyle = 'rgba(28,26,24,0.85)';
+        ctx.beginPath();
+        ctx.arc(nx, ny, 2.8, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = 'rgba(218,224,230,0.75)';
+        ctx.beginPath();
+        ctx.arc(nx - 0.7, ny - 0.7, 1.3, 0, Math.PI * 2);
+        ctx.fill();
+      }
     }
   }
-  grain(ctx, size, rnd, 0.05);
+  grain(ctx, size, rnd, 0.06);
   return c;
 }
 
-// --- 256² braced shipping crate: wood planks + perimeter frame + diagonal brace ---
+// --- 256² braced shipping crate: wood planks + perimeter frame + diagonal
+// brace + metallic nail heads + scuffed pale edge wear ---
 function genCrate(): HTMLCanvasElement {
   const size = 256;
   const [c, ctx] = makeCanvas(size);
   const rnd = mulberry32(163);
   ctx.drawImage(genWood(), 0, 0);
 
-  // diagonal cross-batten
+  // Diagonal cross-batten with dark shadow lip
   ctx.save();
-  ctx.strokeStyle = 'rgba(220,206,184,0.85)';
-  ctx.lineWidth = 24;
+  ctx.strokeStyle = 'rgba(32,22,14,0.52)';
+  ctx.lineWidth = 28;
   ctx.beginPath();
   ctx.moveTo(22, size - 22);
   ctx.lineTo(size - 22, 22);
   ctx.stroke();
-  ctx.strokeStyle = 'rgba(40,28,18,0.5)';
-  ctx.lineWidth = 2;
-  ctx.strokeRect(20, 20, size - 40, size - 40);
+  ctx.strokeStyle = 'rgba(218,200,174,0.92)';
+  ctx.lineWidth = 22;
+  ctx.beginPath();
+  ctx.moveTo(22, size - 22);
+  ctx.lineTo(size - 22, 22);
+  ctx.stroke();
   ctx.restore();
 
-  // outer frame battens
-  ctx.fillStyle = 'rgba(225,210,188,0.88)';
+  // Outer perimeter frame battens
   const b = 22;
+  ctx.fillStyle = 'rgba(222,204,178,0.92)';
   ctx.fillRect(0, 0, size, b);
   ctx.fillRect(0, size - b, size, b);
   ctx.fillRect(0, 0, b, size);
   ctx.fillRect(size - b, 0, b, size);
-  ctx.strokeStyle = 'rgba(38,28,20,0.65)';
-  ctx.lineWidth = 2;
+  ctx.strokeStyle = 'rgba(34,24,16,0.76)';
+  ctx.lineWidth = 2.5;
   ctx.strokeRect(1, 1, size - 2, size - 2);
   ctx.strokeRect(b, b, size - b * 2, size - b * 2);
 
-  // corner grime & stencil mark
-  ctx.fillStyle = 'rgba(34,26,20,0.45)';
+  // Crisp metallic corner & mid-batten nail heads (钉头)
+  const nails: [number, number][] = [
+    [8, 8], [14, 14], [size - 8, 8], [size - 14, 14],
+    [8, size - 8], [14, size - 14], [size - 8, size - 8], [size - 14, size - 14],
+    [size / 2, 11], [size / 2, size - 11], [11, size / 2], [size - 11, size / 2],
+    [42, size - 42], [size - 42, 42],
+  ];
+  for (const [nx, ny] of nails) {
+    ctx.fillStyle = 'rgba(24,22,20,0.88)';
+    ctx.beginPath();
+    ctx.arc(nx, ny, 3.0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = 'rgba(226,232,238,0.82)';
+    ctx.beginPath();
+    ctx.arc(nx - 0.8, ny - 0.8, 1.4, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Edge scuffing & splintered timber wear along outer corners/borders (边缘磨损)
+  for (let i = 0; i < 65; i++) {
+    const edge = Math.floor(rnd() * 4);
+    const along = rnd() * size;
+    const x = edge === 0 ? rnd() * 14 : edge === 1 ? size - rnd() * 14 : along;
+    const y = edge === 2 ? rnd() * 14 : edge === 3 ? size - rnd() * 14 : along;
+    ctx.fillStyle = rnd() < 0.65 ? 'rgba(245,232,205,0.42)' : 'rgba(38,26,18,0.34)';
+    ctx.fillRect(x - 3, y - 2, 3 + rnd() * 10, 2 + rnd() * 5);
+  }
+
+  // Shipping stencil mark
+  ctx.fillStyle = 'rgba(30,22,16,0.58)';
   ctx.font = "700 18px 'Courier New',monospace";
-  ctx.fillText('CARGO-04', 42, 54);
-  grain(ctx, size, rnd, 0.05);
+  ctx.fillText('CARGO-04', 36, 52);
+  grain(ctx, size, rnd, 0.055);
+  return c;
+}
+
+// --- 256² wood / crate tangent-space normal map (plank grooves, battens & nails) ---
+function genWoodNormal(): HTMLCanvasElement {
+  const size = 256;
+  const [c, ctx] = makeCanvas(size);
+  const h = new Float32Array(size * size);
+  const rnd = mulberry32(367);
+  for (let y = 0; y < size; y++) {
+    const inGap = y % 32 >= 29;
+    for (let x = 0; x < size; x++) {
+      let v = inGap ? -0.9 : Math.sin(y * 0.7 + Math.sin(x * 0.06) * 2) * 0.12 + (rnd() - 0.5) * 0.08;
+      // Raised perimeter frame battens (22px border)
+      if (x < 22 || x > size - 22 || y < 22 || y > size - 22) v = 0.65 + (rnd() - 0.5) * 0.06;
+      // Diagonal brace band
+      const diag = Math.abs(x + y - size) / Math.SQRT2;
+      if (diag < 11 && x > 20 && x < size - 20 && y > 20 && y < size - 20) v = 0.55;
+      h[y * size + x] = v;
+    }
+  }
+  const img = ctx.createImageData(size, size);
+  const d = img.data;
+  const at = (x: number, y: number) => h[((y + size) % size) * size + ((x + size) % size)];
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const gx = (at(x + 1, y) - at(x - 1, y)) * 1.1;
+      const gy = (at(x, y + 1) - at(x, y - 1)) * 1.1;
+      const il = 1 / Math.hypot(gx, gy, 1);
+      const i = (y * size + x) * 4;
+      d[i] = (-gx * il * 0.5 + 0.5) * 255;
+      d[i + 1] = (-gy * il * 0.5 + 0.5) * 255;
+      d[i + 2] = (il * 0.5 + 0.5) * 255;
+      d[i + 3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
   return c;
 }
 
@@ -1046,32 +1194,158 @@ function genConeTex(): HTMLCanvasElement {
   return c;
 }
 
-// --- 256² steel oil drum: two rolling hoops + brushed metal + base grime ---
+// --- 256² steel oil drum: rolling hoops + rust patches + oil drips + HAZMAT diamond decal ---
 function genBarrel(): HTMLCanvasElement {
   const size = 256;
   const [c, ctx] = makeCanvas(size);
   const rnd = mulberry32(211);
-  ctx.fillStyle = '#dde0e4';
+  ctx.fillStyle = '#dfe3e7';
   ctx.fillRect(0, 0, size, size);
   grain(ctx, size, rnd, 0.06);
 
-  // two embossed horizontal rolling ribs
+  // Subtle top/bottom chime shadow bands + two embossed horizontal rolling hoops
+  ctx.fillStyle = 'rgba(24,30,36,0.38)';
+  ctx.fillRect(0, 0, size, 12);
+  ctx.fillRect(0, size - 14, size, 14);
   for (const ry of [84, 172]) {
-    ctx.fillStyle = 'rgba(28,34,40,0.45)';
-    ctx.fillRect(0, ry - 4, size, 8);
-    ctx.fillStyle = 'rgba(255,255,255,0.35)';
-    ctx.fillRect(0, ry - 6, size, 3);
+    ctx.fillStyle = 'rgba(24,30,36,0.52)';
+    ctx.fillRect(0, ry - 4, size, 9);
+    ctx.fillStyle = 'rgba(255,255,255,0.42)';
+    ctx.fillRect(0, ry - 7, size, 3);
   }
-  // oil drips & rust spots
-  for (let i = 0; i < 24; i++) {
-    ctx.fillStyle = `rgba(90,48,26,${0.18 + rnd() * 0.25})`;
-    ctx.fillRect(rnd() * size, rnd() * size, 2 + rnd() * 8, 4 + rnd() * 18);
+
+  // Mottled rust patches (锈斑) & vertical oil drips around hoops and rim
+  for (let i = 0; i < 42; i++) {
+    const rx = rnd() * size;
+    const ry = rnd() * size;
+    const rw = 4 + rnd() * 16;
+    const rh = 4 + rnd() * 22;
+    ctx.fillStyle = rustRgba(0.82 + rnd() * 0.35, 0.24 + rnd() * 0.36);
+    ctx.fillRect(rx, ry, rw, rh);
   }
+  for (let i = 0; i < 16; i++) {
+    const dx = rnd() * size;
+    const len = 18 + rnd() * 54;
+    const g = ctx.createLinearGradient(0, 8, 0, 8 + len);
+    g.addColorStop(0, 'rgba(22,20,18,0.55)');
+    g.addColorStop(1, 'rgba(22,20,18,0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(dx, 8, 2 + rnd() * 3.5, len);
+  }
+
+  // Crisp HAZMAT flammable diamond warning decals (危险标识贴花) on opposite faces
+  for (const cx of [64, 192]) {
+    const cy = 128;
+    const r = 24;
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.beginPath();
+    ctx.moveTo(0, -r);
+    ctx.lineTo(r, 0);
+    ctx.lineTo(0, r);
+    ctx.lineTo(-r, 0);
+    ctx.closePath();
+    ctx.fillStyle = '#e8c448';
+    ctx.fill();
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = '#1b1f24';
+    ctx.stroke();
+    // Stylized hazard flame / warning mark inside diamond
+    ctx.fillStyle = '#1b1f24';
+    ctx.beginPath();
+    ctx.moveTo(0, -13);
+    ctx.quadraticCurveTo(8, -4, 5, 6);
+    ctx.quadraticCurveTo(0, 11, -5, 6);
+    ctx.quadraticCurveTo(-8, -4, 0, -13);
+    ctx.fill();
+    ctx.fillRect(-9, 10, 18, 2.5);
+    ctx.restore();
+  }
+
+  // Bottom grime band
   const g = ctx.createLinearGradient(0, size * 0.72, 0, size);
   g.addColorStop(0, 'rgba(26,28,32,0)');
-  g.addColorStop(1, 'rgba(26,28,32,0.34)');
+  g.addColorStop(1, 'rgba(26,28,32,0.40)');
   ctx.fillStyle = g;
   ctx.fillRect(0, 0, size, size);
+  return c;
+}
+
+// --- 256² steel drum normal map (embossed rolling hoops, chimes & dings) ---
+function genBarrelNormal(): HTMLCanvasElement {
+  const size = 256;
+  const [c, ctx] = makeCanvas(size);
+  const h = new Float32Array(size * size);
+  const rnd = mulberry32(373);
+  for (let y = 0; y < size; y++) {
+    let rib = 0;
+    for (const ry of [84, 172]) {
+      const dist = Math.abs(y - ry);
+      if (dist < 8) rib += Math.cos((dist / 8) * Math.PI * 0.5) * 1.1;
+    }
+    if (y < 10 || y > size - 10) rib += 0.6;
+    for (let x = 0; x < size; x++) {
+      h[y * size + x] = rib + (rnd() - 0.5) * 0.08;
+    }
+  }
+  const img = ctx.createImageData(size, size);
+  const d = img.data;
+  const at = (x: number, y: number) => h[((y + size) % size) * size + ((x + size) % size)];
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const gx = (at(x + 1, y) - at(x - 1, y)) * 1.2;
+      const gy = (at(x, y + 1) - at(x, y - 1)) * 1.2;
+      const il = 1 / Math.hypot(gx, gy, 1);
+      const i = (y * size + x) * 4;
+      d[i] = (-gx * il * 0.5 + 0.5) * 255;
+      d[i + 1] = (-gy * il * 0.5 + 0.5) * 255;
+      d[i + 2] = (il * 0.5 + 0.5) * 255;
+      d[i + 3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  return c;
+}
+
+// --- 256² organic industrial oil-spill stain decal (地面油渍) ---
+function genOilStain(): HTMLCanvasElement {
+  const size = 256;
+  const [c, ctx] = makeCanvas(size);
+  const rnd = mulberry32(389);
+  ctx.clearRect(0, 0, size, size);
+  const blobs: [number, number, number, number, number][] = [
+    [128, 128, 68, 48, 0.3],
+    [164, 112, 42, 32, -0.5],
+    [94, 146, 46, 30, 0.7],
+    [144, 158, 34, 24, 0.1],
+    [104, 96, 30, 22, -0.8],
+  ];
+  for (const [bx, by, rx, ry, rot] of blobs) {
+    ctx.save();
+    ctx.translate(bx, by);
+    ctx.rotate(rot);
+    ctx.scale(1, ry / rx);
+    const g = ctx.createRadialGradient(0, 0, rx * 0.1, 0, 0, rx);
+    g.addColorStop(0, 'rgba(18,22,28,0.78)');
+    g.addColorStop(0.55, 'rgba(28,34,46,0.48)');
+    g.addColorStop(0.82, 'rgba(54,44,34,0.22)');
+    g.addColorStop(1, 'rgba(18,22,28,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(0, 0, rx, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+  // Peripheral oil splatter droplets
+  for (let i = 0; i < 24; i++) {
+    const a = rnd() * Math.PI * 2;
+    const dist = 54 + rnd() * 52;
+    const r = 2 + rnd() * 6;
+    ctx.fillStyle = `rgba(18,22,28,${(0.2 + rnd() * 0.35).toFixed(2)})`;
+    ctx.beginPath();
+    ctx.arc(128 + Math.cos(a) * dist, 128 + Math.sin(a) * dist, r, 0, Math.PI * 2);
+    ctx.fill();
+  }
   return c;
 }
 
@@ -1545,6 +1819,9 @@ const GEN: Record<TextureKey, () => HTMLCanvasElement> = {
   steelFrameNormal: genSteelFrameNormal,
   kickplate: genKickplate,
   elecBox: genElecBox,
+  woodNormal: genWoodNormal,
+  barrelNormal: genBarrelNormal,
+  oilStain: genOilStain,
 };
 
 const SRGB_KEYS: ReadonlySet<TextureKey> = new Set([
@@ -1567,6 +1844,7 @@ const SRGB_KEYS: ReadonlySet<TextureKey> = new Set([
   'steelFrame',
   'kickplate',
   'elecBox',
+  'oilStain',
 ]);
 const DECK_REPEAT: ReadonlySet<TextureKey> = new Set([
   'deck',
@@ -1579,7 +1857,7 @@ export function getTexture(key: TextureKey): THREE.Texture {
   let t = cache.get(key);
   if (t) return t;
   t = new THREE.CanvasTexture(GEN[key]());
-  if (key === 'puddleAlpha') {
+  if (key === 'puddleAlpha' || key === 'oilStain') {
     // single quad, transparent margin — never tile the silhouette
     t.wrapS = THREE.ClampToEdgeWrapping;
     t.wrapT = THREE.ClampToEdgeWrapping;

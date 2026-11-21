@@ -172,9 +172,28 @@ function buildDeckLines(group: THREE.Group): void {
   group.add(mesh);
 }
 
-/** Wooden pallets ×26 (including 2-high stacks) tucked near containers & aprons. */
+/** Real slatted 3-stringer EUR wooden pallet geometry (merged into 1 draw call). */
+function makePalletGeo(): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [];
+  // 3 bottom runner stringers (leaving forklift fork pockets underneath)
+  for (const sz of [-0.39, 0, 0.39]) {
+    addBoxPart(parts, 1.15, 0.082, 0.088, 0, -0.022, sz);
+  }
+  // 2 bottom end boards
+  for (const sx of [-0.49, 0.49]) {
+    addBoxPart(parts, 0.12, 0.02, 0.92, sx, -0.055, 0);
+  }
+  // 6 spaced top timber deck slats with real air gaps
+  for (let k = 0; k < 6; k++) {
+    const sx = -0.495 + k * 0.198;
+    addBoxPart(parts, 0.145, 0.026, 0.92, sx, 0.052, 0);
+  }
+  return mergeGeometries(parts, false)!;
+}
+
+/** Wooden pallets ×36 (slatted 3-stringer EUR pallets) near containers & under platforms. */
 function buildPallets(group: THREE.Group): void {
-  const geo = new THREE.BoxGeometry(1.15, 0.13, 0.92);
+  const geo = makePalletGeo();
   const spots: [number, number, number, number][] = [
     // (x, yCenter, z, ry) — foreground & mid-deck clusters visible from spawn
     [-15.6, 0.065, 12.8, 0.12],
@@ -223,9 +242,28 @@ function buildPallets(group: THREE.Group): void {
   group.add(mesh);
 }
 
-/** Metallic oil drums ×28 in industrial 2–4 drum clusters across the deck. */
+/** Real 3D 55-gallon oil drum: body + 2 raised rolling hoops + chime rims + top bung plugs. */
+function makeBarrelGeo(): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [];
+  // Main drum shell
+  addCylPart(parts, 0.295, 0.295, 0.84, 14, 0, 0, 0);
+  // 2 raised 3D rolling hoops (桶箍)
+  for (const hy of [-0.145, 0.145]) {
+    parts.push(prepGeo(new THREE.TorusGeometry(0.295, 0.017, 6, 14), 0, hy, 0, Math.PI / 2));
+  }
+  // Top & bottom raised chime rims forming a recessed lid
+  for (const cy of [-0.42, 0.42]) {
+    parts.push(prepGeo(new THREE.TorusGeometry(0.292, 0.015, 6, 14), 0, cy, 0, Math.PI / 2));
+  }
+  // Top lid 2" & 3/4" steel bung plugs (顶盖注油口与透气塞)
+  addCylPart(parts, 0.036, 0.036, 0.028, 6, 0.13, 0.432, 0.04);
+  addCylPart(parts, 0.019, 0.019, 0.024, 6, -0.14, 0.430, -0.05);
+  return mergeGeometries(parts, false)!;
+}
+
+/** Metallic oil drums ×40 (3D hooped, rusted, hazmat-decaled) across deck & under platforms. */
 function buildBarrels(group: THREE.Group): void {
-  const geo = new THREE.CylinderGeometry(0.3, 0.3, 0.86, 12);
+  const geo = makeBarrelGeo();
   const spots: [number, number, number][] = [
     // Near Spawn A container flanks (clearly visible in vista & container shots)
     [-15.4, 11.1, 0.2],
@@ -332,9 +370,30 @@ function buildReels(group: THREE.Group): void {
   group.add(drum, hub);
 }
 
+/** 3D perimeter-framed wooden shipping crate (unit 1×1×1, merged into 1 draw call). */
+let cachedCrateGeo: THREE.BufferGeometry | null = null;
+function makeCrateGeo(): THREE.BufferGeometry {
+  if (cachedCrateGeo) return cachedCrateGeo;
+  const parts: THREE.BufferGeometry[] = [];
+  // Slightly recessed inner plank core
+  addBoxPart(parts, 0.94, 0.94, 0.94, 0, 0, 0);
+  // 12 raised perimeter timber frame battens around all edges
+  const b = 0.075;
+  const e = 0.5 - b / 2;
+  for (const sy of [-e, e]) {
+    for (const sz of [-e, e]) addBoxPart(parts, 1.0, b, b, 0, sy, sz);
+    for (const sx of [-e, e]) addBoxPart(parts, b, b, 1.0 - b * 2, sx, sy, 0);
+  }
+  for (const sx of [-e, e]) {
+    for (const sz of [-e, e]) addBoxPart(parts, b, 1.0 - b * 2, b, sx, 0, sz);
+  }
+  cachedCrateGeo = mergeGeometries(parts, false)!;
+  return cachedCrateGeo;
+}
+
 /** Braced wooden cargo crates ×24 (some stacked on pallets beside containers). */
 function buildCrates(group: THREE.Group): void {
-  const geo = new THREE.BoxGeometry(1, 1, 1);
+  const geo = makeCrateGeo();
   // (x, yBase, z, sx, sy, sz, ry)
   const spots: [number, number, number, number, number, number, number][] = [
     // Tucked near A-side containers & pallets (immediately readable from spawn)
@@ -655,17 +714,45 @@ function buildMarkings(group: THREE.Group): void {
   stripes.receiveShadow = true;
   group.add(stripes);
 
-  const skids = new THREE.InstancedMesh(new THREE.PlaneGeometry(4.2, 3.4), getMaterial('skid'), 4);
+  const skids = new THREE.InstancedMesh(new THREE.PlaneGeometry(4.4, 3.2), getMaterial('skid'), 8);
   skids.name = 'skid-marks';
   const spots: [number, number, number][] = [
-    [-7, 4.5, 0.4],
-    [9, -4.2, 2.2],
+    [-7.0, 4.5, 0.4],
+    [9.0, -4.2, 2.2],
     [18.5, 2.5, -0.6],
     [-18.5, -4.5, 1.1],
+    [-2.2, 13.8, 0.15],
+    [3.6, -13.6, -0.2],
+    [-14.5, 13.2, 1.35],
+    [14.5, -13.0, -1.2],
   ];
   spots.forEach(([x, z, ry], i) => setInst(skids, i, x, 0.019, z, 1, 1, 1, ry, -Math.PI / 2));
   skids.renderOrder = 3;
   group.add(skids);
+
+  // Glossy dark oil spill slicks (地面油渍) near barrels, lanes & under platforms
+  const oils = new THREE.InstancedMesh(new THREE.PlaneGeometry(1, 1), getMaterial('oilStain'), 12);
+  oils.name = 'oil-stains';
+  const oilSpots: [number, number, number, number, number][] = [
+    [-15.5, 10.6, 2.1, 1.7, 0.3],
+    [1.7, 10.7, 1.9, 1.5, -0.6],
+    [-9.4, -3.7, 2.0, 1.6, 1.1],
+    [9.9, 3.8, 1.8, 1.5, 0.5],
+    [-14.1, 3.9, 1.7, 1.4, -0.4],
+    [14.3, -4.0, 1.8, 1.5, 0.8],
+    [-25.6, 14.8, 2.2, 1.8, 0.2],
+    [25.6, 14.8, 2.2, 1.8, -0.7],
+    [25.6, -14.8, 2.2, 1.8, 0.9],
+    [-25.6, -14.8, 2.2, 1.8, -0.3],
+    [-3.8, 15.2, 1.6, 1.3, 0.45],
+    [4.4, -15.0, 1.7, 1.4, -0.5],
+  ];
+  oilSpots.forEach(([x, z, sx, sz, ry], i) =>
+    setInst(oils, i, x, 0.020, z, sx, sz, 1, 0, -Math.PI / 2, ry),
+  );
+  oils.receiveShadow = true;
+  oils.renderOrder = 3;
+  group.add(oils);
 }
 
 /**
@@ -717,13 +804,12 @@ function buildStencils(group: THREE.Group): void {
 }
 
 /**
- * Distant harbour crane skyline (5 gantry cranes fading smoothly into FogExp2)
- * + lit metallic on-ship bow mast & stern deck crane.
+ * Detailed lattice-truss STS harbour gantry crane skyline (5 cranes with portal
+ * X-bracing, Warren-truss booms, maintenance catwalks w/ handrails, machinery
+ * houses, trolley & glazed reflective operator cabs) + detailed on-ship bow
+ * mast & stern deck crane.
  */
 function buildCranes(group: THREE.Group): void {
-  const geo = new THREE.BoxGeometry(1, 1, 1);
-
-  // 5 distant harbour gantry cranes arranged across the horizon (3–4 visible in main vista)
   const cranes: [number, number, number, number][] = [
     // (cx, cz, scale, ry)
     [-58, -104, 1.35, 0.25], // port-bow skyline crane
@@ -732,9 +818,122 @@ function buildCranes(group: THREE.Group): void {
     [84, -64, 1.24, 0.55], // starboard-flank harbour crane
     [-86, -34, 1.08, -0.62], // port-flank harbour crane
   ];
-  const PARTS_PER_CRANE = 11;
-  const distant = new THREE.InstancedMesh(geo, getMaterial('crane'), cranes.length * PARTS_PER_CRANE);
+
+  // Build one canonical detailed STS gantry crane (base y=0, placed at y=-2)
+  const steelParts: THREE.BufferGeometry[] = [];
+  const glassParts: THREE.BufferGeometry[] = [];
+
+  // 1. Sill bogie beams + 4 tapered portal legs + full portal X-bracing (桁架斜撑)
+  for (const lz of [-2.4, 2.4]) {
+    addBoxPart(steelParts, 12.2, 1.1, 1.2, 0, 0.55, lz); // rail bogie sill beam
+    addBoxPart(steelParts, 1.15, 20.4, 1.15, -5.0, 10.2, lz); // rear leg
+    addBoxPart(steelParts, 1.15, 20.4, 1.15, 5.0, 10.2, lz); // front leg
+    // Mid portal beam + knee braces + upper portal cross-beam
+    addBoxPart(steelParts, 10.6, 0.85, 0.85, 0, 9.5, lz);
+    addSegmentPart(steelParts, [-5.0, 5.5, lz], [-2.2, 9.5, lz], 0.26, 4, true);
+    addSegmentPart(steelParts, [5.0, 5.5, lz], [2.2, 9.5, lz], 0.26, 4, true);
+    // Upper portal X-bracing
+    addSegmentPart(steelParts, [-5.0, 9.5, lz], [5.0, 19.6, lz], 0.24, 4, true);
+    addSegmentPart(steelParts, [5.0, 9.5, lz], [-5.0, 19.6, lz], 0.24, 4, true);
+  }
+  // End-frame X-bracing connecting front/rear legs across Z
+  for (const lx of [-5.0, 5.0]) {
+    addBoxPart(steelParts, 0.9, 0.9, 5.4, lx, 9.5, 0);
+    addSegmentPart(steelParts, [lx, 1.2, -2.4], [lx, 9.5, 2.4], 0.24, 4, true);
+    addSegmentPart(steelParts, [lx, 1.2, 2.4], [lx, 9.5, -2.4], 0.24, 4, true);
+    addSegmentPart(steelParts, [lx, 9.5, -2.4], [lx, 19.8, 2.4], 0.24, 4, true);
+    addSegmentPart(steelParts, [lx, 9.5, 2.4], [lx, 19.8, -2.4], 0.24, 4, true);
+  }
+
+  // 2. Main bridge box-girders + elevated maintenance catwalk/walkway (走台) w/ handrail
+  addBoxPart(steelParts, 13.8, 1.6, 1.1, 0, 20.4, -2.4);
+  addBoxPart(steelParts, 13.8, 1.6, 1.1, 0, 20.4, 2.4);
+  addBoxPart(steelParts, 12.6, 0.45, 5.8, 0, 21.3, 0); // bridge deck walkway
+  // Catwalk railing along bridge deck edge (z = +2.9)
+  addBoxPart(steelParts, 12.6, 0.14, 0.14, 0, 22.35, 2.88);
+  addBoxPart(steelParts, 12.6, 0.12, 0.12, 0, 21.85, 2.88);
+  for (let rx = -6.0; rx <= 6.0; rx += 2.4) {
+    addBoxPart(steelParts, 0.14, 1.1, 0.14, rx, 21.85, 2.88);
+  }
+
+  // 3. Warren-truss lattice boom/jib + counter-jib (桁架臂架 + 走台)
+  const boomZ = 1.45;
+  const B_X0 = -12.0; // counter-jib rear tip
+  const B_X1 = 23.0; // waterside boom tip
+  const boomY = (x: number) => 20.4 + Math.max(0, x - 4.0) * 0.22; // gentle upward waterside cant
+  for (const bz of [-boomZ, boomZ]) {
+    // Lower & upper boom chords
+    addSegmentPart(steelParts, [B_X0, boomY(B_X0), bz], [4.0, boomY(4.0), bz], 0.26, 4, true);
+    addSegmentPart(steelParts, [4.0, boomY(4.0), bz], [B_X1, boomY(B_X1), bz], 0.24, 4, true);
+    addSegmentPart(steelParts, [B_X0, boomY(B_X0) + 1.9, bz], [4.0, boomY(4.0) + 2.1, bz], 0.20, 4, true);
+    addSegmentPart(steelParts, [4.0, boomY(4.0) + 2.1, bz], [B_X1, boomY(B_X1) + 1.5, bz], 0.18, 4, true);
+    // Triangular Warren-truss diagonal webs along the entire boom
+    const BAYS = 10;
+    for (let k = 0; k < BAYS; k++) {
+      const x0 = B_X0 + ((B_X1 - B_X0) * k) / BAYS;
+      const x1 = B_X0 + ((B_X1 - B_X0) * (k + 1)) / BAYS;
+      const y0 = boomY(x0);
+      const y1 = boomY(x1);
+      const h0 = x0 < 4 ? 1.95 : 2.1 - ((x0 - 4) / (B_X1 - 4)) * 0.6;
+      const h1 = x1 < 4 ? 1.95 : 2.1 - ((x1 - 4) / (B_X1 - 4)) * 0.6;
+      addSegmentPart(steelParts, [x0, y0, bz], [x0, y0 + h0, bz], 0.14, 4, true);
+      if (k % 2 === 0) {
+        addSegmentPart(steelParts, [x0, y0, bz], [x1, y1 + h1, bz], 0.15, 4, true);
+      } else {
+        addSegmentPart(steelParts, [x0, y0 + h0, bz], [x1, y1, bz], 0.15, 4, true);
+      }
+    }
+  }
+  // Boom top cross-struts & boom maintenance catwalk + railing along front side
+  for (let bx = B_X0; bx <= B_X1; bx += 3.5) {
+    const by = boomY(bx);
+    addBoxPart(steelParts, 0.28, 0.28, boomZ * 2, bx, by + 0.15, 0);
+  }
+  addSegmentPart(steelParts, [4.0, boomY(4.0) + 0.25, boomZ + 0.55], [B_X1 - 1.5, boomY(B_X1 - 1.5) + 0.25, boomZ + 0.55], 0.28, 4, true);
+  addSegmentPart(steelParts, [4.0, boomY(4.0) + 1.25, boomZ + 0.85], [B_X1 - 1.5, boomY(B_X1 - 1.5) + 1.25, boomZ + 0.85], 0.08, 4, true);
+
+  // 4. Machinery house on counter-jib + lattice A-frame apex tower + twin stay cables
+  addBoxPart(steelParts, 6.2, 2.9, 4.4, -3.5, 22.8, 0); // machinery house
+  for (const az of [-1.8, 1.8]) {
+    addSegmentPart(steelParts, [-3.8, 21.4, az], [1.4, 34.0, az * 0.45], 0.34, 4, true); // rear A-leg
+    addSegmentPart(steelParts, [4.6, 21.4, az], [1.4, 34.0, az * 0.45], 0.34, 4, true); // fore A-leg
+    addSegmentPart(steelParts, [-2.2, 25.4, az * 0.85], [3.6, 25.4, az * 0.85], 0.20, 4, true);
+    addSegmentPart(steelParts, [-0.8, 29.4, az * 0.68], [2.6, 29.4, az * 0.68], 0.18, 4, true);
+    // Twin forestay & twin backstay tension tie-rods
+    addSegmentPart(steelParts, [1.4, 34.0, az * 0.45], [20.5, boomY(20.5) + 1.4, az * 0.8], 0.14, 4, true);
+    addSegmentPart(steelParts, [1.4, 34.0, az * 0.45], [12.5, boomY(12.5) + 1.6, az * 0.8], 0.12, 4, true);
+    addSegmentPart(steelParts, [1.4, 34.0, az * 0.45], [-11.0, boomY(-11.0) + 1.8, az * 0.8], 0.14, 4, true);
+  }
+  addBoxPart(steelParts, 1.4, 0.8, 2.4, 1.4, 34.1, 0); // apex sheave head
+  addSegmentPart(steelParts, [-3.8, 21.4, -1.8], [4.6, 21.4, 1.8], 0.20, 4, true);
+  addSegmentPart(steelParts, [1.4, 34.0, -0.8], [-1.2, 26.0, 1.5], 0.16, 4, true);
+  addSegmentPart(steelParts, [1.4, 34.0, 0.8], [-1.2, 26.0, -1.5], 0.16, 4, true);
+
+  // 5. Suspended Trolley + Operator Cab (驾驶室) w/ Panoramic Reflective Glass (驾驶室玻璃) + Spreader
+  const CAB_X = 9.5;
+  const CAB_Y = boomY(CAB_X) - 2.3;
+  addBoxPart(steelParts, 3.4, 0.7, 3.2, CAB_X, boomY(CAB_X) - 0.3, 0); // trolley carriage
+  addBoxPart(steelParts, 2.6, 2.3, 2.4, CAB_X, CAB_Y, 1.2); // cab steel body
+  addBoxPart(steelParts, 2.9, 0.25, 2.7, CAB_X, CAB_Y + 1.2, 1.2); // cab sun-visor roof
+  // Panoramic tinted reflective glass panes wrapping front, bottom-lookout & sides of cab
+  addBoxPart(glassParts, 2.2, 1.35, 0.14, CAB_X, CAB_Y + 0.05, 2.42); // front view window
+  addBoxPart(glassParts, 2.2, 1.35, 0.14, CAB_X, CAB_Y + 0.05, -0.02); // rear view window
+  addBoxPart(glassParts, 0.14, 1.35, 2.0, CAB_X + 1.32, CAB_Y + 0.05, 1.2); // starboard glass
+  addBoxPart(glassParts, 0.14, 1.35, 2.0, CAB_X - 1.32, CAB_Y + 0.05, 1.2); // port glass
+  // Suspended hoisting cables + container spreader frame hanging under trolley
+  for (const sx of [-1.2, 1.2]) {
+    for (const sz of [-0.9, 0.9]) {
+      addSegmentPart(steelParts, [CAB_X + sx, boomY(CAB_X) - 0.5, sz], [CAB_X + sx, 13.8, sz], 0.06, 4, true);
+    }
+  }
+  addBoxPart(steelParts, 4.6, 0.55, 2.4, CAB_X, 13.5, 0); // spreader beam
+
+  const craneGeo = mergeGeometries(steelParts, false)!;
+  const cabGlassGeo = mergeGeometries(glassParts, false)!;
+  const distant = new THREE.InstancedMesh(craneGeo, getMaterial('crane'), cranes.length);
+  const cabGlass = new THREE.InstancedMesh(cabGlassGeo, getMaterial('cabGlass'), cranes.length);
   distant.name = 'harbour-cranes';
+  cabGlass.name = 'harbour-crane-glass';
 
   const beacons = new THREE.InstancedMesh(
     new THREE.SphereGeometry(0.45, 8, 6),
@@ -743,47 +942,57 @@ function buildCranes(group: THREE.Group): void {
   );
   beacons.name = 'crane-beacons';
 
-  let ci = 0;
   cranes.forEach(([cx, cz, s, ry], idx) => {
+    setInst(distant, idx, cx, -2, cz, s, s, s, ry);
+    setInst(cabGlass, idx, cx, -2, cz, s, s, s, ry);
     const cos = Math.cos(ry);
     const sin = Math.sin(ry);
-    const P = (x: number, y: number, z: number, sx: number, sy: number, sz: number, rz = 0): void => {
-      const wx = cx + (x * cos + z * sin) * s;
-      const wz = cz + (-x * sin + z * cos) * s;
-      setInst(distant, ci++, wx, -2 + y * s, wz, sx * s, sy * s, sz * s, ry, 0, rz);
-    };
-    P(-5.0, 10.0, -2.2, 1.2, 20, 1.2); // front-left leg
-    P(5.0, 10.0, -2.2, 1.2, 20, 1.2); // front-right leg
-    P(-5.0, 10.0, 2.2, 1.2, 20, 1.2); // rear-left leg
-    P(5.0, 10.0, 2.2, 1.2, 20, 1.2); // rear-right leg
-    P(0.0, 9.5, 0.0, 11.2, 1.1, 4.8); // mid portal cross-bracing
-    P(0.0, 20.4, 0.0, 13.5, 1.8, 5.2); // top bridge girder
-    P(11.5, 22.8, 0.0, 24.0, 1.1, 1.6, 0.28); // long harbour boom/jib
-    P(-8.5, 21.0, 0.0, 7.5, 1.5, 2.2); // counter-jib + machinery house
-    P(0.0, 18.0, 2.8, 2.6, 2.2, 2.2); // operator cab
-    P(1.5, 27.5, 0.0, 1.4, 13.5, 1.4, -0.06); // apex A-frame tower
-    P(10.5, 29.5, 0.0, 21.0, 0.45, 0.45, -0.34); // forestay tie-rod
-
-    // red aviation obstruction light at crane apex
-    const bx = cx + 1.5 * cos * s;
-    const bz = cz - 1.5 * sin * s;
-    setInst(beacons, idx, bx, -2 + 34.4 * s, bz, 1, 1, 1);
+    const bx = cx + 1.4 * cos * s;
+    const bz = cz - 1.4 * sin * s;
+    setInst(beacons, idx, bx, -2 + 34.8 * s, bz, 1, 1, 1);
   });
-  group.add(distant, beacons);
+  group.add(distant, cabGlass, beacons);
 
-  // On-ship steel bow mast (+x tip) & stern deck crane (-x tip): lit metallic PBR
-  const onShip = new THREE.InstancedMesh(geo, getMaterial('mast'), 7);
+  // On-ship steel bow mast (+x tip) & detailed lattice stern deck crane (-x tip)
+  const shipParts: THREE.BufferGeometry[] = [];
+  const sternGlass: THREE.BufferGeometry[] = [];
+  // Bow mast (+x)
+  addBoxPart(shipParts, 0.4, 14, 0.4, 33.8, 5.5, 0);
+  addBoxPart(shipParts, 0.22, 0.22, 3.4, 33.8, 8.2, 0);
+  addBoxPart(shipParts, 0.08, 4.4, 0.08, 33.8, 10.6, 0);
+  addBoxPart(shipParts, 1.3, 0.14, 1.3, 33.8, 7.2, 0); // watch platform
+  // Stern deck crane (-x): pedestal, counterweight, glazed operator cab & lattice jib
+  addCylPart(shipParts, 0.62, 0.72, 3.2, 10, -34.0, 0.9, 0);
+  addBoxPart(shipParts, 1.7, 1.3, 1.5, -33.4, 2.35, 0); // counterweight & machinery housing
+  addBoxPart(shipParts, 1.25, 1.45, 1.15, -34.1, 3.3, 0.95); // operator cab shell
+  addBoxPart(sternGlass, 0.95, 0.85, 0.10, -34.1, 3.4, 1.54); // cab side window
+  addBoxPart(sternGlass, 0.10, 0.85, 0.85, -33.46, 3.4, 0.95); // cab front window facing deck
+  // Lattice jib chords + diagonal bracing extending up & toward bow
+  for (const jz of [-0.32, 0.32]) {
+    addSegmentPart(shipParts, [-34.0, 3.2, jz], [-30.0, 10.6, jz * 0.5], 0.11, 4, true);
+    addSegmentPart(shipParts, [-34.6, 2.8, jz], [-30.6, 10.2, jz * 0.5], 0.11, 4, true);
+  }
+  for (let k = 0; k < 5; k++) {
+    const t0 = k / 5;
+    const t1 = (k + 1) / 5;
+    const ax0 = -34.0 + 4.0 * t0, ay0 = 3.2 + 7.4 * t0;
+    const ax1 = -34.0 + 4.0 * t1, ay1 = 3.2 + 7.4 * t1;
+    const bx0 = -34.6 + 4.0 * t0, by0 = 2.8 + 7.4 * t0;
+    const bx1 = -34.6 + 4.0 * t1, by1 = 2.8 + 7.4 * t1;
+    addSegmentPart(shipParts, [ax0, ay0, -0.24], [bx1, by1, -0.24], 0.06, 4, true);
+    addSegmentPart(shipParts, [ax0, ay0, 0.24], [bx1, by1, 0.24], 0.06, 4, true);
+    addSegmentPart(shipParts, [ax0, ay0, -0.24], [ax0, ay0, 0.24], 0.06, 4, true);
+  }
+  // Hoist stay cable from apex back to counterweight
+  addSegmentPart(shipParts, [-33.4, 3.0, 0], [-30.3, 10.4, 0], 0.045, 4, true);
+
+  const onShip = new THREE.Mesh(mergeGeometries(shipParts, false)!, getMaterial('mast'));
   onShip.name = 'ship-masts';
-  setInst(onShip, 0, 33.8, 5.5, 0, 0.4, 14, 0.4); // bow mast pole
-  setInst(onShip, 1, 33.8, 8.2, 0, 0.22, 0.22, 3.4); // bow mast yard
-  setInst(onShip, 2, 33.8, 10.6, 0, 0.08, 4.4, 0.08); // antenna whip
-  setInst(onShip, 3, 33.8, 7.2, 0, 1.2, 0.14, 1.2); // watch platform
-  setInst(onShip, 4, -34.0, 0.8, 0, 0.9, 3.2, 0.9); // stern pedestal
-  setInst(onShip, 5, -34.6, 4.6, 0, 0.45, 8.5, 0.45, 0.2, 0, -0.52); // stern crane jib
-  setInst(onShip, 6, -33.4, 2.2, 0, 1.5, 1.2, 1.2); // stern counterweight
   onShip.castShadow = true;
   onShip.receiveShadow = true;
-  group.add(onShip);
+  const onShipGlass = new THREE.Mesh(mergeGeometries(sternGlass, false)!, getMaterial('cabGlass'));
+  onShipGlass.name = 'ship-crane-glass';
+  group.add(onShip, onShipGlass);
 }
 
 /** Self-lit local light anchors + subtle point pools. */
@@ -1368,7 +1577,7 @@ function buildCrateJumpStairs(group: THREE.Group): void {
     }
   }
   const mesh = new THREE.InstancedMesh(
-    new THREE.BoxGeometry(1, 1, 1),
+    makeCrateGeo(),
     getMaterial('crate'),
     instances.length,
   );
