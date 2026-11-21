@@ -1,9 +1,17 @@
-// First-person weapon view — strictly 2 articulated weapons:
-//   1. ASSAULT RIFLE (primary): 30-rd curved mag, charging handle, 1.10s reload, 0.35s swap
-//   2. M134 GATLING (swap): 6-barrel rotating cluster w/ high-speed spin blur,
-//      300-rd cylindrical drum + 3-segment swinging brass ammo belt, 3.2s drum-swap
-//      reload with dangling belt, 0.45s heavy swap.
-// All motions run frame-rate independently through src/render/tween.ts.
+// First-person weapon view — strictly 2 articulated weapons (ASSAULT RIFLE +
+// M134 GATLING) paired with realistic 5-finger articulated low-poly human hands
+// (src/render/hands.ts, <= 1200 tris/hand, 6 draw calls total for both hands).
+//
+// Rifle reload (1.10s, exact 6-stage Spec A choreography):
+//   ① 0–140ms    Left hand opens fingers (0–12°) releasing handguard → moves below magwell
+//   ② 140–340ms  Thumb presses mag release; old mag drops, left hand catches & sweeps out
+//   ③ 340–520ms  Left hand draws fresh brass-topped mag from belt (open cupped palm in view)
+//   ④ 520–740ms  Fresh mag aligns & pushes into magwell (palm follows) → thumb confirms seat
+//   ⑤ 740–920ms  Left hand returns to handguard; RIGHT hand leaves grip (index off trigger,
+//                palm turns sideways) to rack charging handle
+//   ⑥ 920–1040ms Return to ready stance (+60ms settle tail in final-100ms fire window)
+//
+// Hand-gun minimum clearance is checked across all keyframes (>= 2cm).
 
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
@@ -12,6 +20,14 @@ import { getMaterial } from './materials';
 import type { MaterialKind } from './materials';
 import type { ReloadSnapshot, WeaponId } from '../game/weapons';
 import { MuzzleFlashRig, type VfxTelemetry } from './vfx';
+import {
+  HumanHand,
+  HAND_POSES,
+  lerpHandPose,
+  minClearanceToGun,
+  type HandPose,
+  type LocalBox,
+} from './hands';
 import {
   clamp01,
   damp,
@@ -25,7 +41,7 @@ import {
 } from './tween';
 
 type GunId = WeaponId;
-type MatKey = 'metal' | 'poly' | 'mag' | 'edge' | 'glove' | 'cuff' | 'brass' | 'accent';
+type MatKey = 'metal' | 'poly' | 'mag' | 'edge' | 'brass' | 'accent';
 
 const std = (kind: MaterialKind, emissiveIntensity: number): THREE.MeshStandardMaterial => {
   const m = (getMaterial(kind) as THREE.MeshStandardMaterial).clone();
@@ -50,8 +66,6 @@ const MAT: Record<MatKey, THREE.Material> & {
   poly: std('gunPoly', 0.12),
   mag: std('gunMag', 0.16),
   edge: getMaterial('gunEdge'),
-  glove: std('glove', 0.16),
-  cuff: std('rail', 0.12),
   brass: new THREE.MeshStandardMaterial({
     color: PALETTE.brass,
     emissive: PALETTE.brass,
@@ -135,7 +149,6 @@ const box = (
   p.push({ mat, geo: place(new THREE.BoxGeometry(w, h, d), x, y, z, rx, ry, rz) });
 };
 
-/** Cylinder with its axis along the gun (z). rTop is at the rear (+z). */
 const cylZ = (
   p: Parts,
   mat: MatKey,
@@ -152,7 +165,6 @@ const cylZ = (
   p.push({ mat, geo: place(geo, x, y, z) });
 };
 
-/** Cylinder with its axis along X (e.g. horizontal drum / carry bar). */
 const cylX = (
   p: Parts,
   mat: MatKey,
@@ -327,18 +339,14 @@ function buildMagGroup(
 function buildGatlingDrumGroup(fadeable = false): THREE.Group {
   const g = new THREE.Group();
   const p: Parts = [];
-  // Main ribbed steel drum cylinder oriented vertically/slightly angled
   const body = new THREE.CylinderGeometry(0.068, 0.068, 0.125, 16);
   p.push({ mat: 'mag', geo: body });
-  // Top & bottom reinforcement rims
   const topRim = new THREE.CylinderGeometry(0.072, 0.072, 0.014, 16);
   p.push({ mat: 'edge', geo: place(topRim, 0, 0.058, 0) });
   const botRim = new THREE.CylinderGeometry(0.072, 0.072, 0.014, 16);
   p.push({ mat: 'edge', geo: place(botRim, 0, -0.058, 0) });
-  // Amber 300-RD tactical caution stripe band around mid drum
   const stripe = new THREE.CylinderGeometry(0.0705, 0.0705, 0.022, 16);
   p.push({ mat: 'accent', geo: place(stripe, 0, 0.006, 0) });
-  // Top brass feed mouth
   box(p, 'metal', 0.036, 0.022, 0.044, 0.024, 0.070, 0);
   cylZ(p, 'brass', 0.0055, 0.042, 0.018, 0.076, 0, 8);
   cylZ(p, 'brass', 0.0055, 0.042, 0.030, 0.076, 0, 8);
@@ -356,63 +364,12 @@ function buildGatlingDrumGroup(fadeable = false): THREE.Group {
 function buildBeltSegment(): THREE.Group {
   const g = new THREE.Group();
   const p: Parts = [];
-  // Segment extends from y = 0 downward to y = -0.048 (4 linked 7.62 rounds)
   for (let i = 0; i < 4; i++) {
     const y = -0.006 - i * 0.012;
-    // Brass cartridge body + tapered bullet tip pointing forward (-Z)
     cylZ(p, 'brass', 0.0048, 0.038, 0, y, 0.002, 8);
     cylZ(p, 'brass', 0.0045, 0.014, 0, y, -0.023, 8, 0.0014);
-    // Dark disintegrating steel belt link clasp
     box(p, 'mag', 0.012, 0.007, 0.014, 0, y, 0.004);
   }
-  mergeParts(p, g);
-  return g;
-}
-
-/** Temporary right/left arm placeholders (replaced by realistic 5-finger hands in next commit). */
-function addRightArm(p: Parts): void {
-  box(p, 'glove', 0.024, 0.060, 0.038, 0.024, -0.060, 0.106, 0.28, 0, 0);
-  box(p, 'glove', 0.032, 0.018, 0.034, 0.007, -0.028, 0.096);
-  for (let i = 0; i < 3; i++) {
-    box(p, 'glove', 0.017, 0.014, 0.016, -0.009, -0.043 - i * 0.018, 0.076 + i * 0.003, 0.45, 0, 0);
-  }
-  box(p, 'glove', 0.013, 0.010, 0.026, -0.008, -0.031, 0.084, 0, 0.3, 0);
-  box(p, 'glove', 0.008, 0.010, 0.022, -0.005, -0.036, 0.060);
-  box(p, 'cuff', 0.058, 0.052, 0.030, 0.042, -0.096, 0.128, 0.5, 0.42, 0);
-  box(p, 'glove', 0.058, 0.052, 0.20, 0.075, -0.155, 0.225, 0.62, 0.45, 0);
-}
-
-function buildLeftArmGroup(): THREE.Group {
-  const g = new THREE.Group();
-  const p: Parts = [];
-  box(p, 'glove', 0.050, 0.026, 0.076, -0.002, -0.010, 0);
-  box(p, 'glove', 0.016, 0.032, 0.072, -0.022, 0.009, 0);
-  box(p, 'edge', 0.0035, 0.007, 0.058, -0.030, 0.020, 0);
-  for (let i = 0; i < 4; i++) {
-    box(p, 'glove', 0.025, 0.010, 0.014, -0.007, 0.029, 0.025 - i * 0.017, 0, 0, 0.22);
-  }
-  box(p, 'glove', 0.013, 0.011, 0.030, 0.018, 0.006, 0.010, 0, -0.15, 0);
-
-  const addLimb = (
-    mat: MatKey,
-    a: [number, number, number],
-    b: [number, number, number],
-    w: number,
-    h: number,
-  ) => {
-    const va = new THREE.Vector3(...a);
-    const vb = new THREE.Vector3(...b);
-    const dir = vb.clone().sub(va);
-    const len = dir.length();
-    const mid = va.clone().add(vb).multiplyScalar(0.5);
-    const geo = new THREE.BoxGeometry(w, h, len);
-    const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), dir.normalize());
-    geo.applyMatrix4(new THREE.Matrix4().compose(mid, q, new THREE.Vector3(1, 1, 1)));
-    p.push({ mat, geo });
-  };
-  addLimb('cuff', [-0.016, -0.016, 0.040], [-0.046, -0.032, 0.072], 0.054, 0.048);
-  addLimb('glove', [-0.044, -0.031, 0.070], [-0.265, -0.145, 0.285], 0.054, 0.048);
-
   mergeParts(p, g);
   return g;
 }
@@ -455,29 +412,54 @@ function addStock(p: Parts, cheek = 0.012): void {
   box(p, 'poly', 0.039, 0.072, 0.01, 0, -0.028, 0.341, -0.05, 0, 0);
 }
 
+/** Gun body AABBs used for non-clipping clearance checks (>= 2cm). */
+const RIFLE_BODY_BOXES: readonly LocalBox[] = [
+  { minX: -0.020, maxX: 0.020, minY: -0.022, maxY: 0.038, minZ: -0.106, maxZ: 0.140 }, // receiver
+  { minX: -0.024, maxX: 0.024, minY: -0.022, maxY: 0.026, minZ: -0.395, maxZ: -0.105 }, // handguard
+  { minX: -0.014, maxX: 0.014, minY: -0.106, maxY: -0.020, minZ: 0.060, maxZ: 0.106 }, // grip
+  { minX: -0.016, maxX: 0.016, minY: -0.055, maxY: -0.020, minZ: -0.012, maxZ: 0.030 }, // magwell
+];
+
+const GATLING_BODY_BOXES: readonly LocalBox[] = [
+  { minX: -0.056, maxX: 0.056, minY: -0.060, maxY: 0.050, minZ: -0.110, maxZ: 0.130 }, // drive housing
+  { minX: -0.044, maxX: 0.044, minY: -0.048, maxY: 0.040, minZ: -0.650, maxZ: -0.110 }, // barrel cluster
+];
+
+interface TransformPose {
+  x: number;
+  y: number;
+  z: number;
+  rx: number;
+  ry: number;
+  rz: number;
+}
+
 interface ArticulatedGun {
   root: THREE.Group;
   muzzleZ: number;
   muzzleY: number;
   ejectPos: THREE.Vector3;
   baseOffset: THREE.Vector3;
-  leftArm: THREE.Group;
-  leftRestPos: THREE.Vector3;
+  bodyBoxes: readonly LocalBox[];
+  leftRest: TransformPose;
+  rightRest: TransformPose;
+  leftRestPose: HandPose;
+  rightRestPose: HandPose;
+  leftElbow: THREE.Vector3;
+  rightElbow: THREE.Vector3;
   /** seated magazine / drum on receiver */
   mag: THREE.Group | null;
   magRestPos: THREE.Vector3;
   /** fading dropped magazine / drum */
   dropMag: THREE.Group | null;
-  /** fresh magazine / drum carried by leftArm during insert */
-  heldMag: THREE.Group | null;
+  /** fresh magazine / drum moved cleanly in gun space synced to left hand */
+  freshMag: THREE.Group | null;
   /** charging handle / bolt / feed tray cover */
   bolt: THREE.Group;
   boltRestPos: THREE.Vector3;
   /** Gatling 6-barrel rotating cluster */
   barrelCluster: THREE.Group | null;
-  /** Gatling translucent motion-blur cylinder for high-RPM spin */
   barrelBlurMesh: THREE.Mesh | null;
-  /** Gatling 3-segment hanging brass ammo belt (chained parent->child) */
   beltSegs: THREE.Group[];
   beltAnchor: THREE.Group | null;
 }
@@ -496,14 +478,14 @@ function buildRifleModel(): ArticulatedGun {
   addGrip(body, 0.098, -0.02);
   addTriggerGroup(body, 0.058, -0.024);
   addSights(body, 0.098, -0.385, 0.044);
-  addRightArm(body);
   mergeParts(body, root);
 
+  // Charging handle + right-side bolt knob so right-hand rack (Stage ⑤) reads crisply
   const bolt = new THREE.Group();
   const boltParts: Parts = [];
-  box(boltParts, 'metal', 0.036, 0.008, 0.024, 0, 0, 0);
-  box(boltParts, 'edge', 0.018, 0.009, 0.012, -0.024, -0.012, -0.115);
-  box(boltParts, 'edge', 0.005, 0.012, 0.042, 0.021, -0.022, -0.120);
+  box(boltParts, 'metal', 0.038, 0.008, 0.024, 0, 0, 0);
+  box(boltParts, 'edge', 0.022, 0.009, 0.014, 0.024, 0.002, 0.002); // right-side charging latch ear
+  box(boltParts, 'edge', 0.005, 0.012, 0.042, 0.021, -0.022, -0.120); // chrome bolt carrier face
   mergeParts(boltParts, bolt);
   const boltRestPos = new THREE.Vector3(0, 0.030, 0.132);
   bolt.position.copy(boltRestPos);
@@ -519,14 +501,10 @@ function buildRifleModel(): ArticulatedGun {
   dropMag.visible = false;
   root.add(dropMag);
 
-  const leftArm = buildLeftArmGroup();
-  const leftRestPos = new THREE.Vector3(0, -0.024, -0.26);
-  leftArm.position.copy(leftRestPos);
-  const heldMag = buildMagGroup(0.115, true, false);
-  heldMag.position.set(0.016, 0.082, -0.008);
-  heldMag.visible = false;
-  leftArm.add(heldMag);
-  root.add(leftArm);
+  const freshMag = buildMagGroup(0.115, true, false);
+  freshMag.position.copy(magRestPos);
+  freshMag.visible = false;
+  root.add(freshMag);
 
   return {
     root,
@@ -534,12 +512,19 @@ function buildRifleModel(): ArticulatedGun {
     muzzleY: 0.012,
     ejectPos: new THREE.Vector3(0.028, 0.008, 0.012),
     baseOffset: new THREE.Vector3(0, 0, 0),
-    leftArm,
-    leftRestPos,
+    bodyBoxes: RIFLE_BODY_BOXES,
+    // Left palm cradles underside-left of handguard (dist to handguard >= 2.6cm)
+    leftRest: { x: -0.038, y: -0.048, z: -0.250, rx: 0.18, ry: 0.24, rz: 1.95 },
+    // Right palm holds right flank of pistol grip (dist to grip >= 2.4cm)
+    rightRest: { x: 0.038, y: -0.064, z: 0.094, rx: 0.28, ry: -0.16, rz: -1.42 },
+    leftRestPose: HAND_POSES.rifleLeftRest,
+    rightRestPose: HAND_POSES.rifleRightRest,
+    leftElbow: new THREE.Vector3(-0.34, -0.24, 0.28),
+    rightElbow: new THREE.Vector3(0.24, -0.24, 0.42),
     mag,
     magRestPos,
     dropMag,
-    heldMag,
+    freshMag,
     bolt,
     boltRestPos,
     barrelCluster: null,
@@ -549,49 +534,37 @@ function buildRifleModel(): ArticulatedGun {
   };
 }
 
-/**
- * M134 Gatling Minigun:
- * - 6 rotating steel barrels arranged in a 60° hex cluster + 3 barrel clamp rings
- * - Additive high-RPM radial spin blur sleeve around the barrel ring
- * - Heavy electric drive motor housing + top chainsaw support bar + rear spade grip
- * - Visible lower-left 300-round cylindrical drum + 3-segment swinging brass ammo belt
- */
 function buildGatlingModel(): ArticulatedGun {
   const root = new THREE.Group();
   const body: Parts = [];
 
-  // Heavy cylindrical breech housing & drive motor
   cylZ(body, 'metal', 0.056, 0.24, 0, -0.005, 0.01, 14);
-  cylZ(body, 'mag', 0.044, 0.14, 0, 0.042, 0.06, 12); // top electric motor pod
-  box(body, 'edge', 0.008, 0.014, 0.13, -0.046, 0.042, 0.06); // motor cooling rib highlight
-  box(body, 'accent', 0.010, 0.016, 0.085, -0.056, 0.002, 0.01); // amber hazard badge on housing
+  cylZ(body, 'mag', 0.044, 0.14, 0, 0.042, 0.06, 12);
+  box(body, 'edge', 0.008, 0.014, 0.13, -0.046, 0.042, 0.06);
+  box(body, 'accent', 0.010, 0.016, 0.085, -0.056, 0.002, 0.01);
 
-  // Left-side ammo feed chute housing (receives the swinging brass belt!)
+  // Left-side ammo feed chute
   box(body, 'metal', 0.042, 0.036, 0.072, -0.058, -0.018, -0.030, 0, 0, 0.22);
   box(body, 'edge', 0.044, 0.006, 0.074, -0.058, 0.002, -0.030, 0, 0, 0.22);
-
-  // Right-side brass casing ejection chute
+  // Right-side casing ejection chute
   box(body, 'mag', 0.024, 0.022, 0.058, 0.056, -0.012, -0.015);
 
-  // Top chainsaw-style carry & support bar (front & rear stanchions + knurled cross-bar)
+  // Top chainsaw carry bar
   box(body, 'metal', 0.012, 0.076, 0.018, -0.038, 0.062, -0.155, 0, 0, -0.16);
   box(body, 'metal', 0.012, 0.076, 0.018, 0.038, 0.062, -0.155, 0, 0, 0.16);
   cylX(body, 'poly', 0.013, 0.098, 0, 0.098, -0.155, 10);
-  // Support bridge rail running back to motor housing
   box(body, 'metal', 0.026, 0.012, 0.17, 0, 0.096, -0.075);
   box(body, 'edge', 0.006, 0.005, 0.16, -0.012, 0.103, -0.075);
 
-  // Rear spade trigger handle + safety guard
+  // Rear spade trigger handle + lower pistol grip
   box(body, 'metal', 0.014, 0.062, 0.018, -0.036, 0.005, 0.148);
   box(body, 'metal', 0.014, 0.062, 0.018, 0.036, 0.005, 0.148);
   cylX(body, 'poly', 0.013, 0.088, 0, 0.034, 0.148, 10);
-  box(body, 'accent', 0.018, 0.012, 0.016, 0.014, 0.022, 0.148); // red-amber rotary trigger button
-  // Lower rear grip frame
+  box(body, 'accent', 0.018, 0.012, 0.016, 0.014, 0.022, 0.148);
   addGrip(body, 0.132, -0.035);
-  addRightArm(body);
   mergeParts(body, root);
 
-  // --- 6 Rotating Barrels + 3 Perforated Clamp Rings ---
+  // --- 6 Rotating Barrels + 3 Clamp Rings ---
   const barrelCluster = new THREE.Group();
   barrelCluster.position.set(0, -0.006, -0.11);
   const bParts: Parts = [];
@@ -601,25 +574,18 @@ function buildGatlingModel(): ArticulatedGun {
     const a = (i / 6) * Math.PI * 2;
     const bx = Math.cos(a) * BARREL_RING_R;
     const by = Math.sin(a) * BARREL_RING_R;
-    // Steel barrel tube
     cylZ(bParts, 'metal', 0.0085, BARREL_LEN, bx, by, -BARREL_LEN * 0.5, 10);
-    // Bright chamfered muzzle crown ring on every single barrel so all 6 count cleanly
     cylZ(bParts, 'edge', 0.0098, 0.014, bx, by, -BARREL_LEN + 0.007, 10);
-    // Dark bore hole plug at tip
     cylZ(bParts, 'mag', 0.0052, 0.006, bx, by, -BARREL_LEN - 0.001, 8);
   }
-  // Central drive rotor shaft
   cylZ(bParts, 'mag', 0.014, BARREL_LEN - 0.04, 0, 0, -BARREL_LEN * 0.48, 10);
-  // 3 Heavy Barrel Clamp Rings (rear, middle, front flash clamp)
   for (const cz of [-0.07, -0.27, -0.47]) {
     cylZ(bParts, 'metal', BARREL_RING_R + 0.013, 0.022, 0, 0, cz, 18);
     cylZ(bParts, 'edge', BARREL_RING_R + 0.0145, 0.006, 0, 0, cz - 0.009, 18);
   }
-  // Amber heat-warning band on mid clamp
   cylZ(bParts, 'accent', BARREL_RING_R + 0.014, 0.008, 0, 0, -0.27, 18);
   mergeParts(bParts, barrelCluster);
 
-  // Translucent radial spin-blur cylinder (becomes visible as barrel RPM climbs)
   const blurGeo = new THREE.CylinderGeometry(
     BARREL_RING_R + 0.012,
     BARREL_RING_R + 0.012,
@@ -636,7 +602,7 @@ function buildGatlingModel(): ArticulatedGun {
   barrelCluster.add(barrelBlurMesh);
   root.add(barrelCluster);
 
-  // Hinged top feed-tray cover (flips open during 3.2s drum reload!)
+  // Feed tray cover
   const bolt = new THREE.Group();
   const coverParts: Parts = [];
   box(coverParts, 'metal', 0.056, 0.012, 0.088, 0, 0, 0);
@@ -646,7 +612,7 @@ function buildGatlingModel(): ArticulatedGun {
   bolt.position.copy(boltRestPos);
   root.add(bolt);
 
-  // --- 300-Round Cylindrical Ammo Drum (mounted visibly on lower-left flank!) ---
+  // 300-round cylindrical drum
   const magRestPos = new THREE.Vector3(-0.115, -0.105, -0.055);
   const mag = buildGatlingDrumGroup(false);
   mag.position.copy(magRestPos);
@@ -658,7 +624,12 @@ function buildGatlingModel(): ArticulatedGun {
   dropMag.visible = false;
   root.add(dropMag);
 
-  // --- 3-Segment Articulated Hanging Brass Ammo Belt (sways & feeds continuously!) ---
+  const freshMag = buildGatlingDrumGroup(false);
+  freshMag.position.copy(magRestPos);
+  freshMag.visible = false;
+  root.add(freshMag);
+
+  // 3-segment swinging brass ammo belt
   const beltAnchor = new THREE.Group();
   beltAnchor.position.set(-0.072, -0.014, -0.034);
   root.add(beltAnchor);
@@ -673,28 +644,25 @@ function buildGatlingModel(): ArticulatedGun {
     beltParent = seg;
   }
 
-  // Left support hand gripping the top chainsaw carry bar
-  const leftArm = buildLeftArmGroup();
-  const leftRestPos = new THREE.Vector3(-0.012, 0.076, -0.155);
-  leftArm.position.copy(leftRestPos);
-  const heldMag = buildGatlingDrumGroup(false);
-  heldMag.position.set(0.025, 0.085, -0.010);
-  heldMag.visible = false;
-  leftArm.add(heldMag);
-  root.add(leftArm);
-
   return {
     root,
     muzzleZ: -0.665,
     muzzleY: -0.006,
     ejectPos: new THREE.Vector3(0.070, -0.012, -0.015),
     baseOffset: new THREE.Vector3(-0.025, -0.045, 0.035),
-    leftArm,
-    leftRestPos,
+    bodyBoxes: GATLING_BODY_BOXES,
+    // Left hand grips top chainsaw carry handle cleanly above drive housing
+    leftRest: { x: -0.014, y: 0.122, z: -0.140, rx: 0.14, ry: -0.18, rz: 0.16 },
+    // Right hand holds rear pistol/spade grip
+    rightRest: { x: 0.046, y: -0.068, z: 0.132, rx: 0.26, ry: -0.14, rz: -1.42 },
+    leftRestPose: HAND_POSES.gatlingLeftRest,
+    rightRestPose: HAND_POSES.gatlingRightRest,
+    leftElbow: new THREE.Vector3(-0.34, -0.14, 0.24),
+    rightElbow: new THREE.Vector3(0.26, -0.22, 0.44),
     mag,
     magRestPos,
     dropMag,
-    heldMag,
+    freshMag,
     bolt,
     boltRestPos,
     barrelCluster,
@@ -708,6 +676,17 @@ function buildArticulated(id: GunId): ArticulatedGun {
   return id === 'rifle' ? buildRifleModel() : buildGatlingModel();
 }
 
+function lerpTransform(a: TransformPose, b: TransformPose, t: number): TransformPose {
+  return {
+    x: lerp(a.x, b.x, t),
+    y: lerp(a.y, b.y, t),
+    z: lerp(a.z, b.z, t),
+    rx: lerp(a.rx, b.rx, t),
+    ry: lerp(a.ry, b.ry, t),
+    rz: lerp(a.rz, b.rz, t),
+  };
+}
+
 export interface WeaponAnimDebug {
   reloadActive: boolean;
   reloadElapsedMs: number;
@@ -719,9 +698,22 @@ export interface WeaponAnimDebug {
   gatlingBarrelAngle: number;
 }
 
+export interface HandsTelemetry {
+  leftTris: number;
+  rightTris: number;
+  totalTris: number;
+  minClearanceM: number;
+  leftIndexCurlDeg: number;
+  rightIndexCurlDeg: number;
+  reloadStage: number;
+}
+
 export class WeaponView {
   readonly group = new THREE.Group();
   readonly muzzleRig = new MuzzleFlashRig();
+  readonly leftHand: HumanHand;
+  readonly rightHand: HumanHand;
+
   private guns = new Map<GunId, ArticulatedGun>();
   private kick = 0;
   private kickDur = 0.11;
@@ -743,11 +735,16 @@ export class WeaponView {
   private barrelAngle = 0;
   private beltSwayPhase = 0;
 
-  // Reload visual blend (smoothly decays back to 0 if reload ends early — zero snap)
+  // Reload visual blend
   private reloadBlend = 0;
   private reloadGunPos = new THREE.Vector3();
   private reloadGunRot = new THREE.Euler();
   private reloadSightDipRad = 0;
+
+  // Scratch pose & vector objects (no per-frame GC churn)
+  private leftPoseScratch: HandPose = lerpHandPose(HAND_POSES.rifleLeftRest, HAND_POSES.rifleLeftRest, 0);
+  private rightPoseScratch: HandPose = lerpHandPose(HAND_POSES.rifleRightRest, HAND_POSES.rifleRightRest, 0);
+  private clearanceVec = new THREE.Vector3();
 
   /** Read-only telemetry for e2e & screenshot inspection */
   readonly animDebug: WeaponAnimDebug = {
@@ -761,22 +758,68 @@ export class WeaponView {
     gatlingBarrelAngle: 0,
   };
 
+  readonly handsTelemetry: HandsTelemetry;
+
   private readonly basePos = new THREE.Vector3(0.27, -0.265, -0.5);
   private readonly baseRot = new THREE.Euler(0.11, 0.075, 0);
 
   constructor() {
+    this.leftHand = new HumanHand('left');
+    this.rightHand = new HumanHand('right');
+    this.handsTelemetry = {
+      leftTris: this.leftHand.triangleCount,
+      rightTris: this.rightHand.triangleCount,
+      totalTris: this.leftHand.triangleCount + this.rightHand.triangleCount,
+      minClearanceM: 0.025,
+      leftIndexCurlDeg: HAND_POSES.rifleLeftRest.index.mcp,
+      rightIndexCurlDeg: HAND_POSES.rifleRightRest.index.mcp,
+      reloadStage: 0,
+    };
+
     for (const id of ['rifle', 'gatling'] as GunId[]) {
       const gun = buildArticulated(id);
       gun.root.visible = id === this.current;
       this.guns.set(id, gun);
       this.group.add(gun.root);
     }
+    // Shared articulated hands sit directly in weapon group space (only 6 draw calls total!)
+    this.group.add(this.leftHand.root);
+    this.group.add(this.rightHand.root);
+
     const g = this.guns.get(this.current)!;
     this.muzzleRig.group.position.set(0, g.muzzleY, g.muzzleZ);
     this.group.add(this.muzzleRig.group);
+    this.applyHandTransforms(g, g.leftRest, g.rightRest, g.leftRestPose, g.rightRestPose);
 
     this.group.position.copy(this.basePos);
     this.group.rotation.copy(this.baseRot);
+  }
+
+  private applyHandTransforms(
+    gun: ArticulatedGun,
+    lt: TransformPose,
+    rt: TransformPose,
+    lp: HandPose,
+    rp: HandPose,
+  ): void {
+    this.leftHand.root.position.set(lt.x, lt.y, lt.z);
+    this.leftHand.root.rotation.set(lt.rx, lt.ry, lt.rz, 'YXZ');
+    this.leftHand.setPose(lp);
+    this.leftHand.aimForearmToward(gun.leftElbow);
+
+    this.rightHand.root.position.set(rt.x, rt.y, rt.z);
+    this.rightHand.root.rotation.set(rt.rx, rt.ry, rt.rz, 'YXZ');
+    this.rightHand.setPose(rp);
+    this.rightHand.aimForearmToward(gun.rightElbow);
+
+    // Live hand-to-gun clearance telemetry (meters)
+    this.clearanceVec.set(lt.x, lt.y, lt.z);
+    const lc = minClearanceToGun(this.clearanceVec, gun.bodyBoxes);
+    this.clearanceVec.set(rt.x, rt.y, rt.z);
+    const rc = minClearanceToGun(this.clearanceVec, gun.bodyBoxes);
+    this.handsTelemetry.minClearanceM = Math.min(lc, rc);
+    this.handsTelemetry.leftIndexCurlDeg = lp.index.mcp;
+    this.handsTelemetry.rightIndexCurlDeg = rp.index.mcp;
   }
 
   /** Instant switch (match start / respawn). */
@@ -795,6 +838,7 @@ export class WeaponView {
     const g = this.guns.get(this.current)!;
     this.resetReloadPose(g);
     this.muzzleRig.group.position.set(0, g.muzzleY, g.muzzleZ);
+    this.applyHandTransforms(g, g.leftRest, g.rightRest, g.leftRestPose, g.rightRestPose);
     this.kick = 0;
     this.reloadBlend = 0;
     this.reloadSightDipRad = 0;
@@ -823,7 +867,6 @@ export class WeaponView {
     return Math.sin(u * Math.PI) * 0.65;
   }
 
-  /** Subtle additive camera pitch dip during reload (never locks player look). */
   get reloadPitchDip(): number {
     return this.reloadSightDipRad;
   }
@@ -835,13 +878,11 @@ export class WeaponView {
     this.muzzleRig.trigger(id);
   }
 
-  /** World-space muzzle tip. */
   muzzleWorld(out: THREE.Vector3): THREE.Vector3 {
     this.group.updateWorldMatrix(true, false);
     return this.muzzleRig.group.getWorldPosition(out);
   }
 
-  /** World-space ejection port position for brass shell spawning. */
   ejectWorld(out: THREE.Vector3): THREE.Vector3 {
     const gun = this.guns.get(this.current)!;
     gun.root.updateWorldMatrix(true, false);
@@ -850,8 +891,6 @@ export class WeaponView {
   }
 
   private resetReloadPose(gun: ArticulatedGun): void {
-    gun.leftArm.position.copy(gun.leftRestPos);
-    gun.leftArm.rotation.set(0, 0, 0);
     if (gun.mag) {
       gun.mag.visible = true;
       gun.mag.position.copy(gun.magRestPos);
@@ -863,7 +902,11 @@ export class WeaponView {
       gun.dropMag.position.copy(gun.magRestPos);
       gun.dropMag.rotation.set(0, 0, 0);
     }
-    if (gun.heldMag) gun.heldMag.visible = false;
+    if (gun.freshMag) {
+      gun.freshMag.visible = false;
+      gun.freshMag.position.copy(gun.magRestPos);
+      gun.freshMag.rotation.set(0, 0, 0);
+    }
     gun.bolt.position.copy(gun.boltRestPos);
     gun.bolt.rotation.set(0, 0, 0);
     MAT.dropMag.opacity = 1;
@@ -871,137 +914,236 @@ export class WeaponView {
     MAT.dropAccent.opacity = 1;
   }
 
-  /** Rifle reload timeline (1.10s total). */
+  /**
+   * Exact 6-stage Spec A rifle reload choreography (0..1040ms + 60ms settle = 1100ms):
+   * ① 0–140ms    Left hand opens fingers straight (0–12°), clears handguard → below magwell
+   * ② 140–340ms  Left thumb presses mag catch; old mag drops, left hand catches & sweeps down-left
+   * ③ 340–520ms  Left hand draws fresh mag from belt/thigh into lower view (open cupped 5-finger grip)
+   * ④ 520–740ms  Fresh mag aligns & pushes into magwell (palm follows base) → thumb presses to confirm
+   * ⑤ 740–920ms  Left hand returns to handguard; RIGHT hand leaves trigger/grip, palm turns sideways, racks bolt
+   * ⑥ 920–1040ms Right hand returns to grip & rifle levels back to ready
+   */
   private applyRifleReload(gun: ArticulatedGun, elapsedMs: number): void {
     const t = elapsedMs;
     const enter = segment(t, 0, 140, easeInOutCubic);
-    const exit = segment(t, 760, 960, easeInOutCubic);
+    const exit = segment(t, 920, 1040, easeInOutCubic);
     const poseW = enter * (1 - exit);
 
-    const slapKick =
-      pulse(t, 660, 700, 760, easeOutCubic, easeOutCubic) * ((1.5 * Math.PI) / 180);
-    const magBump = pulse(t, 510, 545, 600, easeOutCubic, easeInOutCubic);
+    const magSeatKick = pulse(t, 610, 650, 710, easeOutCubic, easeInOutCubic);
+    const boltKick = pulse(t, 830, 875, 920, easeOutCubic, easeOutCubic) * ((1.5 * Math.PI) / 180);
 
+    // Angle the rifle slightly left/up so BOTH hands & all 5 fingers stay framed clearly
     this.reloadGunPos.set(
-      lerp(0, -0.075, poseW),
-      lerp(0, 0.058, poseW) + magBump * 0.014,
-      lerp(0, -0.105, poseW) + slapKick * 0.45,
+      lerp(0, -0.072, poseW),
+      lerp(0, 0.056, poseW) + magSeatKick * 0.012,
+      lerp(0, -0.088, poseW) + boltKick * 0.40,
     );
     this.reloadGunRot.set(
-      lerp(0, -0.16, poseW) + slapKick + magBump * 0.022,
-      lerp(0, 0.30, poseW),
-      lerp(0, -(2.2 * Math.PI) / 180, poseW) - slapKick * 0.35,
+      lerp(0, -0.14, poseW) + boltKick + magSeatKick * 0.022,
+      lerp(0, 0.28, poseW),
+      lerp(0, -(3.0 * Math.PI) / 180, poseW) - boltKick * 0.35,
     );
-    this.reloadSightDipRad = -(1.6 * Math.PI) / 180 * poseW;
+    this.reloadSightDipRad = -(1.5 * Math.PI) / 180 * poseW;
 
-    const magSeated = t < 100 || t >= 560;
+    // --- Left Hand Keyframe Transforms (every point strictly >= 2.2cm clear of gun body!) ---
+    const L_REST = gun.leftRest;
+    const L_CLEAR_ARC: TransformPose = { x: -0.068, y: -0.095, z: -0.115, rx: 0.16, ry: 0.28, rz: 1.55 };
+    const L_BELOW_WELL: TransformPose = { x: -0.048, y: -0.155, z: 0.014, rx: 0.24, ry: 0.24, rz: 1.15 };
+    const L_CATCH_MAG: TransformPose = { x: -0.064, y: -0.188, z: 0.018, rx: 0.26, ry: 0.22, rz: 1.25 };
+    const L_SWEEP_OUT: TransformPose = { x: -0.195, y: -0.275, z: 0.045, rx: 0.34, ry: 0.26, rz: 1.05 };
+    const L_POUCH_UP: TransformPose = { x: -0.215, y: -0.285, z: 0.052, rx: 0.30, ry: 0.26, rz: 0.85 };
+    const L_PRESENT_NEW: TransformPose = { x: -0.068, y: -0.196, z: 0.020, rx: 0.22, ry: 0.34, rz: 0.92 };
+    const L_ALIGN_WELL: TransformPose = { x: -0.044, y: -0.192, z: 0.015, rx: 0.18, ry: 0.24, rz: 1.02 };
+    const L_PUSH_SEAT: TransformPose = { x: -0.042, y: -0.138, z: 0.014, rx: 0.14, ry: 0.20, rz: 1.08 };
+    const L_CONFIRM: TransformPose = { x: -0.046, y: -0.142, z: 0.012, rx: 0.12, ry: 0.22, rz: 1.16 };
+
+    let lTrans: TransformPose = L_REST;
+    let lPose: HandPose = gun.leftRestPose;
+    let stage = 0;
+
+    if (t < 140) {
+      // ① 0–140ms: Left hand opens fingers straight & arcs outside handguard to below magwell
+      stage = 1;
+      if (t < 65) {
+        const u = segment(t, 0, 65, easeOutCubic);
+        lTrans = lerpTransform(L_REST, L_CLEAR_ARC, u);
+        lPose = lerpHandPose(HAND_POSES.rifleLeftRest, HAND_POSES.leftOpenSpread, u, this.leftPoseScratch);
+      } else {
+        const u = segment(t, 65, 140, easeInOutCubic);
+        lTrans = lerpTransform(L_CLEAR_ARC, L_BELOW_WELL, u);
+        lPose = lerpHandPose(HAND_POSES.leftOpenSpread, HAND_POSES.leftOpenSpread, u, this.leftPoseScratch);
+      }
+    } else if (t < 340) {
+      // ② 140–340ms: Thumb presses mag release (140–210ms); mag drops, left hand catches & sweeps out (210–340ms)
+      stage = 2;
+      if (t < 210) {
+        const u = segment(t, 140, 210, easeInOutCubic);
+        lTrans = lerpTransform(L_BELOW_WELL, L_CATCH_MAG, u * 0.5);
+        lPose = lerpHandPose(HAND_POSES.leftOpenSpread, HAND_POSES.leftThumbRelease, u, this.leftPoseScratch);
+      } else if (t < 265) {
+        const u = segment(t, 210, 265, easeOutCubic);
+        lTrans = lerpTransform(lerpTransform(L_BELOW_WELL, L_CATCH_MAG, 0.5), L_CATCH_MAG, u);
+        lPose = lerpHandPose(HAND_POSES.leftThumbRelease, HAND_POSES.leftCatchMag, u, this.leftPoseScratch);
+      } else {
+        const u = segment(t, 265, 340, easeInCubic);
+        lTrans = lerpTransform(L_CATCH_MAG, L_SWEEP_OUT, u);
+        lPose = lerpHandPose(HAND_POSES.leftCatchMag, HAND_POSES.leftCatchMag, u, this.leftPoseScratch);
+      }
+    } else if (t < 520) {
+      // ③ 340–520ms: Left hand draws fresh mag from belt/thigh up into view with open cupped grip
+      stage = 3;
+      const u = segment(t, 340, 520, easeInOutCubic);
+      lTrans = lerpTransform(L_POUCH_UP, L_PRESENT_NEW, u);
+      lPose = lerpHandPose(HAND_POSES.leftCatchMag, HAND_POSES.leftHoldFreshMag, segment(t, 340, 440, easeOutCubic), this.leftPoseScratch);
+    } else if (t < 740) {
+      // ④ 520–740ms: Align & push new mag into magwell (520–660ms) → thumb presses to confirm (660–740ms)
+      stage = 4;
+      if (t < 575) {
+        const u = segment(t, 520, 575, easeInOutCubic);
+        lTrans = lerpTransform(L_PRESENT_NEW, L_ALIGN_WELL, u);
+        lPose = lerpHandPose(HAND_POSES.leftHoldFreshMag, HAND_POSES.leftPushMag, u, this.leftPoseScratch);
+      } else if (t < 660) {
+        const lin = segment(t, 575, 635, easeInOutCubic);
+        const snap = t >= 635 ? easeOutBack(clamp01((t - 635) / 25), 2.1) : 0;
+        const pushU = t < 635 ? lin * 0.85 : 0.85 + snap * 0.15;
+        lTrans = lerpTransform(L_ALIGN_WELL, L_PUSH_SEAT, pushU);
+        lPose = HAND_POSES.leftPushMag;
+      } else {
+        const u = segment(t, 660, 740, easeOutCubic);
+        lTrans = lerpTransform(L_PUSH_SEAT, L_CONFIRM, u);
+        lPose = lerpHandPose(HAND_POSES.leftPushMag, HAND_POSES.leftThumbConfirm, u, this.leftPoseScratch);
+      }
+    } else if (t < 920) {
+      // ⑤ 740–920ms: Left hand returns cleanly around outside of receiver back onto handguard
+      stage = 5;
+      if (t < 820) {
+        const u = segment(t, 740, 820, easeInOutCubic);
+        lTrans = lerpTransform(L_CONFIRM, L_CLEAR_ARC, u);
+        lPose = lerpHandPose(HAND_POSES.leftThumbConfirm, HAND_POSES.leftOpenSpread, u, this.leftPoseScratch);
+      } else {
+        const u = segment(t, 820, 920, easeInOutCubic);
+        lTrans = lerpTransform(L_CLEAR_ARC, L_REST, u);
+        lPose = lerpHandPose(HAND_POSES.leftOpenSpread, HAND_POSES.rifleLeftRest, u, this.leftPoseScratch);
+      }
+    } else {
+      // ⑥ 920–1040ms+: Left hand settled on handguard
+      stage = 6;
+      lTrans = L_REST;
+      lPose = HAND_POSES.rifleLeftRest;
+    }
+
+    // --- Right Hand Keyframe Transforms (stays on grip ①–④, RACKS BOLT in Stage ⑤, returns in Stage ⑥!) ---
+    const R_REST = gun.rightRest;
+    const R_LIFT_SIDE: TransformPose = { x: 0.056, y: 0.008, z: 0.124, rx: 0.08, ry: 0.34, rz: -0.68 };
+    const R_BOLT_FWD: TransformPose = { x: 0.052, y: 0.044, z: 0.130, rx: -0.06, ry: 0.42, rz: -0.42 };
+    const R_BOLT_BACK: TransformPose = { x: 0.052, y: 0.042, z: 0.198, rx: -0.04, ry: 0.42, rz: -0.42 };
+
+    let rTrans: TransformPose = R_REST;
+    let rPose: HandPose = gun.rightRestPose;
+
+    if (t >= 740 && t < 920) {
+      // ⑤ 740–920ms: Index leaves trigger, right palm rotates sideways, hooks & pulls charging handle!
+      if (t < 800) {
+        const u = segment(t, 740, 800, easeInOutCubic);
+        const mid = u < 0.5 ? lerpTransform(R_REST, R_LIFT_SIDE, u * 2) : lerpTransform(R_LIFT_SIDE, R_BOLT_FWD, (u - 0.5) * 2);
+        rTrans = mid;
+        rPose = lerpHandPose(HAND_POSES.rifleRightRest, HAND_POSES.rightReleaseToBolt, u, this.rightPoseScratch);
+      } else if (t < 870) {
+        const u = segment(t, 800, 870, easeOutCubic);
+        rTrans = lerpTransform(R_BOLT_FWD, R_BOLT_BACK, u);
+        rPose = lerpHandPose(HAND_POSES.rightReleaseToBolt, HAND_POSES.rightRackBolt, segment(t, 800, 830, easeOutCubic), this.rightPoseScratch);
+      } else {
+        const u = segment(t, 870, 920, easeOutCubic);
+        rTrans = lerpTransform(R_BOLT_BACK, R_BOLT_FWD, u);
+        rPose = lerpHandPose(HAND_POSES.rightRackBolt, HAND_POSES.rightReleaseToBolt, u, this.rightPoseScratch);
+      }
+    } else if (t >= 920 && t < 1040) {
+      // ⑥ 920–1040ms: Right hand returns smoothly onto pistol grip (index back on trigger)
+      const u = segment(t, 920, 1040, easeInOutCubic);
+      rTrans = u < 0.45 ? lerpTransform(R_BOLT_FWD, R_LIFT_SIDE, u / 0.45) : lerpTransform(R_LIFT_SIDE, R_REST, (u - 0.45) / 0.55);
+      rPose = lerpHandPose(HAND_POSES.rightReleaseToBolt, HAND_POSES.rifleRightRest, u, this.rightPoseScratch);
+    }
+
+    this.applyHandTransforms(gun, lTrans, rTrans, lPose, rPose);
+    this.handsTelemetry.reloadStage = stage;
+
+    // --- Magazine visibility & motion synced cleanly with left hand ---
+    const magSeated = t < 185 || t >= 660;
     if (gun.mag) {
       gun.mag.visible = magSeated;
       gun.mag.position.copy(gun.magRestPos);
-      if (t >= 560 && t < 610) {
-        const settle = segment(t, 560, 610, easeOutCubic);
+      if (t >= 660 && t < 720) {
+        const settle = segment(t, 660, 720, easeOutCubic);
         gun.mag.position.y = gun.magRestPos.y + (1 - settle) * 0.008;
       }
     }
 
-    const dropVisible = t >= 100 && t < 275;
+    // Old mag drops at 185ms, caught by left hand (210–265ms) and swept down-left out of frame
+    const dropVisible = t >= 185 && t < 350;
     if (gun.dropMag) {
       gun.dropMag.visible = dropVisible;
       if (dropVisible) {
-        const u = clamp01((t - 100) / 165);
-        const dropEase = easeInCubic(u);
-        const pullInitial = segment(t, 100, 155, easeOutCubic);
+        const dropInit = segment(t, 185, 245, easeInCubic);
+        const sweep = segment(t, 245, 350, easeInCubic);
         gun.dropMag.position.set(
-          gun.magRestPos.x - 0.16 * dropEase,
-          gun.magRestPos.y - 0.065 * pullInitial - 0.24 * dropEase,
-          gun.magRestPos.z + 0.025 * u,
+          gun.magRestPos.x - 0.025 * dropInit - 0.145 * sweep,
+          gun.magRestPos.y - 0.055 * dropInit - 0.165 * sweep,
+          gun.magRestPos.z + 0.015 * sweep,
         );
-        const sway = Math.sin(u * Math.PI * 2.1) * 0.22;
-        gun.dropMag.rotation.set(0.28 * dropEase, 0.12 * u, 0.32 * dropEase + sway);
-        const fade = 1 - segment(t, 175, 275, easeInOutCubic);
+        gun.dropMag.rotation.set(0.14 * sweep, 0.10 * sweep, 0.28 * sweep);
+        const fade = 1 - segment(t, 285, 350, easeInOutCubic);
         MAT.dropMag.opacity = fade;
         MAT.dropEdge.opacity = fade;
       }
     }
 
-    const rest = gun.leftRestPos;
-    const gripMag = { x: -0.026, y: -0.145, z: 0.008, rx: 0.18, ry: 0.12, rz: 0.24 };
-    const stripMag = { x: -0.075, y: -0.215, z: 0.015, rx: 0.24, ry: 0.18, rz: 0.32 };
-    const pouchLow = { x: -0.255, y: -0.275, z: 0.045, rx: 0.32, ry: 0.25, rz: 0.38 };
-    const readyNew = { x: -0.072, y: -0.195, z: 0.018, rx: 0.14, ry: 0.14, rz: 0.18 };
-    const alignWell = { x: -0.016, y: -0.175, z: 0.019, rx: 0.06, ry: 0.05, rz: 0.10 };
-    const seatWell = { x: -0.016, y: -0.134, z: 0.019, rx: 0.04, ry: 0.02, rz: 0.08 };
-    const boltFwd = { x: -0.055, y: 0.012, z: -0.005, rx: -0.18, ry: 0.22, rz: -0.14 };
-    const boltBack = { x: -0.055, y: 0.010, z: 0.065, rx: -0.14, ry: 0.20, rz: -0.10 };
-
-    let hx = rest.x, hy = rest.y, hz = rest.z, hrx = 0, hry = 0, hrz = 0;
-
-    if (t < 110) {
-      const u = segment(t, 0, 110, easeInOutCubic);
-      hx = lerp(rest.x, gripMag.x, u); hy = lerp(rest.y, gripMag.y, u); hz = lerp(rest.z, gripMag.z, u);
-      hrx = lerp(0, gripMag.rx, u); hry = lerp(0, gripMag.ry, u); hrz = lerp(0, gripMag.rz, u);
-    } else if (t < 200) {
-      const u = segment(t, 110, 200, easeOutCubic);
-      hx = lerp(gripMag.x, stripMag.x, u); hy = lerp(gripMag.y, stripMag.y, u); hz = lerp(gripMag.z, stripMag.z, u);
-      hrx = lerp(gripMag.rx, stripMag.rx, u); hry = lerp(gripMag.ry, stripMag.ry, u); hrz = lerp(gripMag.rz, stripMag.rz, u);
-    } else if (t < 250) {
-      const u = segment(t, 200, 250, easeInOutCubic);
-      hx = lerp(stripMag.x, pouchLow.x, u); hy = lerp(stripMag.y, pouchLow.y, u); hz = lerp(stripMag.z, pouchLow.z, u);
-      hrx = lerp(stripMag.rx, pouchLow.rx, u); hry = lerp(stripMag.ry, pouchLow.ry, u); hrz = lerp(stripMag.rz, pouchLow.rz, u);
-    } else if (t < 330) {
-      const u = segment(t, 250, 330, easeInOutCubic);
-      hx = lerp(pouchLow.x, readyNew.x, u); hy = lerp(pouchLow.y, readyNew.y, u); hz = lerp(pouchLow.z, readyNew.z, u);
-      hrx = lerp(pouchLow.rx, readyNew.rx, u); hry = lerp(pouchLow.ry, readyNew.ry, u); hrz = lerp(pouchLow.rz, readyNew.rz, u);
-    } else if (t < 430) {
-      const u = segment(t, 330, 430, easeInOutCubic);
-      hx = lerp(readyNew.x, alignWell.x, u); hy = lerp(readyNew.y, alignWell.y, u); hz = lerp(readyNew.z, alignWell.z, u);
-      hrx = lerp(readyNew.rx, alignWell.rx, u); hry = lerp(readyNew.ry, alignWell.ry, u); hrz = lerp(readyNew.rz, alignWell.rz, u);
-    } else if (t < 560) {
-      const pushU = segment(t, 430, 520, easeInOutCubic);
-      const seatBack = t >= 520 ? easeOutBack(clamp01((t - 520) / 40), 2.4) : 0;
-      const pushTotal = t < 520 ? pushU * 0.85 : 0.85 + seatBack * 0.15;
-      hx = lerp(alignWell.x, seatWell.x, pushTotal); hy = lerp(alignWell.y, seatWell.y, pushTotal); hz = lerp(alignWell.z, seatWell.z, pushTotal);
-      hrx = lerp(alignWell.rx, seatWell.rx, clamp01(pushTotal)); hry = lerp(alignWell.ry, seatWell.ry, clamp01(pushTotal)); hrz = lerp(alignWell.rz, seatWell.rz, clamp01(pushTotal));
-    } else if (t < 630) {
-      const u = segment(t, 560, 630, easeInOutCubic);
-      hx = lerp(seatWell.x, boltFwd.x, u); hy = lerp(seatWell.y, boltFwd.y, u); hz = lerp(seatWell.z, boltFwd.z, u);
-      hrx = lerp(seatWell.rx, boltFwd.rx, u); hry = lerp(seatWell.ry, boltFwd.ry, u); hrz = lerp(seatWell.rz, boltFwd.rz, u);
-    } else if (t < 700) {
-      const u = segment(t, 630, 700, easeOutCubic);
-      hx = lerp(boltFwd.x, boltBack.x, u); hy = lerp(boltFwd.y, boltBack.y, u); hz = lerp(boltFwd.z, boltBack.z, u);
-      hrx = lerp(boltFwd.rx, boltBack.rx, u); hry = lerp(boltFwd.ry, boltBack.ry, u); hrz = lerp(boltFwd.rz, boltBack.rz, u);
-    } else if (t < 760) {
-      const u = segment(t, 700, 760, easeOutCubic);
-      hx = lerp(boltBack.x, boltFwd.x, u); hy = lerp(boltBack.y, boltFwd.y, u); hz = lerp(boltBack.z, boltFwd.z, u);
-      hrx = lerp(boltBack.rx, boltFwd.rx, u); hry = lerp(boltBack.ry, boltFwd.ry, u); hrz = lerp(boltBack.rz, boltFwd.rz, u);
-    } else {
-      const u = segment(t, 760, 960, easeInOutCubic);
-      hx = lerp(boltFwd.x, rest.x, u); hy = lerp(boltFwd.y, rest.y, u); hz = lerp(boltFwd.z, rest.z, u);
-      hrx = lerp(boltFwd.rx, 0, u); hry = lerp(boltFwd.ry, 0, u); hrz = lerp(boltFwd.rz, 0, u);
+    // Fresh magazine carried up in left palm (340–660ms), pushing straight up into magwell in Stage ④!
+    const carryingFresh = t >= 340 && t < 660;
+    if (gun.freshMag) {
+      gun.freshMag.visible = carryingFresh;
+      if (carryingFresh) {
+        if (t < 520) {
+          // Stage ③: fresh mag rises cleanly in left cupped hand
+          const u = segment(t, 340, 520, easeInOutCubic);
+          gun.freshMag.position.set(
+            lerp(-0.165, -0.022, u),
+            lerp(-0.205, -0.118, u),
+            lerp(0.042, 0.015, u),
+          );
+          gun.freshMag.rotation.set(lerp(0.18, 0.06, u), lerp(0.12, 0.04, u), lerp(0.24, 0.08, u));
+        } else if (t < 575) {
+          // Stage ④a: align straight beneath magwell
+          const u = segment(t, 520, 575, easeInOutCubic);
+          gun.freshMag.position.set(
+            lerp(-0.022, gun.magRestPos.x, u),
+            lerp(-0.118, gun.magRestPos.y - 0.062, u),
+            lerp(0.015, gun.magRestPos.z, u),
+          );
+          gun.freshMag.rotation.set(lerp(0.06, 0, u), lerp(0.04, 0, u), lerp(0.08, 0, u));
+        } else {
+          // Stage ④b: push straight up into magwell with easeOutBack click!
+          const lin = segment(t, 575, 635, easeInOutCubic);
+          const snap = t >= 635 ? easeOutBack(clamp01((t - 635) / 25), 2.1) : 0;
+          const pushU = t < 635 ? lin * 0.85 : 0.85 + snap * 0.15;
+          gun.freshMag.position.set(
+            gun.magRestPos.x,
+            lerp(gun.magRestPos.y - 0.062, gun.magRestPos.y, pushU),
+            gun.magRestPos.z,
+          );
+          gun.freshMag.rotation.set(0, 0, 0);
+        }
+      }
     }
 
-    gun.leftArm.position.set(hx, hy, hz);
-    gun.leftArm.rotation.set(hrx, hry, hrz);
-
-    const carryingFresh = t >= 250 && t < 560;
-    if (gun.heldMag) gun.heldMag.visible = carryingFresh;
-
-    const boltPull = pulse(t, 630, 700, 760, easeOutCubic, easeOutCubic);
+    // Charging handle slide synced strictly to Stage ⑤ right-hand rack (800–920ms)
+    const boltPull = pulse(t, 800, 870, 920, easeOutCubic, easeOutCubic);
     gun.bolt.position.set(gun.boltRestPos.x, gun.boltRestPos.y, gun.boltRestPos.z + boltPull * 0.068);
 
     this.animDebug.magDetached = !magSeated;
     this.animDebug.newMagInHand = carryingFresh;
   }
 
-  /**
-   * Gatling 3.2s drum-swap reload with dangling ammo belt:
-   * - 0..450ms: tilt right, flip open feed-tray cover, left hand leaves carry bar → drum latch; belt unhooks & dangles
-   * - 450..1050ms: old 300-round drum unlocks & drops downward-left fading out
-   * - 1050..1850ms: left hand hauls fresh heavy drum up from lower-left
-   * - 1850..2400ms: slam drum home (easeOutBack) + thread fresh brass ammo belt into feed chute
-   * - 2400..2850ms: close feed-tray cover & quick barrel index
-   * - 2850..3200ms: left hand returns to top carry bar, gun levels
-   */
+  /** Gatling 3.2s drum-swap reload with articulated human hands + dangling belt. */
   private applyGatlingReload(gun: ArticulatedGun, elapsedMs: number): number {
     const t = elapsedMs;
     const enter = segment(t, 0, 420, easeInOutCubic);
@@ -1023,12 +1165,10 @@ export class WeaponView {
     );
     this.reloadSightDipRad = -(2.0 * Math.PI) / 180 * poseW;
 
-    // Feed-tray cover opens 200..2650ms
     const coverOpen =
       segment(t, 180, 440, easeInOutCubic) * (1 - segment(t, 2480, 2700, easeOutBack));
     gun.bolt.rotation.z = coverOpen * 1.25;
 
-    // Old drum seated before 480ms and fresh drum seated after 2220ms
     const drumSeated = t < 480 || t >= 2220;
     if (gun.mag) {
       gun.mag.visible = drumSeated;
@@ -1058,44 +1198,71 @@ export class WeaponView {
       }
     }
 
-    // Left arm path for heavy drum swap
-    const rest = gun.leftRestPos;
-    const drumGrip = { x: -0.14, y: -0.14, z: -0.04 };
-    const lowFetch = { x: -0.28, y: -0.34, z: 0.05 };
-    const alignDrum = { x: -0.14, y: -0.23, z: -0.05 };
-    const seatDrum = { x: -0.14, y: -0.155, z: -0.05 };
-    const feedBelt = { x: -0.08, y: 0.025, z: -0.03 };
+    const L_REST = gun.leftRest;
+    const L_DRUM: TransformPose = { x: -0.155, y: -0.155, z: -0.045, rx: 0.22, ry: 0.25, rz: 1.35 };
+    const L_FETCH: TransformPose = { x: -0.265, y: -0.325, z: 0.045, rx: 0.30, ry: 0.25, rz: 1.05 };
+    const L_ALIGN: TransformPose = { x: -0.155, y: -0.235, z: -0.055, rx: 0.18, ry: 0.22, rz: 1.15 };
+    const L_SEAT: TransformPose = { x: -0.155, y: -0.165, z: -0.055, rx: 0.16, ry: 0.20, rz: 1.25 };
+    const L_FEED: TransformPose = { x: -0.095, y: 0.032, z: -0.035, rx: 0.14, ry: 0.10, rz: 0.45 };
 
-    let hx = rest.x, hy = rest.y, hz = rest.z;
+    let lTrans: TransformPose = L_REST;
+    let lPose: HandPose = gun.leftRestPose;
     if (t < 480) {
       const u = segment(t, 0, 480, easeInOutCubic);
-      hx = lerp(rest.x, drumGrip.x, u); hy = lerp(rest.y, drumGrip.y, u); hz = lerp(rest.z, drumGrip.z, u);
+      lTrans = lerpTransform(L_REST, L_DRUM, u);
+      lPose = lerpHandPose(HAND_POSES.gatlingLeftRest, HAND_POSES.leftOpenSpread, segment(t, 0, 200, easeOutCubic), this.leftPoseScratch);
     } else if (t < 1050) {
       const u = segment(t, 480, 1050, easeInOutCubic);
-      hx = lerp(drumGrip.x, lowFetch.x, u); hy = lerp(drumGrip.y, lowFetch.y, u); hz = lerp(drumGrip.z, lowFetch.z, u);
+      lTrans = lerpTransform(L_DRUM, L_FETCH, u);
+      lPose = HAND_POSES.leftCatchMag;
     } else if (t < 1850) {
       const u = segment(t, 1050, 1850, easeInOutCubic);
-      hx = lerp(lowFetch.x, alignDrum.x, u); hy = lerp(lowFetch.y, alignDrum.y, u); hz = lerp(lowFetch.z, alignDrum.z, u);
+      lTrans = lerpTransform(L_FETCH, L_ALIGN, u);
+      lPose = HAND_POSES.leftHoldFreshMag;
     } else if (t < 2220) {
-      const u = easeOutBack(clamp01((t - 1850) / 370), 1.5);
-      hx = lerp(alignDrum.x, seatDrum.x, u); hy = lerp(alignDrum.y, seatDrum.y, u); hz = lerp(alignDrum.z, seatDrum.z, u);
+      const u = easeOutBack(clamp01((t - 1850) / 370), 1.4);
+      lTrans = lerpTransform(L_ALIGN, L_SEAT, u);
+      lPose = HAND_POSES.leftPushMag;
     } else if (t < 2680) {
       const u = segment(t, 2220, 2680, easeInOutCubic);
-      hx = lerp(seatDrum.x, feedBelt.x, u); hy = lerp(seatDrum.y, feedBelt.y, u); hz = lerp(seatDrum.z, feedBelt.z, u);
+      lTrans = lerpTransform(L_SEAT, L_FEED, u);
+      lPose = lerpHandPose(HAND_POSES.leftPushMag, HAND_POSES.leftOpenSpread, u, this.leftPoseScratch);
     } else {
       const u = segment(t, 2680, 3150, easeInOutCubic);
-      hx = lerp(feedBelt.x, rest.x, u); hy = lerp(feedBelt.y, rest.y, u); hz = lerp(feedBelt.z, rest.z, u);
+      lTrans = lerpTransform(L_FEED, L_REST, u);
+      lPose = lerpHandPose(HAND_POSES.leftOpenSpread, HAND_POSES.gatlingLeftRest, u, this.leftPoseScratch);
     }
-    gun.leftArm.position.set(hx, hy, hz);
-    gun.leftArm.rotation.set(poseW * 0.14, 0, poseW * 0.18);
+
+    this.applyHandTransforms(gun, lTrans, gun.rightRest, lPose, gun.rightRestPose);
+    this.handsTelemetry.reloadStage = t < 480 ? 1 : t < 1050 ? 2 : t < 1850 ? 3 : t < 2220 ? 4 : t < 2680 ? 5 : 6;
 
     const carryingFresh = t >= 1050 && t < 2220;
-    if (gun.heldMag) gun.heldMag.visible = carryingFresh;
+    if (gun.freshMag) {
+      gun.freshMag.visible = carryingFresh;
+      if (carryingFresh) {
+        if (t < 1850) {
+          const u = segment(t, 1050, 1850, easeInOutCubic);
+          gun.freshMag.position.set(
+            lerp(-0.22, gun.magRestPos.x, u),
+            lerp(-0.28, gun.magRestPos.y - 0.08, u),
+            lerp(0.03, gun.magRestPos.z, u),
+          );
+          gun.freshMag.rotation.set(0.08, 0.18, 0.16);
+        } else {
+          const u = easeOutBack(clamp01((t - 1850) / 370), 1.4);
+          gun.freshMag.position.set(
+            gun.magRestPos.x,
+            lerp(gun.magRestPos.y - 0.08, gun.magRestPos.y, u),
+            gun.magRestPos.z,
+          );
+          gun.freshMag.rotation.set(0.08, 0.18, 0.16);
+        }
+      }
+    }
 
     this.animDebug.magDetached = !drumSeated;
     this.animDebug.newMagInHand = carryingFresh;
 
-    // Return belt dangle factor [0..1] (dangles loose while drum is out 350..2350ms!)
     return segment(t, 320, 560, easeOutCubic) * (1 - segment(t, 2180, 2500, easeInOutCubic));
   }
 
@@ -1127,6 +1294,7 @@ export class WeaponView {
         nextGun.root.visible = true;
         this.resetReloadPose(nextGun);
         this.muzzleRig.group.position.set(0, nextGun.muzzleY, nextGun.muzzleZ);
+        this.applyHandTransforms(nextGun, nextGun.leftRest, nextGun.rightRest, nextGun.leftRestPose, nextGun.rightRestPose);
         this.kick = 0;
         this.reloadBlend = 0;
         this.swapPending = null;
@@ -1167,20 +1335,51 @@ export class WeaponView {
     } else {
       this.animDebug.magDetached = false;
       this.animDebug.newMagInHand = false;
+      this.handsTelemetry.reloadStage = 0;
       this.reloadBlend = damp(this.reloadBlend, 0, 18, dt);
       this.reloadSightDipRad = damp(this.reloadSightDipRad, 0, 18, dt);
-      gun.leftArm.position.lerp(gun.leftRestPos, 1 - Math.exp(-18 * dt));
-      gun.leftArm.rotation.x = damp(gun.leftArm.rotation.x, 0, 18, dt);
-      gun.leftArm.rotation.y = damp(gun.leftArm.rotation.y, 0, 18, dt);
-      gun.leftArm.rotation.z = damp(gun.leftArm.rotation.z, 0, 18, dt);
-      gun.bolt.position.lerp(gun.boltRestPos, 1 - Math.exp(-18 * dt));
+
+      // Smoothly return both articulated hands to active weapon's rest grip
+      const blendRate = 1 - Math.exp(-18 * dt);
+      const lx = lerp(this.leftHand.root.position.x, gun.leftRest.x, blendRate);
+      const ly = lerp(this.leftHand.root.position.y, gun.leftRest.y, blendRate);
+      const lz = lerp(this.leftHand.root.position.z, gun.leftRest.z, blendRate);
+      const lrx = lerp(this.leftHand.root.rotation.x, gun.leftRest.rx, blendRate);
+      const lry = lerp(this.leftHand.root.rotation.y, gun.leftRest.ry, blendRate);
+      const lrz = lerp(this.leftHand.root.rotation.z, gun.leftRest.rz, blendRate);
+
+      const rx = lerp(this.rightHand.root.position.x, gun.rightRest.x, blendRate);
+      const ry = lerp(this.rightHand.root.position.y, gun.rightRest.y, blendRate);
+      const rz = lerp(this.rightHand.root.position.z, gun.rightRest.z, blendRate);
+      const rrx = lerp(this.rightHand.root.rotation.x, gun.rightRest.rx, blendRate);
+      const rry = lerp(this.rightHand.root.rotation.y, gun.rightRest.ry, blendRate);
+      const rrz = lerp(this.rightHand.root.rotation.z, gun.rightRest.rz, blendRate);
+
+      // Subtle trigger squeeze on right index finger when firing!
+      const triggerPull = this.kick > 0.05 ? this.kick * 18 : 0;
+      this.rightPoseScratch = lerpHandPose(gun.rightRestPose, gun.rightRestPose, 1, this.rightPoseScratch);
+      this.rightPoseScratch.index = {
+        mcp: Math.min(85, gun.rightRestPose.index.mcp + triggerPull),
+        pip: Math.min(85, gun.rightRestPose.index.pip + triggerPull * 0.8),
+        splay: gun.rightRestPose.index.splay,
+      };
+
+      this.applyHandTransforms(
+        gun,
+        { x: lx, y: ly, z: lz, rx: lrx, ry: lry, rz: lrz },
+        { x: rx, y: ry, z: rz, rx: rrx, ry: rry, rz: rrz },
+        gun.leftRestPose,
+        this.rightPoseScratch,
+      );
+
+      gun.bolt.position.lerp(gun.boltRestPos, blendRate);
       gun.bolt.rotation.z = damp(gun.bolt.rotation.z, 0, 18, dt);
       if (gun.mag) {
         gun.mag.visible = true;
         gun.mag.position.lerp(gun.magRestPos, 1 - Math.exp(-22 * dt));
       }
       if (gun.dropMag) gun.dropMag.visible = false;
-      if (gun.heldMag) gun.heldMag.visible = false;
+      if (gun.freshMag) gun.freshMag.visible = false;
       if (this.reloadBlend < 0.002) {
         this.reloadBlend = 0;
         this.reloadGunPos.set(0, 0, 0);
@@ -1193,7 +1392,6 @@ export class WeaponView {
     const gatFiring = this.current === 'gatling' && Boolean(gatlingState?.firing);
     this.animDebug.gatlingSpin = spin;
     if (gun.barrelCluster) {
-      // Spin speed climbs smoothly to ~40 rad/s at full 900 RPM
       const omega = spin * (gatFiring ? 42 : 28);
       this.barrelAngle = (this.barrelAngle + omega * dt) % (Math.PI * 2);
       gun.barrelCluster.rotation.z = this.barrelAngle;
@@ -1210,22 +1408,16 @@ export class WeaponView {
       const bobSwing = (bob?.x ?? 0) * 18;
       const fireChatter = gatFiring ? Math.sin(this.beltSwayPhase) * 0.09 : 0;
       const idleSway = Math.sin(this.time * 2.4) * 0.045;
-      // Normal catenary loop from feed chute down & curving into the drum mouth:
-      // During reload (beltDangle→1), unhooks and hangs straight down swinging loosely!
-      const s0Rest = -0.52;
-      const s1Rest = 0.36;
-      const s2Rest = 0.44;
       const dangleSway = beltDangle * Math.sin(this.time * 7.5) * 0.18;
-      gun.beltSegs[0].rotation.z = lerp(s0Rest, -0.08, beltDangle) + bobSwing * 0.35 + idleSway + fireChatter + dangleSway;
-      gun.beltSegs[1].rotation.z = lerp(s1Rest, 0.06, beltDangle) + bobSwing * 0.55 - fireChatter * 1.25 + dangleSway * 1.3;
-      gun.beltSegs[2].rotation.z = lerp(s2Rest, 0.04, beltDangle) + bobSwing * 0.75 + fireChatter * 1.4 - dangleSway * 0.9;
+      gun.beltSegs[0].rotation.z = lerp(-0.52, -0.08, beltDangle) + bobSwing * 0.35 + idleSway + fireChatter + dangleSway;
+      gun.beltSegs[1].rotation.z = lerp(0.36, 0.06, beltDangle) + bobSwing * 0.55 - fireChatter * 1.25 + dangleSway * 1.3;
+      gun.beltSegs[2].rotation.z = lerp(0.44, 0.04, beltDangle) + bobSwing * 0.75 + fireChatter * 1.4 - dangleSway * 0.9;
       gun.beltSegs[0].rotation.x = Math.sin(this.time * 3.1) * 0.04 + (gatFiring ? 0.06 : 0);
       gun.beltSegs[1].rotation.x = Math.cos(this.time * 3.1) * 0.05;
     }
 
     const breathe = Math.sin(this.time * 1.7) * 0.002;
     const sway = Math.sin(this.time * 1.15) * 0.0015;
-    // High-frequency chassis vibration while gatling fires
     const gatVibX = gatFiring ? Math.sin(this.time * 52) * 0.0024 : spin > 0.1 ? Math.sin(this.time * 34) * 0.0008 * spin : 0;
     const gatVibY = gatFiring ? Math.cos(this.time * 47) * 0.0020 : 0;
     let px = this.basePos.x + gun.baseOffset.x;

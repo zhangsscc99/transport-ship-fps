@@ -42,6 +42,15 @@ export const PALETTE = {
   gunDark: '#252b32', // 弹匣/小件：偏暗哑光
   gunHi: '#8ea0b0', // 枪身高光条 emissive
   glove: '#5d6167', // 手臂——比枪身亮，分出层次
+  skinBase: '#d49d7a', // 真人肤色基色（暖自然肤）
+  skinWarm: '#c27958', // 肤色指节/皮下暖散射近似色
+  skinNail: '#e4c2ae', // 指甲盖浅暖色
+  tacGlove: '#2d333b', // 战术露指手套主料
+  tacKnuckle: '#1d2228', // 手背护骨甲
+  tacSleeve: '#2b3b4e', // 战术服袖子（保卫者海军灰蓝）
+  tacCuff: '#212d3b', // 袖口加厚翻边
+  tacVelcro: '#171c22', // 袖口魔术贴
+  tacStitch: '#6c7c8e', // 袖口双排缝线
   brass: '#d8b054', // 弹壳 / 弹匣顶弹 / 加特林弹链黄铜
   gatlingAccent: '#f5b041', // 加特林重武 HUD 琥珀橙
   gatlingReady: '#5ee39a', // 加特林预热就绪绿

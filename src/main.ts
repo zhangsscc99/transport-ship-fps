@@ -10,7 +10,7 @@ import { setAnisotropyCap } from './render/textures';
 import { buildMap } from './render/map';
 import { updateWater } from './render/materials';
 import { PlayerCamera } from './render/camera';
-import { WeaponView } from './render/weapon';
+import { WeaponView, type HandsTelemetry } from './render/weapon';
 import { WorldVfx, type VfxTelemetry } from './render/vfx';
 import { easeInOutCubic } from './render/tween';
 import { Hud } from './render/hud';
@@ -57,6 +57,7 @@ declare global {
       simTimeMs: number;
     };
     __vfx: VfxTelemetry;
+    __hands: HandsTelemetry;
     __test: {
       hurt(dmg: number): void;
       teleport(x: number, z: number, yawDeg: number, pitchDeg: number, y?: number): void;
@@ -517,6 +518,7 @@ const vfxDbg: VfxTelemetry = {
   decalsCount: 0,
 };
 window.__vfx = vfxDbg;
+window.__hands = weaponView.handsTelemetry;
 window.__test = {
   hurt: (dmg: number) => hurtPlayer(dmg),
   // e2e-only camera placement: drop the player at (x,z[,y]) facing yaw/pitch
