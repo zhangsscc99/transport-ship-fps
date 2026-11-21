@@ -12,6 +12,7 @@ import type { WeaponId } from '../game/weapons';
 export interface HudState {
   hp: number;
   maxHp: number;
+  regenerating?: boolean;
   ammo: number;
   mag?: number;
   reloading: boolean;
@@ -179,9 +180,12 @@ function div(style: string, parent: HTMLElement, hudTag?: string): HTMLDivElemen
 export class Hud {
   private root: HTMLDivElement;
   private hpWrap: HTMLDivElement;
-  private hpFill: HTMLDivElement;
+  private hpFill1: HTMLDivElement;
+  private hpFill2: HTMLDivElement;
   private hpNum: HTMLDivElement;
+  private hpMaxEl: HTMLDivElement;
   private hpTag: HTMLDivElement;
+  private hpRegenBadge: HTMLDivElement;
 
   // Shared bottom-right weapon container, with two completely distinct sub-layouts:
   private ammoWrap: HTMLDivElement;
@@ -232,7 +236,7 @@ export class Hud {
   private lastPortrait: boolean | null = null;
 
   /** counters/values for the e2e feedback hooks — persistent object */
-  readonly fx = { hits: 0, kills: 0, flashOpacity: 0, lowHpPulse: 0 };
+  readonly fx = { hits: 0, kills: 0, flashOpacity: 0, lowHpPulse: 0, desat: 0 };
   /** wired by main.ts to the sfx bus */
   onMuteToggle: ((muted: boolean) => void) | null = null;
 
@@ -259,38 +263,100 @@ export class Hud {
       'swap-blur',
     );
 
-    // --- HP panel: bottom-left ---
+    // --- HP panel: bottom-left (2-segment 0–100–200 bar + enlarged numeral) ---
     this.hpWrap = div(
-      `position:absolute;left:${al(16)};bottom:${ab(18)};width:136px;` +
+      `position:absolute;left:${al(16)};bottom:${ab(18)};width:206px;` +
         `background:${PALETTE.uiPanel};border:1px solid ${PALETTE.uiBorder};` +
-        `border-left:2px solid ${PALETTE.uiText};border-radius:4px;padding:6px 10px 8px;` +
+        `border-left:3px solid ${PALETTE.uiText};border-radius:4px;padding:4px 10px 5px;` +
         `box-sizing:border-box;pointer-events:none;`,
       this.root,
       'hp',
     );
     const hpHeader = div(
-      `display:flex;align-items:baseline;justify-content:space-between;margin-bottom:5px;pointer-events:none;`,
+      `display:flex;align-items:baseline;justify-content:space-between;margin-bottom:4px;pointer-events:none;`,
       this.hpWrap,
+    );
+    const hpLeftLbl = div(
+      `display:flex;align-items:baseline;gap:6px;pointer-events:none;`,
+      hpHeader,
     );
     this.hpTag = div(
-      `font-size:10px;font-weight:700;letter-spacing:0.16em;color:${PALETTE.uiDim};pointer-events:none;`,
-      hpHeader,
+      `font-size:11px;font-weight:800;letter-spacing:0.16em;color:${PALETTE.uiDim};pointer-events:none;`,
+      hpLeftLbl,
+      'hp-tag',
     );
     this.hpTag.textContent = 'HP';
-    this.hpNum = div(
-      `font-size:22px;font-weight:800;line-height:1;font-variant-numeric:tabular-nums;` +
-        `letter-spacing:0.02em;color:${PALETTE.uiText};pointer-events:none;`,
+    this.hpRegenBadge = div(
+      `font-size:9px;font-weight:800;letter-spacing:0.08em;color:${PALETTE.gatlingReady};` +
+        `opacity:0;transition:opacity 120ms linear;pointer-events:none;`,
+      hpLeftLbl,
+      'hp-regen',
+    );
+    this.hpRegenBadge.textContent = '+REGEN';
+
+    const hpNumWrap = div(
+      `display:flex;align-items:baseline;gap:4px;pointer-events:none;`,
       hpHeader,
     );
-    this.hpNum.textContent = '100';
-    const hpTrack = div(
-      `height:6px;border-radius:1px;background:${PALETTE.uiEmpty};overflow:hidden;pointer-events:none;`,
+    this.hpNum = div(
+      `font-size:30px;font-weight:800;line-height:0.92;font-variant-numeric:tabular-nums;` +
+        `letter-spacing:-0.01em;color:${PALETTE.uiText};pointer-events:none;`,
+      hpNumWrap,
+      'hp-num',
+    );
+    this.hpNum.textContent = '200';
+    this.hpMaxEl = div(
+      `font-size:11px;font-weight:700;font-variant-numeric:tabular-nums;color:${PALETTE.uiDim};pointer-events:none;`,
+      hpNumWrap,
+      'hp-max',
+    );
+    this.hpMaxEl.textContent = '/ 200';
+
+    // Two-segment HP bar split at 100 (Seg 1: 0..100, Seg 2: 100..200)
+    const hpBars = div(
+      `display:flex;align-items:center;gap:4px;height:8px;pointer-events:none;`,
       this.hpWrap,
+      'hp-bars',
     );
-    this.hpFill = div(
+    const seg1Track = div(
+      `flex:1;height:100%;border-radius:1px;background:${PALETTE.uiEmpty};overflow:hidden;pointer-events:none;`,
+      hpBars,
+    );
+    seg1Track.dataset.hpSeg = '1';
+    this.hpFill1 = div(
       `height:100%;width:100%;background:${PALETTE.hpFull};transition:width 60ms linear;pointer-events:none;`,
-      hpTrack,
+      seg1Track,
     );
+    const segDivider = div(
+      `width:2px;height:10px;background:${PALETTE.uiBorderActive};border-radius:1px;flex:0 0 auto;pointer-events:none;`,
+      hpBars,
+      'hp-divider',
+    );
+    void segDivider;
+    const seg2Track = div(
+      `flex:1;height:100%;border-radius:1px;background:${PALETTE.uiEmpty};overflow:hidden;pointer-events:none;`,
+      hpBars,
+    );
+    seg2Track.dataset.hpSeg = '2';
+    this.hpFill2 = div(
+      `height:100%;width:100%;background:${PALETTE.hpSeg2};transition:width 60ms linear;pointer-events:none;`,
+      seg2Track,
+    );
+
+    // Scale markers: 0 · 100 · 200
+    const hpTicks = div(
+      `display:flex;justify-content:space-between;align-items:center;margin-top:2px;` +
+        `font-size:8px;font-weight:700;letter-spacing:0.06em;font-variant-numeric:tabular-nums;` +
+        `color:${PALETTE.uiDim};line-height:1;pointer-events:none;`,
+      this.hpWrap,
+      'hp-ticks',
+    );
+    const t0 = div(`pointer-events:none;`, hpTicks);
+    t0.textContent = '0';
+    const t100 = div(`color:${PALETTE.uiText};opacity:0.85;pointer-events:none;`, hpTicks);
+    t100.textContent = '100';
+    const t200 = div(`pointer-events:none;`, hpTicks);
+    t200.textContent = '200';
 
     // --- AMMO panel: bottom-right ---
     this.ammoWrap = div(
@@ -647,18 +713,28 @@ export class Hud {
 
   update(s: HudState): void {
     const now = performance.now();
-    const frac = Math.max(0, Math.min(1, s.hp / s.maxHp));
-    const lowHp = frac <= 0.3 && !s.dead;
+    const maxHp = Math.max(1, s.maxHp);
+    const segSpan = maxHp * 0.5; // 100 per segment for 200 max HP
+    const hp = Math.max(0, Math.min(maxHp, s.hp));
+    const seg1Pct = Math.max(0, Math.min(100, (hp / segSpan) * 100));
+    const seg2Pct = Math.max(0, Math.min(100, ((hp - segSpan) / segSpan) * 100));
+    const lowHp = hp > 0 && hp < 40 && !s.dead;
+    const criticalHp = hp > 0 && hp < 20 && !s.dead;
 
-    this.hpFill.style.width = `${frac * 100}%`;
-    this.hpFill.style.background = lowHp ? PALETTE.hpLow : frac > 0.55 ? PALETTE.hpFull : PALETTE.hpMid;
-    this.hpNum.textContent = `${Math.ceil(s.hp)}`;
+    this.hpFill1.style.width = `${seg1Pct.toFixed(1)}%`;
+    this.hpFill2.style.width = `${seg2Pct.toFixed(1)}%`;
+    this.hpFill1.style.background = lowHp ? PALETTE.hpLow : hp >= segSpan ? PALETTE.hpFull : PALETTE.hpMid;
+    this.hpFill2.style.background = PALETTE.hpSeg2;
+    this.hpNum.textContent = `${Math.ceil(hp)}`;
+    this.hpMaxEl.textContent = `/ ${Math.round(maxHp)}`;
     this.hpNum.style.color = lowHp ? PALETTE.hpLow : PALETTE.uiText;
-    this.hpWrap.style.borderLeftColor = lowHp ? PALETTE.hpLow : PALETTE.uiText;
+    this.hpWrap.style.borderLeftColor = lowHp ? PALETTE.hpLow : hp > segSpan ? PALETTE.hpSeg2 : PALETTE.uiText;
+    this.hpRegenBadge.style.opacity = s.regenerating && !s.dead ? '1' : '0';
     if (lowHp !== this.isLowHpState) {
       this.isLowHpState = lowHp;
       this.hpWrap.classList.toggle('val-lowhp-breathe', lowHp);
     }
+    this.fx.desat = criticalHp ? Number((0.45 + 0.25 * (1 - hp / 20)).toFixed(2)) : 0;
 
     const mode: WeaponId = s.weaponId ?? (s.mag && s.mag > 60 ? 'gatling' : 'rifle');
     const isGatling = mode === 'gatling';

@@ -26,6 +26,9 @@ var HEADSHOT_MULT = 2;
 var FALLOFF_START = 25;
 var FALLOFF_END = 50;
 var FALLOFF_FLOOR = 0.6;
+var PLAYER_MAX_HP = 200;
+var PLAYER_REGEN_DELAY_MS = 6e3;
+var PLAYER_REGEN_PER_SEC = 12;
 function rayBoxT(o, d, b) {
   let tmin = 0;
   let tmax = Infinity;
@@ -190,6 +193,12 @@ function updateRespawn(e, now, spawn) {
   e.invincibleUntil = now + INVINCIBLE_MS;
   return true;
 }
+function updatePlayerRegen(e, lastHurtMs, nowMs, dt) {
+  if (!e.alive || e.hp <= 0 || e.hp >= e.maxHp || dt <= 0) return false;
+  if (nowMs - lastHurtMs < PLAYER_REGEN_DELAY_MS) return false;
+  e.hp = Math.min(e.maxHp, e.hp + PLAYER_REGEN_PER_SEC * dt);
+  return true;
+}
 
 // src/game/weapons.ts
 var WEAPONS = [
@@ -336,4 +345,35 @@ test("gatling rapid burst accumulates damage independently per round", () => {
   }
   assert.equal(total, 56);
   assert.equal(e.hp, 44);
+});
+test("player 200 max HP regenerates at 12 HP/s after 6s delay and returns to 200 within 10s of regen", () => {
+  assert.equal(PLAYER_MAX_HP, 200);
+  assert.equal(PLAYER_REGEN_DELAY_MS, 6e3);
+  assert.equal(PLAYER_REGEN_PER_SEC, 12);
+  const p = createEntity("player", { x: 0, y: 0, z: 0 }, PLAYER_MAX_HP);
+  assert.equal(p.hp, 200);
+  assert.equal(applyDamage(p, 100, 1e3), false);
+  assert.equal(p.hp, 100);
+  let lastHurt = 1e3;
+  for (let t = 1100; t <= 6950; t += 50) {
+    assert.equal(updatePlayerRegen(p, lastHurt, t, 0.05), false);
+  }
+  assert.equal(p.hp, 100);
+  let reachedFullAt = -1;
+  for (let t = 7e3; t <= 17e3; t += 50) {
+    updatePlayerRegen(p, lastHurt, t, 0.05);
+    if (p.hp >= 200 && reachedFullAt < 0) reachedFullAt = t;
+  }
+  assert.equal(p.hp, 200);
+  const regenDurationSec = (reachedFullAt - 7e3) / 1e3;
+  assert.ok(regenDurationSec > 8 && regenDurationSec < 10, `regen duration ${regenDurationSec}s`);
+  applyDamage(p, 50, 2e4);
+  lastHurt = 2e4;
+  assert.equal(updatePlayerRegen(p, lastHurt, 25e3, 0.5), false);
+  assert.equal(p.hp, 150);
+  assert.equal(applyDamage(p, 150, 26e3), true);
+  assert.equal(p.alive, false);
+  assert.equal(p.hp, 0);
+  assert.equal(updatePlayerRegen(p, 26e3, 4e4, 1), false);
+  assert.equal(p.hp, 0);
 });

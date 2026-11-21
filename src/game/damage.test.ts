@@ -5,6 +5,10 @@ import {
   falloffFactor,
   applyDamage,
   updateRespawn,
+  updatePlayerRegen,
+  PLAYER_MAX_HP,
+  PLAYER_REGEN_DELAY_MS,
+  PLAYER_REGEN_PER_SEC,
   FALLOFF_FLOOR,
   HEADSHOT_MULT,
   type Ray,
@@ -140,4 +144,46 @@ test('gatling rapid burst accumulates damage independently per round', () => {
   // 2 body hits (14+14) + 1 headshot (28) = 56
   assert.equal(total, 56);
   assert.equal(e.hp, 44);
+});
+
+test('player 200 max HP regenerates at 12 HP/s after 6s delay and returns to 200 within 10s of regen', () => {
+  assert.equal(PLAYER_MAX_HP, 200);
+  assert.equal(PLAYER_REGEN_DELAY_MS, 6000);
+  assert.equal(PLAYER_REGEN_PER_SEC, 12);
+
+  const p = createEntity('player', { x: 0, y: 0, z: 0 }, PLAYER_MAX_HP);
+  assert.equal(p.hp, 200);
+
+  // Hurt 100 at t=1000ms -> hp=100
+  assert.equal(applyDamage(p, 100, 1000), false);
+  assert.equal(p.hp, 100);
+  let lastHurt = 1000;
+
+  // For the first 5.95s, zero regeneration
+  for (let t = 1100; t <= 6950; t += 50) {
+    assert.equal(updatePlayerRegen(p, lastHurt, t, 0.05), false);
+  }
+  assert.equal(p.hp, 100);
+
+  // Starting at t=7000ms (6s after hit), regens at 12 HP/s -> hits 200 in ~8.35s (<10s)
+  let reachedFullAt = -1;
+  for (let t = 7000; t <= 17000; t += 50) {
+    updatePlayerRegen(p, lastHurt, t, 0.05);
+    if (p.hp >= 200 && reachedFullAt < 0) reachedFullAt = t;
+  }
+  assert.equal(p.hp, 200);
+  const regenDurationSec = (reachedFullAt - 7000) / 1000;
+  assert.ok(regenDurationSec > 8.0 && regenDurationSec < 10.0, `regen duration ${regenDurationSec}s`);
+
+  // Taking damage resets the 6s delay; lethal damage (hp<=0) never regenerates
+  applyDamage(p, 50, 20000);
+  lastHurt = 20000;
+  assert.equal(updatePlayerRegen(p, lastHurt, 25000, 0.5), false);
+  assert.equal(p.hp, 150);
+
+  assert.equal(applyDamage(p, 150, 26000), true);
+  assert.equal(p.alive, false);
+  assert.equal(p.hp, 0);
+  assert.equal(updatePlayerRegen(p, 26000, 40000, 1.0), false);
+  assert.equal(p.hp, 0);
 });

@@ -27,6 +27,12 @@ export const HEADSHOT_MULT = 2;
 export const FALLOFF_START = 25;
 export const FALLOFF_END = 50;
 export const FALLOFF_FLOOR = 0.6;
+/** Player durability & health regeneration specs (Round 6). */
+export const PLAYER_MAX_HP = 200;
+export const PLAYER_REGEN_DELAY_MS = 6000;
+export const PLAYER_REGEN_PER_SEC = 12;
+export const LOW_HP_THRESHOLD = 40;
+export const CRITICAL_HP_THRESHOLD = 20;
 
 /** Nearest ray-vs-AABB entry distance, or Infinity (0 when origin inside). */
 export function rayBoxT(o: Vec3, d: Vec3, b: Box): number {
@@ -192,5 +198,22 @@ export function updateRespawn(e: Entity, now: number, spawn: Vec3): boolean {
   e.pos.y = spawn.y;
   e.pos.z = spawn.z;
   e.invincibleUntil = now + INVINCIBLE_MS;
+  return true;
+}
+
+/**
+ * Out-of-combat player health regeneration:
+ * Begins PLAYER_REGEN_DELAY_MS (6s) after last damage, restores at
+ * PLAYER_REGEN_PER_SEC (12 HP/s) up to e.maxHp (200). Returns true when regenerating.
+ */
+export function updatePlayerRegen(
+  e: Entity,
+  lastHurtMs: number,
+  nowMs: number,
+  dt: number,
+): boolean {
+  if (!e.alive || e.hp <= 0 || e.hp >= e.maxHp || dt <= 0) return false;
+  if (nowMs - lastHurtMs < PLAYER_REGEN_DELAY_MS) return false;
+  e.hp = Math.min(e.maxHp, e.hp + PLAYER_REGEN_PER_SEC * dt);
   return true;
 }
