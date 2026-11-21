@@ -42,6 +42,8 @@ export const PALETTE = {
   gunDark: '#252b32', // 弹匣/小件：偏暗哑光
   gunHi: '#8ea0b0', // 枪身高光条 emissive
   glove: '#5d6167', // 手臂——比枪身亮，分出层次
+  brass: '#d8b054', // 弹壳 / 弹匣顶弹黄铜
+  shellRed: '#b8322a', // 霰弹红色弹体
   flashCore: '#ffd9a0', // 枪口焰心
   tracer: '#ffd670', // 曳光亮条
   crosshair: '#f2f6fa',

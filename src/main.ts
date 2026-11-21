@@ -43,6 +43,14 @@ declare global {
     };
     __sfx: { counts: Record<string, number>; muted: boolean; unlocked: boolean };
     __fx: { hits: number; kills: number; flashOpacity: number; lowHpPulse: number };
+    __anim: {
+      reloadActive: boolean;
+      reloadElapsedMs: number;
+      reloadDurationMs: number;
+      magDetached: boolean;
+      newMagInHand: boolean;
+      swapActive: boolean;
+    };
     __test: {
       hurt(dmg: number): void;
       teleport(x: number, z: number, yawDeg: number, pitchDeg: number, y?: number): void;
@@ -225,7 +233,10 @@ engine.onFrame = (dt) => {
   }
   const w = rack.current;
 
-  view.update(player, dt, { reloading: w.reloading });
+  view.update(player, dt, {
+    reloading: w.reloading,
+    reloadPitchDip: weaponView.reloadPitchDip,
+  });
   lights.update(now * 0.001, view.camera.position);
   updateWater(now * 0.001);
   atmo.update(view.camera.position, view.camera.fov);
@@ -243,7 +254,7 @@ engine.onFrame = (dt) => {
       const shots = w.tryFire(now, eye, aimDir());
       if (shots) {
         rack.clearBufferedFire();
-        weaponView.onFire();
+        weaponView.onFire(w.spec.id);
         touch.pulseFire();
         sfx.play(SHOT_SFX[w.spec.id]);
         weaponView.muzzleWorld(scratchMuzzle);
@@ -268,7 +279,7 @@ engine.onFrame = (dt) => {
   }
 
   weaponView.group.visible = playerEnt.alive;
-  weaponView.update(dt, view.bob);
+  weaponView.update(dt, view.bob, w.reloadSnapshot(now));
   hud.setSwapBlur(weaponView.swapBlurAmount);
   tracers.update(dt);
 
@@ -335,6 +346,7 @@ window.__state = dbg;
 const dbgSfx = { counts: sfx.counts, muted: false, unlocked: false };
 window.__sfx = dbgSfx;
 window.__fx = hud.fx;
+window.__anim = weaponView.animDebug;
 window.__test = {
   hurt: (dmg: number) => hurtPlayer(dmg),
   // e2e-only camera placement: drop the player at (x,z[,y]) facing yaw/pitch
