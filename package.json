@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "typecheck": "tsc --noEmit",
-    "test": "bash scripts/build-tests.sh && node --test src/game/",
+    "test": "bash scripts/build-tests.sh && node --test src/game/*.test.js",
     "verify": "bash scripts/verify.sh",
     "deploy": "bash scripts/ci-deploy.sh"
   },

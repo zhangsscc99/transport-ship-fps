@@ -8,7 +8,7 @@ npx tsc --noEmit
 
 echo "[2/4] unit tests"
 bash scripts/build-tests.sh
-node --test src/game/
+node --test src/game/*.test.js
 
 echo "[3/4] vite build"
 npm run build
