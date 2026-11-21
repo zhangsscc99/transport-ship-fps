@@ -51,6 +51,15 @@ export const PALETTE = {
   tacCuff: '#212d3b', // 袖口加厚翻边
   tacVelcro: '#171c22', // 袖口魔术贴
   tacStitch: '#6c7c8e', // 袖口双排缝线
+  blSuit: '#1c1f25', // 潜伏者：黑红战术服底色
+  blRed: '#d4262e', // 潜伏者：战术红甲/肩带/臂章
+  blMask: '#131519', // 潜伏者：黑色战术面罩
+  blEye: '#ff2836', // 潜伏者：红眼灯
+  grSuit: '#213f68', // 保卫者：深蓝战术服
+  grWhite: '#e6ecf2', // 保卫者：白色防弹胸甲/护肩
+  grHelmet: '#1a2e4a', // 保卫者：蓝色战术头盔
+  grEye: '#2ec4ff', // 保卫者：蓝眼灯
+  bootDark: '#17191d', // 战术军靴
   brass: '#d8b054', // 弹壳 / 弹匣顶弹 / 加特林弹链黄铜
   gatlingAccent: '#f5b041', // 加特林重武 HUD 琥珀橙
   gatlingReady: '#5ee39a', // 加特林预热就绪绿

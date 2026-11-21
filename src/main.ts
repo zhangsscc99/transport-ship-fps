@@ -20,9 +20,12 @@ import { CollisionWorld, PLAYER_RADIUS } from './game/collision';
 import { KeyboardMouseInput, mergeInputs } from './game/input';
 import { TouchControls } from './input/touch';
 import { WeaponRack } from './game/weapons';
-import { createEntity, type Entity } from './game/entities';
+import { createEntity } from './game/entities';
 import { traceHit, falloffFactor, applyDamage, updateRespawn, HEADSHOT_MULT, type Ray } from './game/damage';
 import { createMatch } from './game/match';
+import { EnemyManager, type Faction } from './game/ai';
+import { parseDifficulty, type DifficultyId } from './game/difficulty';
+import { EnemyRenderer } from './render/enemies';
 import { Menu } from './render/menu';
 import { PALETTE } from './render/palette';
 import { createSfx } from './audio/sfx';
@@ -58,11 +61,31 @@ declare global {
     };
     __vfx: VfxTelemetry;
     __hands: HandsTelemetry;
+    __enemies: {
+      id: string;
+      faction: Faction;
+      state: string;
+      anim: string;
+      hp: number;
+      ammo: number;
+      shotsFired: number;
+      hasLos: boolean;
+      firstSightAt: number;
+      firstShotAt: number;
+      x: number;
+      y: number;
+      z: number;
+      tris: number;
+    }[];
     __test: {
       hurt(dmg: number): void;
       teleport(x: number, z: number, yawDeg: number, pitchDeg: number, y?: number): void;
       isInsideWalkable(x: number, z: number): boolean;
       setPaused(paused: boolean): void;
+      spawnEnemyAt(x: number, z: number, yawDeg: number, faction?: Faction): string;
+      clearEnemies(): void;
+      setDifficulty(diff: DifficultyId): void;
+      damageEnemy(id: string, dmg: number): void;
     };
     __match: {
       phase: string;
@@ -132,12 +155,14 @@ let stepAcc = 0;
 let simNowMs = 0;
 
 const playerEnt = createEntity('player', player.position, 100, PLAYER_RADIUS, MOVE.eyeHeight);
-const entities: Entity[] = []; // enemy bots arrive in a later milestone
+const enemyMgr = new EnemyManager('normal');
+const enemyRenderer = new EnemyRenderer(engine.scene);
 let spawnIdx = 1;
 
 const match = createMatch();
 const menu = new Menu(document.body, {
-  onStart: () => {
+  onStart: (settings) => {
+    enemyMgr.setDifficulty(parseDifficulty(settings.difficulty));
     match.start(performance.now());
     menu.hide();
     // fresh round: revive and re-arm the player at spawn
@@ -169,7 +194,9 @@ const menu = new Menu(document.body, {
     for (const w of rack.list) {
       w.ammo = w.spec.mag;
       w.cancelReload();
+      w.resetSpin();
     }
+    enemyMgr.reset(simNowMs, player.position);
   },
 });
 menu.show();
@@ -360,6 +387,7 @@ engine.onFrame = (dt) => {
   updateWater(now * 0.001);
   atmo.update(view.camera.position, view.camera.fov);
 
+  let playerFiredThisFrame = false;
   if (acting && playerEnt.alive) {
     if (inp.reload && !rack.swapping(simNowMs) && w.reload(simNowMs)) sfx.play('reload');
     if (inp.fire) rack.noteFireIntent(simNowMs);
@@ -372,6 +400,7 @@ engine.onFrame = (dt) => {
       };
       const shots = w.tryFire(simNowMs, eye, aimDir());
       if (shots) {
+        playerFiredThisFrame = true;
         rack.clearBufferedFire();
         weaponView.onFire(w.spec.id);
         touch.pulseFire();
@@ -391,7 +420,7 @@ engine.onFrame = (dt) => {
         worldVfx.spawnShell(scratchEject, scratchRight, scratchFwd, player.velocity, w.spec.id);
 
         for (const ray of shots) {
-          const hit = traceHit(ray, MAP.boxes, entities);
+          const hit = traceHit(ray, MAP.boxes, enemyMgr.entities);
           worldVfx.spawnTracer(scratchMuzzle, hit ? hit.point : rayEnd(ray, 80));
           if (hit) hud.notifyHit(now);
           if (hit?.kind === 'box') {
@@ -402,7 +431,10 @@ engine.onFrame = (dt) => {
               falloffFactor(w.spec, hit.dist) *
               (hit.headshot ? HEADSHOT_MULT : 1);
             sfx.play('hit');
-            if (applyDamage(hit.entity, dmg, now)) {
+            const killed = applyDamage(hit.entity, dmg, simNowMs);
+            enemyMgr.onBotDamaged(hit.entity, player.position, simNowMs);
+            if (killed) {
+              match.registerKill('A', now);
               sfx.play('kill');
               hud.notifyKill(now);
             }
@@ -411,6 +443,45 @@ engine.onFrame = (dt) => {
       }
     }
   }
+
+  // --- CF-style AI Enemies update & combat ---
+  if (match.phase === 'playing') {
+    const pEye: Vec3 = {
+      x: player.position.x,
+      y: player.position.y + player.eyeHeight,
+      z: player.position.z,
+    };
+    const pSpeed = Math.hypot(player.velocity.x, player.velocity.z);
+    const enemyShots = enemyMgr.update({
+      dt,
+      nowMs: simNowMs,
+      playerPos: player.position,
+      playerEye: pEye,
+      playerAlive: playerEnt.alive,
+      playerFired: playerFiredThisFrame,
+      playerSpeed: pSpeed,
+      playerOnGround: player.onGround,
+      boxes: MAP.boxes,
+      collider: world,
+    });
+    for (const es of enemyShots) {
+      worldVfx.spawnTracer(es.origin, es.target);
+      sfx.play('shotRifle', { distance: es.dist, volume: 0.72 });
+      if (es.hit && playerEnt.alive) {
+        // Screen-relative bearing from player forward to attacker
+        const dx = es.origin.x - player.position.x;
+        const dz = es.origin.z - player.position.z;
+        const fwd = player.forward();
+        const rightX = -fwd.z;
+        const rightZ = fwd.x;
+        const localF = dx * fwd.x + dz * fwd.z;
+        const localR = dx * rightX + dz * rightZ;
+        const angleRad = Math.atan2(localR, localF);
+        hurtPlayer(es.damage, angleRad);
+      }
+    }
+  }
+  enemyRenderer.sync(enemyMgr.bots, dt, simNowMs, view.camera.position);
 
   weaponView.group.visible = playerEnt.alive;
   weaponView.update(dt, view.bob, w.reloadSnapshot(simNowMs), vfxDbg, {
@@ -473,6 +544,26 @@ engine.onFrame = (dt) => {
   mdbg.killsB = match.killsB;
   mdbg.timeLeftMs = match.timeLeftMs;
   mdbg.winner = match.winner;
+
+  enemiesDbg.length = 0;
+  for (const b of enemyMgr.bots) {
+    enemiesDbg.push({
+      id: b.id,
+      faction: b.faction,
+      state: b.state,
+      anim: b.anim,
+      hp: b.entity.hp,
+      ammo: b.ammo,
+      shotsFired: b.shotsFired,
+      hasLos: b.hasLos,
+      firstSightAt: b.firstSightAt,
+      firstShotAt: b.firstShotAt,
+      x: b.entity.pos.x,
+      y: b.entity.pos.y,
+      z: b.entity.pos.z,
+      tris: enemyRenderer.getRigTris(b.id),
+    });
+  }
 };
 
 /** persistent debug handles (no per-frame alloc) — e2e tests read these */
@@ -519,6 +610,8 @@ const vfxDbg: VfxTelemetry = {
 };
 window.__vfx = vfxDbg;
 window.__hands = weaponView.handsTelemetry;
+const enemiesDbg: Window['__enemies'] = [];
+window.__enemies = enemiesDbg;
 window.__test = {
   hurt: (dmg: number) => hurtPlayer(dmg),
   // e2e-only camera placement: drop the player at (x,z[,y]) facing yaw/pitch
@@ -538,6 +631,24 @@ window.__test = {
   setPaused: (paused: boolean) => {
     if (paused) engine.pause();
     else engine.resume();
+  },
+  spawnEnemyAt: (x: number, z: number, yawDeg: number, faction?: Faction) => {
+    const b = enemyMgr.spawnManual(x, z, (yawDeg * Math.PI) / 180, faction, simNowMs);
+    enemyRenderer.sync(enemyMgr.bots, 0, simNowMs, view.camera.position);
+    return b.id;
+  },
+  clearEnemies: () => {
+    enemyMgr.clear();
+    enemyRenderer.sync(enemyMgr.bots, 0, simNowMs, view.camera.position);
+  },
+  setDifficulty: (diff: DifficultyId) => {
+    enemyMgr.setDifficulty(diff);
+  },
+  damageEnemy: (id: string, dmg: number) => {
+    const b = enemyMgr.bots.find((e) => e.id === id);
+    if (!b) return;
+    applyDamage(b.entity, dmg, simNowMs);
+    enemyMgr.onBotDamaged(b.entity, player.position, simNowMs);
   },
 };
 const mdbg = {
