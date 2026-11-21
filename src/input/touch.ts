@@ -1,7 +1,12 @@
-// Touch control layer (F108): left-half virtual joystick, right-half look
-// drag, and a button cluster — all merged into the shared InputState.
-// Implemented with Pointer Events so real multi-touch and synthetic test
-// pointers take the same code path; mouse users never see the overlay.
+// Touch control layer (F108 / HUD v2):
+//   - Left thumb natural zone: virtual joystick (r=56px dashed ring + solid nub,
+//     deadzone 8px) + SPRINT 44px icon button snug to joystick upper-right.
+//   - Right thumb arc zone: ALL action keys (FIRE 76px circle at right/bottom 24px,
+//     RELOAD 52px upper-left of FIRE, SWAP 52px above RELOAD, JUMP 52px directly
+//     above FIRE, CROUCH 48px above JUMP).
+//   - Dedicated portrait (390×844) & landscape (844×390) anchor sets: landscape
+//     shifts the right cluster right and scales right buttons down 8% (0.92×).
+//   - Input判定 logic (stick/look/aim-while-firing/edge/toggle) is unchanged.
 
 import type { InputState } from '../game/player';
 import { emptyInput } from '../game/player';
@@ -12,9 +17,46 @@ import { buildHudButton, HUD_ICONS } from '../render/hud';
 /** SPEC: joystick radius 56 CSS px, dead-zone 8px, look 0.35°/px. */
 const STICK_R = 56;
 const STICK_DZ = 8;
-const FIRE_BTN = 76;
-const ACT_BTN = 48;
-const MOVE_BTN = 44;
+
+interface BtnAnchor {
+  size: number;
+  side: 'left' | 'right';
+  x: number;
+  bottom: number;
+}
+
+interface LayoutSpec {
+  stick: { left: number; bottom: number };
+  btns: Record<'fire' | 'reload' | 'swap' | 'jump' | 'crouch' | 'run', BtnAnchor>;
+}
+
+/** Portrait 390×844 anchors: right cluster sits in the lower-right thumb arc,
+ *  all buttons stay strictly outside the 120px center crosshair clear radius. */
+const PORTRAIT_LAYOUT: LayoutSpec = {
+  stick: { left: 20, bottom: 82 },
+  btns: {
+    fire: { size: 76, side: 'right', x: 24, bottom: 24 },
+    reload: { size: 52, side: 'right', x: 112, bottom: 42 },
+    swap: { size: 52, side: 'right', x: 96, bottom: 102 },
+    jump: { size: 52, side: 'right', x: 36, bottom: 108 },
+    crouch: { size: 48, side: 'right', x: 38, bottom: 168 },
+    run: { size: 44, side: 'left', x: 112, bottom: 174 },
+  },
+};
+
+/** Landscape 844×390 anchors: right cluster shifts right and scales down 8% (0.92×)
+ *  while keeping every hit rect ≥ 44 CSS px. */
+const LANDSCAPE_LAYOUT: LayoutSpec = {
+  stick: { left: 20, bottom: 72 },
+  btns: {
+    fire: { size: 70, side: 'right', x: 16, bottom: 16 },
+    reload: { size: 48, side: 'right', x: 96, bottom: 32 },
+    swap: { size: 48, side: 'right', x: 84, bottom: 88 },
+    jump: { size: 48, side: 'right', x: 26, bottom: 94 },
+    crouch: { size: 44, side: 'right', x: 28, bottom: 150 },
+    run: { size: 44, side: 'left', x: 112, bottom: 164 },
+  },
+};
 
 export function isTouchDevice(): boolean {
   if (typeof window === 'undefined') return false;
@@ -50,6 +92,7 @@ export class TouchControls implements InputSource {
   private stickNub: HTMLDivElement | null = null;
   private stickIdle: HTMLDivElement | null = null;
   private fireBtn: HTMLDivElement | null = null;
+  private btnEls: Partial<Record<'fire' | 'reload' | 'swap' | 'jump' | 'crouch' | 'run', HTMLDivElement>> = {};
 
   constructor(parent: HTMLElement = document.body) {
     this.enabled = isTouchDevice();
@@ -72,25 +115,20 @@ export class TouchControls implements InputSource {
     const stickZone = mkZone('stick', 'left:0;top:0;width:50%;height:100%;');
     const lookZone = mkZone('look', 'right:0;top:0;width:50%;height:100%;');
 
-    const ar = (px: number) => `calc(${px}px + env(safe-area-inset-right, 0px))`;
-    const ab = (px: number) => `calc(${px}px + env(safe-area-inset-bottom, 0px))`;
-    const al = (px: number) => `calc(${px}px + env(safe-area-inset-left, 0px))`;
-    const at = (px: number) => `calc(${px}px + env(safe-area-inset-top, 0px))`;
-
     // Resting bottom-left joystick hint: dashed outer ring (r=56) + solid inner circle (pointer-events:none)
     this.stickIdle = document.createElement('div');
     this.stickIdle.dataset.stick = 'idle';
     css(
       this.stickIdle,
-      `position:absolute;left:${al(18)};bottom:${ab(74)};width:${STICK_R * 2}px;height:${STICK_R * 2}px;` +
-        `border-radius:50%;border:1.5px dashed rgba(255,255,255,0.26);background:rgba(8,12,18,0.22);` +
+      `position:absolute;width:${STICK_R * 2}px;height:${STICK_R * 2}px;` +
+        `border-radius:50%;border:1.5px dashed rgba(255,255,255,0.28);background:rgba(8,12,18,0.22);` +
         `display:flex;align-items:center;justify-content:center;pointer-events:none;box-sizing:border-box;`,
     );
     const idleNub = document.createElement('div');
     css(
       idleNub,
-      `width:38px;height:38px;border-radius:50%;background:rgba(236,232,225,0.45);` +
-        `border:1px solid rgba(255,255,255,0.28);pointer-events:none;`,
+      `width:38px;height:38px;border-radius:50%;background:rgba(236,232,225,0.48);` +
+        `border:1px solid rgba(255,255,255,0.3);pointer-events:none;`,
     );
     this.stickIdle.appendChild(idleNub);
     this.root.appendChild(this.stickIdle);
@@ -114,28 +152,29 @@ export class TouchControls implements InputSource {
     );
     document.body.append(this.stickBase, this.stickNub);
 
-    // VALORANT-style tactical SVG + English buttons (390×844 portrait & 844×390 landscape):
-    //   bottom-right: FIRE 76px circle, RELOAD & SWAP 48px squares above it
-    //   left-mid-bottom: CROUCH & JUMP 44px rounded squares above joystick
-    //   top-left: RUN 44px icon button
+    // HUD v2 buttons: FIRE/RELOAD/SWAP/JUMP/CROUCH on right thumb arc, SPRINT snug to joystick.
     this.fireBtn = buildHudButton({
       id: 'fire',
       label: 'FIRE',
       iconSvg: HUD_ICONS.fire(26),
-      posCss: `right:${ar(18)};bottom:${ab(92)};`,
-      size: FIRE_BTN,
+      posCss: '',
+      size: PORTRAIT_LAYOUT.btns.fire.size,
       circle: true,
       danger: true,
     });
-    const btns: { el: HTMLDivElement; id: string; act: 'hold' | 'edge' | 'toggle' }[] = [
+    const btns: {
+      el: HTMLDivElement;
+      id: 'fire' | 'reload' | 'swap' | 'jump' | 'crouch' | 'run';
+      act: 'hold' | 'edge' | 'toggle';
+    }[] = [
       { el: this.fireBtn, act: 'hold', id: 'fire' },
       {
         el: buildHudButton({
           id: 'reload',
           label: 'RELOAD',
           iconSvg: HUD_ICONS.reload(18),
-          posCss: `right:${ar(18)};bottom:${ab(178)};`,
-          size: ACT_BTN,
+          posCss: '',
+          size: PORTRAIT_LAYOUT.btns.reload.size,
         }),
         act: 'edge',
         id: 'reload',
@@ -145,47 +184,48 @@ export class TouchControls implements InputSource {
           id: 'swap',
           label: 'SWAP',
           iconSvg: HUD_ICONS.swap(18),
-          posCss: `right:${ar(74)};bottom:${ab(178)};`,
-          size: ACT_BTN,
+          posCss: '',
+          size: PORTRAIT_LAYOUT.btns.swap.size,
         }),
         act: 'edge',
         id: 'swap',
       },
       {
         el: buildHudButton({
-          id: 'crouch',
-          label: 'CROUCH',
-          iconSvg: HUD_ICONS.crouch(16),
-          posCss: `left:${al(14)};bottom:${ab(198)};`,
-          size: MOVE_BTN,
-        }),
-        act: 'toggle',
-        id: 'crouch',
-      },
-      {
-        el: buildHudButton({
           id: 'jump',
           label: 'JUMP',
-          iconSvg: HUD_ICONS.jump(16),
-          posCss: `left:${al(66)};bottom:${ab(198)};`,
-          size: MOVE_BTN,
+          iconSvg: HUD_ICONS.jump(18),
+          posCss: '',
+          size: PORTRAIT_LAYOUT.btns.jump.size,
         }),
         act: 'edge',
         id: 'jump',
       },
       {
         el: buildHudButton({
+          id: 'crouch',
+          label: 'CROUCH',
+          iconSvg: HUD_ICONS.crouch(17),
+          posCss: '',
+          size: PORTRAIT_LAYOUT.btns.crouch.size,
+        }),
+        act: 'toggle',
+        id: 'crouch',
+      },
+      {
+        el: buildHudButton({
           id: 'run',
-          label: 'RUN',
+          label: 'SPRINT',
           iconSvg: HUD_ICONS.run(17),
-          posCss: `left:${al(14)};top:${at(14)};`,
-          size: MOVE_BTN,
+          posCss: '',
+          size: PORTRAIT_LAYOUT.btns.run.size,
         }),
         act: 'toggle',
         id: 'run',
       },
     ];
     for (const b of btns) {
+      this.btnEls[b.id] = b.el;
       this.root.appendChild(b.el);
       if (b.id === 'run') this.markToggle(b.el, this.toggles.run);
       this.on(b.el, 'pointerdown', (e) => {
@@ -209,6 +249,15 @@ export class TouchControls implements InputSource {
         }
       });
     }
+
+    this.applyLayout();
+    const onRelayout = () => this.applyLayout();
+    window.addEventListener('resize', onRelayout);
+    window.addEventListener('orientationchange', onRelayout);
+    this.disposers.push(() => {
+      window.removeEventListener('resize', onRelayout);
+      window.removeEventListener('orientationchange', onRelayout);
+    });
 
     const onDown = (zone: 'stick' | 'look') => (e: PointerEvent) => {
       e.preventDefault();
@@ -257,6 +306,38 @@ export class TouchControls implements InputSource {
     this.on(window, 'pointercancel', release);
 
     parent.appendChild(this.root);
+  }
+
+  /** Apply portrait (390×844) or landscape (844×390) button & stick anchors. */
+  private applyLayout(): void {
+    const portrait = window.innerHeight > window.innerWidth;
+    const spec = portrait ? PORTRAIT_LAYOUT : LANDSCAPE_LAYOUT;
+    const ab = (px: number) => `calc(${px}px + env(safe-area-inset-bottom, 0px))`;
+    const al = (px: number) => `calc(${px}px + env(safe-area-inset-left, 0px))`;
+    const ar = (px: number) => `calc(${px}px + env(safe-area-inset-right, 0px))`;
+
+    if (this.stickIdle) {
+      this.stickIdle.style.left = al(spec.stick.left);
+      this.stickIdle.style.bottom = ab(spec.stick.bottom);
+    }
+
+    for (const [id, anchor] of Object.entries(spec.btns) as [
+      keyof LayoutSpec['btns'],
+      BtnAnchor,
+    ][]) {
+      const el = this.btnEls[id];
+      if (!el) continue;
+      el.style.width = `${anchor.size}px`;
+      el.style.height = `${anchor.size}px`;
+      el.style.bottom = ab(anchor.bottom);
+      if (anchor.side === 'right') {
+        el.style.right = ar(anchor.x);
+        el.style.left = '';
+      } else {
+        el.style.left = al(anchor.x);
+        el.style.right = '';
+      }
+    }
   }
 
   private on(

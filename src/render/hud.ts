@@ -141,13 +141,13 @@ export function buildHudButton(opts: {
   el.dataset.btn = id;
   const fg = danger ? PALETTE.accent : PALETTE.uiText;
   const border = danger ? `1.5px solid ${PALETTE.accent}` : `1px solid ${PALETTE.uiBorder}`;
-  const labelSize = size >= 70 ? 9 : 6.8;
-  const tracking = size >= 70 ? '0.12em' : '0.04em';
+  const labelSize = size >= 68 ? 9 : 7;
+  const tracking = size >= 68 ? '0.12em' : '0.05em';
   el.style.cssText =
     `position:${zIndex !== undefined ? 'fixed' : 'absolute'};${posCss}` +
     `width:${size}px;height:${size}px;` +
-    `display:flex;flex-direction:column;align-items:center;justify-content:center;gap:${size >= 70 ? 3 : 2}px;` +
-    `border-radius:${circle ? '50%' : '6px'};` +
+    `display:flex;flex-direction:column;align-items:center;justify-content:center;gap:${size >= 68 ? 3 : 2}px;` +
+    `border-radius:${circle ? '50%' : '10px'};` +
     `background:${PALETTE.uiPanel};border:${border};color:${fg};` +
     `font-family:${HUD_FONT};font-weight:700;letter-spacing:${tracking};text-transform:uppercase;` +
     `line-height:1;pointer-events:auto;touch-action:none;user-select:none;-webkit-user-select:none;` +
@@ -182,6 +182,7 @@ export class Hud {
   private hpFill: HTMLDivElement;
   private hpNum: HTMLDivElement;
   private hpTag: HTMLDivElement;
+  private ammoWrap: HTMLDivElement;
   private ammoText: HTMLDivElement;
   private ammoSub: HTMLDivElement;
   private ammoSegs: HTMLDivElement[] = [];
@@ -190,15 +191,16 @@ export class Hud {
   private crossDot: HTMLDivElement;
   private fpsEl: HTMLDivElement;
   private deadEl: HTMLDivElement;
-  private rotateEl: HTMLDivElement;
   private swapBlurEl: HTMLDivElement;
   private fpsVisible = true;
+  private touchMode: boolean;
 
   private hurtEl: HTMLDivElement;
   private lowHpEl: HTMLDivElement;
   private arcEl: HTMLDivElement;
   private killEl: HTMLDivElement;
   private muteBtn: HTMLDivElement;
+  private muteBadge: HTMLDivElement;
   private hurtAt = -1;
   private arcAt = -1;
   private arcAngle = 0;
@@ -206,14 +208,16 @@ export class Hud {
   private hitCrossAt = -1;
   private mutedFlag = false;
   private isLowHpState = false;
+  private lastPortrait: boolean | null = null;
 
   /** counters/values for the e2e feedback hooks — persistent object */
   readonly fx = { hits: 0, kills: 0, flashOpacity: 0, lowHpPulse: 0 };
   /** wired by main.ts to the sfx bus */
   onMuteToggle: ((muted: boolean) => void) | null = null;
 
-  constructor(parent: HTMLElement, _touchMode: boolean) {
+  constructor(parent: HTMLElement, touchMode: boolean) {
     ensureHudStyles();
+    this.touchMode = touchMode;
     this.root = div(
       `position:fixed;inset:0;z-index:5;pointer-events:none;font-family:${HUD_FONT};` +
         `color:${PALETTE.uiText};`,
@@ -237,7 +241,7 @@ export class Hud {
 
     // --- HP panel: bottom-left (numeric + slim 6px bar, breathes red <30%) ---
     this.hpWrap = div(
-      `position:absolute;left:${al(14)};bottom:${ab(14)};width:136px;` +
+      `position:absolute;left:${al(16)};bottom:${ab(18)};width:136px;` +
         `background:${PALETTE.uiPanel};border:1px solid ${PALETTE.uiBorder};` +
         `border-left:2px solid ${PALETTE.uiText};border-radius:4px;padding:6px 10px 8px;` +
         `box-sizing:border-box;pointer-events:none;`,
@@ -268,9 +272,9 @@ export class Hud {
       hpTrack,
     );
 
-    // --- AMMO panel: bottom-right (32px numeral + uppercase weapon name + per-round bar) ---
-    const ammoWrap = div(
-      `position:absolute;right:${ar(14)};bottom:${ab(14)};min-width:146px;` +
+    // --- AMMO panel: bottom-right above FIRE cluster (touch) or corner (desktop) ---
+    this.ammoWrap = div(
+      `position:absolute;right:${ar(16)};bottom:${ab(16)};min-width:154px;` +
         `background:${PALETTE.uiPanel};border:1px solid ${PALETTE.uiBorder};` +
         `border-right:2px solid ${PALETTE.uiText};border-radius:4px;padding:5px 10px 7px;` +
         `text-align:right;box-sizing:border-box;pointer-events:none;`,
@@ -279,7 +283,7 @@ export class Hud {
     );
     const ammoTop = div(
       `display:flex;align-items:baseline;justify-content:flex-end;gap:6px;pointer-events:none;`,
-      ammoWrap,
+      this.ammoWrap,
     );
     this.ammoText = div(
       `font-size:32px;font-weight:800;line-height:0.95;font-variant-numeric:tabular-nums;` +
@@ -296,12 +300,12 @@ export class Hud {
     this.ammoSub = div(
       `font-size:9px;font-weight:700;letter-spacing:0.15em;text-transform:uppercase;` +
         `color:${PALETTE.uiDim};margin-top:3px;pointer-events:none;`,
-      ammoWrap,
+      this.ammoWrap,
     );
     this.ammoSub.textContent = 'ASSAULT RIFLE';
     const segRow = div(
-      `display:flex;align-items:center;gap:2px;height:6px;width:126px;margin:6px 0 0 auto;pointer-events:none;`,
-      ammoWrap,
+      `display:flex;align-items:center;gap:1.5px;height:6px;width:134px;margin:6px 0 0 auto;pointer-events:none;`,
+      this.ammoWrap,
       'ammo-bar',
     );
     for (let i = 0; i < MAX_MAG_SEGMENTS; i++) {
@@ -309,10 +313,11 @@ export class Hud {
         `flex:1;height:100%;border-radius:1px;background:${PALETTE.uiText};pointer-events:none;`,
         segRow,
       );
+      seg.dataset.lit = '1';
       this.ammoSegs.push(seg);
     }
 
-    // --- Crosshair: center (4 short lines + center dot; ≥24px clear zone around center) ---
+    // --- Crosshair: center (4 short lines + center dot; ≥120px clear radius) ---
     const cross = div(
       `position:absolute;left:50%;top:50%;width:0;height:0;pointer-events:none;`,
       this.root,
@@ -337,9 +342,9 @@ export class Hud {
       cross,
     );
 
-    // FPS readout sits cleanly left of the top-right SOUND button (hidden on portrait)
+    // Top-right toggleable FPS readout (sits cleanly left of SOUND; hidden in portrait)
     this.fpsEl = div(
-      `position:absolute;right:${ar(66)};top:${at(26)};` +
+      `position:absolute;right:${ar(62)};top:${at(26)};` +
         `font-size:10px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;` +
         `color:${PALETTE.uiDim};pointer-events:none;`,
       this.root,
@@ -355,17 +360,6 @@ export class Hud {
       this.root,
       'dead',
     );
-
-    this.rotateEl = div(
-      `position:absolute;left:50%;top:${at(18)};` +
-        `transform:translateX(-50%);font-size:9px;font-weight:700;letter-spacing:0.14em;` +
-        `text-transform:uppercase;color:${PALETTE.uiDim};` +
-        `background:${PALETTE.uiPanel};border:1px solid ${PALETTE.uiBorder};` +
-        `border-radius:4px;padding:4px 10px;display:none;pointer-events:none;white-space:nowrap;`,
-      this.root,
-      'rotate',
-    );
-    this.rotateEl.textContent = 'LANDSCAPE RECOMMENDED';
 
     // --- Feedback overlays (prebuilt, opacity animated only; zero per-frame alloc) ---
     this.hurtEl = div(`position:absolute;inset:0;background:${HURT_BG};opacity:0;pointer-events:none;`, this.root);
@@ -394,20 +388,54 @@ export class Hud {
     this.killEl.dataset.fx = 'kill';
     this.killEl.textContent = 'ELIMINATED';
 
-    // --- Top-right SOUND icon button (44×44, fixed above touch UI) ---
-    this.muteBtn = buildHudButton({
-      id: 'mute',
-      label: 'SOUND',
-      iconSvg: HUD_ICONS.soundOn(17),
-      posCss: `right:${ar(14)};top:${at(14)};`,
-      size: 44,
-      zIndex: 30,
-    });
+    // --- Top-right SOUND small icon (40×40 visible badge inside 44×44 touch target) ---
+    this.muteBtn = document.createElement('div');
+    this.muteBtn.dataset.btn = 'mute';
+    this.muteBtn.style.cssText =
+      `position:fixed;right:${ar(12)};top:${at(12)};width:44px;height:44px;` +
+      `display:flex;align-items:center;justify-content:center;background:transparent;` +
+      `pointer-events:auto;touch-action:none;user-select:none;-webkit-user-select:none;` +
+      `box-sizing:border-box;cursor:pointer;z-index:30;`;
+    this.muteBadge = document.createElement('div');
+    this.muteBadge.dataset.role = 'icon';
+    this.muteBadge.style.cssText =
+      `width:40px;height:40px;display:flex;align-items:center;justify-content:center;` +
+      `border-radius:8px;background:${PALETTE.uiPanel};border:1px solid ${PALETTE.uiBorder};` +
+      `color:${PALETTE.uiText};pointer-events:none;box-sizing:border-box;`;
+    this.muteBadge.innerHTML = HUD_ICONS.soundOn(18);
+    this.muteBtn.appendChild(this.muteBadge);
     parent.appendChild(this.muteBtn);
     this.muteBtn.addEventListener('click', () => {
       this.setMuted(!this.mutedFlag);
       this.onMuteToggle?.(this.mutedFlag);
     });
+
+    this.applyLayout();
+    window.addEventListener('resize', () => this.applyLayout());
+    window.addEventListener('orientationchange', () => this.applyLayout());
+  }
+
+  /** Portrait (390×844) vs landscape (844×390) HUD anchor placement. */
+  private applyLayout(): void {
+    const portrait = window.innerHeight > window.innerWidth;
+    if (portrait === this.lastPortrait) return;
+    this.lastPortrait = portrait;
+    const ab = (px: number) => `calc(${px}px + env(safe-area-inset-bottom, 0px))`;
+    const al = (px: number) => `calc(${px}px + env(safe-area-inset-left, 0px))`;
+    const ar = (px: number) => `calc(${px}px + env(safe-area-inset-right, 0px))`;
+
+    // HP stays bottom-left; tighter bottom margin in landscape
+    this.hpWrap.style.left = al(16);
+    this.hpWrap.style.bottom = ab(portrait ? 18 : 14);
+
+    // AMMO sits cleanly above the right-hand FIRE/JUMP/CROUCH cluster on touch,
+    // or anchored bottom-right on desktop.
+    this.ammoWrap.style.right = ar(16);
+    if (this.touchMode) {
+      this.ammoWrap.style.bottom = ab(portrait ? 228 : 204);
+    } else {
+      this.ammoWrap.style.bottom = ab(16);
+    }
   }
 
   /** Damage feedback: edge flash + directional hit arc. */
@@ -443,12 +471,9 @@ export class Hud {
 
   setMuted(m: boolean): void {
     this.mutedFlag = m;
-    const iconBox = this.muteBtn.querySelector('[data-role="icon"]');
-    const labelEl = this.muteBtn.querySelector('[data-role="label"]');
-    if (iconBox) iconBox.innerHTML = m ? HUD_ICONS.soundOff(17) : HUD_ICONS.soundOn(17);
-    if (labelEl) labelEl.textContent = m ? 'MUTE' : 'SOUND';
-    this.muteBtn.style.borderColor = m ? PALETTE.accent : PALETTE.uiBorder;
-    this.muteBtn.style.color = m ? PALETTE.accent : PALETTE.uiText;
+    this.muteBadge.innerHTML = m ? HUD_ICONS.soundOff(18) : HUD_ICONS.soundOn(18);
+    this.muteBadge.style.borderColor = m ? PALETTE.accent : PALETTE.uiBorder;
+    this.muteBadge.style.color = m ? PALETTE.accent : PALETTE.uiText;
   }
 
   setFpsVisible(v: boolean): void {
@@ -505,13 +530,13 @@ export class Hud {
     for (const l of this.crossLines) l.style.background = crossCol;
     this.crossDot.style.background = crossCol;
 
-    // Portrait hides FPS readout so controls have breathing room
+    // Portrait hides FPS readout so top bar only shows the SOUND icon
     const portrait = window.innerHeight > window.innerWidth;
-    this.fpsEl.style.display = portrait ? 'none' : '';
+    if (portrait !== this.lastPortrait) this.applyLayout();
+    this.fpsEl.style.display = !portrait && this.fpsVisible ? '' : 'none';
     this.fpsEl.textContent = this.fpsVisible ? `${s.fps.toFixed(0)} FPS` : '';
     this.deadEl.style.display = s.dead ? 'block' : 'none';
     if (s.dead) this.deadEl.textContent = `ELIMINATED · RESPAWN ${Math.max(0, s.respawnIn).toFixed(1)}S`;
-    this.rotateEl.style.display = portrait ? 'block' : 'none';
 
     // --- Feedback decay (opacity animated only) ---
     const flash = this.hurtAt < 0 ? 0 : Math.max(0, 0.35 * (1 - (now - this.hurtAt) / HURT_MS));
