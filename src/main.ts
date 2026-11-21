@@ -51,6 +51,14 @@ declare global {
       timeLeftMs: number;
       winner: string | null;
     };
+    __renderInfo: {
+      calls: number;
+      triangles: number;
+      points: number;
+      lines: number;
+      geometries: number;
+      textures: number;
+    };
   }
 }
 
@@ -215,11 +223,13 @@ engine.onFrame = (dt) => {
       const shots = w.tryFire(now, eye, aimDir());
       if (shots) {
         weaponView.onFire();
+        touch.pulseFire();
         sfx.play(SHOT_SFX[w.spec.id]);
         weaponView.muzzleWorld(scratchMuzzle);
         for (const ray of shots) {
           const hit = traceHit(ray, MAP.boxes, entities);
           tracers.fire(scratchMuzzle, hit ? hit.point : rayEnd(ray, 80));
+          if (hit) hud.notifyHit(now);
           if (hit?.kind === 'entity') {
             const dmg =
               w.spec.dmg *
@@ -245,6 +255,7 @@ engine.onFrame = (dt) => {
     hp: playerEnt.hp,
     maxHp: playerEnt.maxHp,
     ammo: w.ammo,
+    mag: w.spec.mag,
     reloading: w.reloading,
     weaponName: w.spec.name,
     spreadPx: Math.tan(w.spreadAt(now)) * focalPx,
@@ -252,6 +263,14 @@ engine.onFrame = (dt) => {
     dead: !playerEnt.alive,
     respawnIn: (playerEnt.deadUntil - now) / 1000,
   });
+
+  const ri = engine.renderer.info;
+  rinfo.calls = ri.render.calls;
+  rinfo.triangles = ri.render.triangles;
+  rinfo.points = ri.render.points;
+  rinfo.lines = ri.render.lines;
+  rinfo.geometries = ri.memory.geometries;
+  rinfo.textures = ri.memory.textures;
 
   dbg.x = player.position.x;
   dbg.y = player.position.y;
@@ -297,6 +316,8 @@ const mdbg = {
   winner: null as string | null,
 };
 window.__match = mdbg;
+const rinfo = { calls: 0, triangles: 0, points: 0, lines: 0, geometries: 0, textures: 0 };
+window.__renderInfo = rinfo;
 
 view.snap(player);
 engine.start();

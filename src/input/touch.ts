@@ -7,12 +7,14 @@ import type { InputState } from '../game/player';
 import { emptyInput } from '../game/player';
 import { TOUCH_LOOK_SENSITIVITY, type InputSource } from '../game/input';
 import { PALETTE } from '../render/palette';
+import { buildHudButton, HUD_ICONS } from '../render/hud';
 
 /** SPEC: joystick radius 56 CSS px, dead-zone 8px, look 0.35°/px. */
 const STICK_R = 56;
 const STICK_DZ = 8;
-const BTN = 56;
-const FIRE_BTN = 80;
+const FIRE_BTN = 76;
+const ACT_BTN = 48;
+const MOVE_BTN = 44;
 
 export function isTouchDevice(): boolean {
   if (typeof window === 'undefined') return false;
@@ -27,24 +29,6 @@ export function isTouchDevice(): boolean {
 const css = (el: HTMLElement, style: string): void => {
   el.style.cssText = style;
 };
-
-function makeBtn(id: string, label: string, pos: string, size: number, accent = false): HTMLDivElement {
-  const el = document.createElement('div');
-  el.dataset.btn = id;
-  el.textContent = label;
-  css(
-    el,
-    `position:absolute;${pos}width:${size}px;height:${size}px;` +
-      `display:flex;align-items:center;justify-content:center;` +
-      `border-radius:${id === 'fire' ? '50%' : '12px'};` +
-      `background:${PALETTE.uiPanel};border:2px solid ${accent ? PALETTE.accent : PALETTE.uiBorder};` +
-      `color:${accent ? PALETTE.accent : PALETTE.uiText};font:600 ${size > 60 ? 17 : 14}px/1 ` +
-      `system-ui,-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;` +
-      `pointer-events:auto;touch-action:none;user-select:none;-webkit-user-select:none;` +
-      `box-sizing:border-box;`,
-  );
-  return el;
-}
 
 export class TouchControls implements InputSource {
   readonly root: HTMLDivElement;
@@ -64,6 +48,8 @@ export class TouchControls implements InputSource {
   private disposers: (() => void)[] = [];
   private stickBase: HTMLDivElement | null = null;
   private stickNub: HTMLDivElement | null = null;
+  private stickIdle: HTMLDivElement | null = null;
+  private fireBtn: HTMLDivElement | null = null;
 
   constructor(parent: HTMLElement = document.body) {
     this.enabled = isTouchDevice();
@@ -86,38 +72,118 @@ export class TouchControls implements InputSource {
     const stickZone = mkZone('stick', 'left:0;top:0;width:50%;height:100%;');
     const lookZone = mkZone('look', 'right:0;top:0;width:50%;height:100%;');
 
+    const ar = (px: number) => `calc(${px}px + env(safe-area-inset-right, 0px))`;
+    const ab = (px: number) => `calc(${px}px + env(safe-area-inset-bottom, 0px))`;
+    const al = (px: number) => `calc(${px}px + env(safe-area-inset-left, 0px))`;
+    const at = (px: number) => `calc(${px}px + env(safe-area-inset-top, 0px))`;
+
+    // Resting bottom-left joystick hint: dashed outer ring (r=56) + solid inner circle (pointer-events:none)
+    this.stickIdle = document.createElement('div');
+    this.stickIdle.dataset.stick = 'idle';
+    css(
+      this.stickIdle,
+      `position:absolute;left:${al(18)};bottom:${ab(74)};width:${STICK_R * 2}px;height:${STICK_R * 2}px;` +
+        `border-radius:50%;border:1.5px dashed rgba(255,255,255,0.26);background:rgba(8,12,18,0.22);` +
+        `display:flex;align-items:center;justify-content:center;pointer-events:none;box-sizing:border-box;`,
+    );
+    const idleNub = document.createElement('div');
+    css(
+      idleNub,
+      `width:38px;height:38px;border-radius:50%;background:rgba(236,232,225,0.45);` +
+        `border:1px solid rgba(255,255,255,0.28);pointer-events:none;`,
+    );
+    this.stickIdle.appendChild(idleNub);
+    this.root.appendChild(this.stickIdle);
+
+    // Active dynamic joystick (follows touch point): dashed outer ring + solid inner circle
     this.stickBase = document.createElement('div');
     this.stickBase.dataset.stick = 'base';
     css(
       this.stickBase,
       `position:fixed;width:${STICK_R * 2}px;height:${STICK_R * 2}px;border-radius:50%;` +
-        `border:2px solid ${PALETTE.uiBorder};background:${PALETTE.uiPanel};` +
-        `display:none;pointer-events:none;transform:translate(-50%,-50%);`,
+        `border:1.5px dashed rgba(255,255,255,0.45);background:rgba(8,12,18,0.34);` +
+        `display:none;pointer-events:none;transform:translate(-50%,-50%);z-index:11;box-sizing:border-box;`,
     );
     this.stickNub = document.createElement('div');
     this.stickNub.dataset.stick = 'nub';
     css(
       this.stickNub,
-      `position:fixed;width:44px;height:44px;border-radius:50%;` +
-        `background:${PALETTE.uiText};opacity:0.85;display:none;pointer-events:none;` +
-        `transform:translate(-50%,-50%);`,
+      `position:fixed;width:40px;height:40px;border-radius:50%;` +
+        `background:${PALETTE.uiText};opacity:0.9;display:none;pointer-events:none;` +
+        `transform:translate(-50%,-50%);z-index:12;`,
     );
     document.body.append(this.stickBase, this.stickNub);
 
-    // bottom-right cluster (SPEC: 开火·换弹·换枪·跳跃·蹲), all inside safe area.
-    // Two columns ≥8px apart; 跳 moved left into the inner column so the HUD
-    // ammo panel above never collides with it in portrait.
-    const ar = (px: number) => `calc(${px}px + env(safe-area-inset-right, 0px))`;
-    const ab = (px: number) => `calc(${px}px + env(safe-area-inset-bottom, 0px))`;
-    const al = (px: number) => `calc(${px}px + env(safe-area-inset-left, 0px))`;
-    const at = (px: number) => `calc(${px}px + env(safe-area-inset-top, 0px))`;
+    // VALORANT-style tactical SVG + English buttons (390×844 portrait & 844×390 landscape):
+    //   bottom-right: FIRE 76px circle, RELOAD & SWAP 48px squares above it
+    //   left-mid-bottom: CROUCH & JUMP 44px rounded squares above joystick
+    //   top-left: RUN 44px icon button
+    this.fireBtn = buildHudButton({
+      id: 'fire',
+      label: 'FIRE',
+      iconSvg: HUD_ICONS.fire(26),
+      posCss: `right:${ar(18)};bottom:${ab(92)};`,
+      size: FIRE_BTN,
+      circle: true,
+      danger: true,
+    });
     const btns: { el: HTMLDivElement; id: string; act: 'hold' | 'edge' | 'toggle' }[] = [
-      { el: makeBtn('fire', '开火', `right:${ar(20)};bottom:${ab(20)};`, FIRE_BTN, true), act: 'hold', id: 'fire' },
-      { el: makeBtn('jump', '跳', `right:${ar(116)};bottom:${ab(24)};`, BTN), act: 'edge', id: 'jump' },
-      { el: makeBtn('reload', '换弹', `right:${ar(116)};bottom:${ab(96)};`, BTN), act: 'edge', id: 'reload' },
-      { el: makeBtn('swap', '切枪', `right:${ar(116)};bottom:${ab(168)};`, BTN), act: 'edge', id: 'swap' },
-      { el: makeBtn('crouch', '蹲', `right:${ar(32)};bottom:${ab(116)};`, BTN), act: 'toggle', id: 'crouch' },
-      { el: makeBtn('run', '跑', `left:${al(20)};top:${at(20)};`, BTN), act: 'toggle', id: 'run' },
+      { el: this.fireBtn, act: 'hold', id: 'fire' },
+      {
+        el: buildHudButton({
+          id: 'reload',
+          label: 'RELOAD',
+          iconSvg: HUD_ICONS.reload(18),
+          posCss: `right:${ar(18)};bottom:${ab(178)};`,
+          size: ACT_BTN,
+        }),
+        act: 'edge',
+        id: 'reload',
+      },
+      {
+        el: buildHudButton({
+          id: 'swap',
+          label: 'SWAP',
+          iconSvg: HUD_ICONS.swap(18),
+          posCss: `right:${ar(74)};bottom:${ab(178)};`,
+          size: ACT_BTN,
+        }),
+        act: 'edge',
+        id: 'swap',
+      },
+      {
+        el: buildHudButton({
+          id: 'crouch',
+          label: 'CROUCH',
+          iconSvg: HUD_ICONS.crouch(16),
+          posCss: `left:${al(14)};bottom:${ab(198)};`,
+          size: MOVE_BTN,
+        }),
+        act: 'toggle',
+        id: 'crouch',
+      },
+      {
+        el: buildHudButton({
+          id: 'jump',
+          label: 'JUMP',
+          iconSvg: HUD_ICONS.jump(16),
+          posCss: `left:${al(66)};bottom:${ab(198)};`,
+          size: MOVE_BTN,
+        }),
+        act: 'edge',
+        id: 'jump',
+      },
+      {
+        el: buildHudButton({
+          id: 'run',
+          label: 'RUN',
+          iconSvg: HUD_ICONS.run(17),
+          posCss: `left:${al(14)};top:${at(14)};`,
+          size: MOVE_BTN,
+        }),
+        act: 'toggle',
+        id: 'run',
+      },
     ];
     for (const b of btns) {
       this.root.appendChild(b.el);
@@ -203,12 +269,22 @@ export class TouchControls implements InputSource {
   }
 
   private markToggle(el: HTMLElement, on: boolean): void {
-    el.style.borderColor = on ? PALETTE.accent : PALETTE.uiBorder;
-    el.style.color = on ? PALETTE.accent : PALETTE.uiText;
+    el.style.borderColor = on ? PALETTE.uiBorderActive : PALETTE.uiBorder;
+    el.style.color = on ? PALETTE.uiText : PALETTE.uiDim;
+    el.style.background = on ? 'rgba(236,232,225,0.14)' : PALETTE.uiPanel;
+  }
+
+  /** Brief radial pulse on the FIRE button when shots fire or confirm a hit. */
+  pulseFire(): void {
+    if (!this.fireBtn) return;
+    this.fireBtn.classList.remove('val-fire-pulse');
+    void this.fireBtn.offsetWidth;
+    this.fireBtn.classList.add('val-fire-pulse');
   }
 
   private moveStickVisual(bx: number, by: number, dx: number, dy: number, show: boolean): void {
     if (!this.stickBase || !this.stickNub) return;
+    if (this.stickIdle) this.stickIdle.style.visibility = show ? 'hidden' : 'visible';
     this.stickBase.style.display = show ? 'block' : 'none';
     this.stickNub.style.display = show ? 'block' : 'none';
     if (show) {

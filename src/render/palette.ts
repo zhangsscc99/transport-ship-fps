@@ -21,25 +21,28 @@ export const PALETTE = {
   fog: '#6c8298', // 指数雾色：取地平线灰蓝，与远景吊机/海面自然融出
   sun: '#ffe6c4', // 主方向光：低角度暖白太阳（15° 仰角）
   teamA: '#4fa4f1', // 我方：蓝
-  teamB: '#d9534f', // 敌方：红
-  hpFull: '#5fd35f',
-  hpMid: '#e0c341',
-  hpLow: '#d9534f',
-  uiPanel: 'rgba(12,18,24,0.78)',
-  uiBorder: '#3f5666',
-  uiText: '#dfe7ee',
-  uiDim: '#8fa0ad',
-  accent: '#ff8b3d', // 开火/命中/危险提示
+  teamB: '#ff4655', // 敌方：红
+  hpFull: '#ece8e1', // VALORANT 灰白血条（非饱和色块）
+  hpMid: '#d5d1ca',
+  hpLow: '#ff4655', // 仅低血量/危险使用 Valorant 红
+  uiPanel: 'rgba(8,12,18,0.55)',
+  uiBorder: 'rgba(255,255,255,0.18)',
+  uiBorderActive: 'rgba(236,232,225,0.72)',
+  uiText: '#ece8e1',
+  uiDim: 'rgba(236,232,225,0.60)',
+  uiEmpty: 'rgba(255,255,255,0.14)',
+  accent: '#ff4655', // Valorant 红 — 仅用于危险/开火/低血量
   gun: ['#2e343b', '#3a4149', '#67727f'], // 枪体：暗/中/亮
   gunDark: '#252b32', // 弹匣/小件：偏暗哑光
   gunHi: '#8ea0b0', // 枪身高光条 emissive
   glove: '#5d6167', // 手臂——比枪身亮，分出层次
   flashCore: '#ffd9a0', // 枪口焰心
-  tracer: '#c9a227', // 曳光（同警示黄）
-  crosshair: '#eef4fa',
+  tracer: '#ffd670', // 曳光亮条
+  crosshair: '#f2f6fa',
+  crosshairHit: '#ff4655',
   crosshairEdge: 'rgba(4,8,12,0.85)',
-  deadVeil: 'rgba(80,16,14,0.35)',
-  hurtVeil: 'rgba(178,44,38,0.85)', // 受击/低血 屏幕边缘红晕外缘
+  deadVeil: 'rgba(8,12,18,0.76)',
+  hurtVeil: 'rgba(255,70,85,0.72)', // 受击/低血 屏幕边缘红晕外缘
   lampRed: '#e4553f', // 船头红色警示灯
   lampWarm: '#ffc27a', // 哨塔暖黄工作灯 / 亮窗
   wood: '#785e3c', // 木托盘/木箱

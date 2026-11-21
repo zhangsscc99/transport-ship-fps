@@ -144,9 +144,9 @@ function updateRespawn(e, now, spawn) {
 
 // src/game/weapons.ts
 var WEAPONS = [
-  { id: "rifle", name: "\u7A81\u51FB\u6B65\u67AA", dmg: 24, rpm: 700, mag: 30, reloadMs: 1900, spread: 6e-3, recoil: 45e-4, pellets: 1 },
-  { id: "sniper", name: "\u72D9\u51FB\u67AA", dmg: 95, rpm: 45, mag: 5, reloadMs: 3200, spread: 15e-4, recoil: 0.09, pellets: 1, noFalloff: true },
-  { id: "shotgun", name: "\u9730\u5F39\u67AA", dmg: 12, rpm: 60, mag: 6, reloadMs: 2600, spread: 0.055, recoil: 0.02, pellets: 8 }
+  { id: "rifle", name: "ASSAULT RIFLE", dmg: 24, rpm: 700, mag: 30, reloadMs: 1900, spread: 6e-3, recoil: 45e-4, pellets: 1 },
+  { id: "sniper", name: "SNIPER RIFLE", dmg: 95, rpm: 45, mag: 5, reloadMs: 3200, spread: 15e-4, recoil: 0.09, pellets: 1, noFalloff: true },
+  { id: "shotgun", name: "SHOTGUN", dmg: 12, rpm: 60, mag: 6, reloadMs: 2600, spread: 0.055, recoil: 0.02, pellets: 8 }
 ];
 
 // src/game/damage.test.ts

@@ -23,9 +23,9 @@ export interface WeaponSpec {
 }
 
 export const WEAPONS: readonly WeaponSpec[] = [
-  { id: 'rifle', name: '突击步枪', dmg: 24, rpm: 700, mag: 30, reloadMs: 1900, spread: 0.006, recoil: 0.0045, pellets: 1 },
-  { id: 'sniper', name: '狙击枪', dmg: 95, rpm: 45, mag: 5, reloadMs: 3200, spread: 0.0015, recoil: 0.09, pellets: 1, noFalloff: true },
-  { id: 'shotgun', name: '霰弹枪', dmg: 12, rpm: 60, mag: 6, reloadMs: 2600, spread: 0.055, recoil: 0.02, pellets: 8 },
+  { id: 'rifle', name: 'ASSAULT RIFLE', dmg: 24, rpm: 700, mag: 30, reloadMs: 1900, spread: 0.006, recoil: 0.0045, pellets: 1 },
+  { id: 'sniper', name: 'SNIPER RIFLE', dmg: 95, rpm: 45, mag: 5, reloadMs: 3200, spread: 0.0015, recoil: 0.09, pellets: 1, noFalloff: true },
+  { id: 'shotgun', name: 'SHOTGUN', dmg: 12, rpm: 60, mag: 6, reloadMs: 2600, spread: 0.055, recoil: 0.02, pellets: 8 },
 ];
 
 /** Consecutive shots closer than this keep the burst (and its spread) alive. */
