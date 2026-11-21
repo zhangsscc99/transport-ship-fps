@@ -3,6 +3,7 @@
 // Same-kind geometry shares one InstancedMesh — high visual density at ~30 draw calls.
 
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { MAP, type Box } from '../game/map';
 import { PALETTE } from './palette';
 import { getMaterial, getStencilMaterial } from './materials';
@@ -202,6 +203,17 @@ function buildPallets(group: THREE.Group): void {
     [10.2, 0.065, 1.2, 1.9],
     [-14.2, 0.065, -13.0, 0.7],
     [16.2, 0.065, 16.5, 0.2],
+    // Under-platform industrial storage layers beneath all 4 elevated towers
+    [-26.5, 0.065, 14.5, 0.08],
+    [-26.5, 0.195, 14.5, 0.14],
+    [-25.4, 0.065, 13.4, -0.18],
+    [26.5, 0.065, 14.5, -0.1],
+    [26.5, 0.195, 14.5, -0.04],
+    [25.4, 0.065, 13.4, 0.2],
+    [26.5, 0.065, -14.5, 0.12],
+    [26.5, 0.195, -14.5, 0.06],
+    [-26.5, 0.065, -14.5, -0.12],
+    [-26.5, 0.195, -14.5, -0.18],
   ];
   const mesh = new THREE.InstancedMesh(geo, getMaterial('wood'), spots.length);
   mesh.name = 'pallets';
@@ -247,6 +259,19 @@ function buildBarrels(group: THREE.Group): void {
     [23.3, -5.5, 0.9],
     [10.0, 9.4, 0.1],
     [10.8, 10.0, 1.9],
+    // Under-platform oil drum clusters beneath all 4 elevated towers
+    [-25.3, 14.7, 0.4],
+    [-25.9, 15.1, 1.8],
+    [-21.2, 15.3, 0.9],
+    [25.3, 14.7, 1.2],
+    [25.9, 15.1, 2.5],
+    [21.2, 15.3, 0.3],
+    [25.3, -14.7, 0.7],
+    [25.9, -15.1, 1.9],
+    [21.2, -15.3, 1.1],
+    [-25.3, -14.7, 1.6],
+    [-25.9, -15.1, 0.5],
+    [-21.2, -15.3, 2.2],
   ];
   const mesh = new THREE.InstancedMesh(geo, getMaterial('barrel'), spots.length);
   mesh.name = 'barrels';
@@ -280,6 +305,11 @@ function buildReels(group: THREE.Group): void {
     [21.0, 12.0, 1.2],
     [13.5, -14.5, 0.8],
     [-13.5, 17.0, 0.5],
+    // Under-platform cable reels tucked inside each tower bay
+    [-26.8, 13.1, 0.55],
+    [26.8, 13.1, 1.15],
+    [26.8, -13.1, 0.42],
+    [-26.8, -13.1, 1.32],
   ];
   const drum = new THREE.InstancedMesh(
     new THREE.CylinderGeometry(0.55, 0.55, 0.5, 14),
@@ -417,7 +447,7 @@ function buildAoEdges(group: THREE.Group): void {
   const list = MAP.boxes.filter(
     (b) =>
       b.y === 0 &&
-      (((b.kind === 'container' || b.kind === 'tower') && b.w >= 1.5 && b.d >= 1.5) ||
+      ((b.kind === 'container' && b.h >= 2.5 && b.w >= 1.5 && b.d >= 1.5) ||
         b.kind === 'pipe'),
   );
   const spots: { x: number; z: number; w: number; d: number }[] = list.map((b) => ({
@@ -869,16 +899,503 @@ function buildWorkLamps(group: THREE.Group): void {
   }
 }
 
+/**
+ * Geometry merge helpers for multi-part industrial assets (steel platforms,
+ * staircases, hooped drums, slatted pallets, truss cranes). Every part is
+ * converted to non-indexed geometry with uniform attributes so mergeGeometries
+ * collapses hundreds of industrial details into one InstancedMesh draw call.
+ */
+function prepGeo(
+  geo: THREE.BufferGeometry,
+  x = 0,
+  y = 0,
+  z = 0,
+  rx = 0,
+  ry = 0,
+  rz = 0,
+  uvU = 1,
+  uvV = 1,
+): THREE.BufferGeometry {
+  if (uvU !== 1 || uvV !== 1) {
+    const uv = geo.getAttribute('uv');
+    if (uv) {
+      for (let i = 0; i < uv.count; i++) {
+        uv.setXY(i, uv.getX(i) * uvU, uv.getY(i) * uvV);
+      }
+    }
+  }
+  if (rx) geo.rotateX(rx);
+  if (ry) geo.rotateY(ry);
+  if (rz) geo.rotateZ(rz);
+  if (x || y || z) geo.translate(x, y, z);
+  return geo.index ? geo.toNonIndexed() : geo;
+}
+
+function addBoxPart(
+  list: THREE.BufferGeometry[],
+  w: number,
+  h: number,
+  d: number,
+  x = 0,
+  y = 0,
+  z = 0,
+  rx = 0,
+  ry = 0,
+  rz = 0,
+  uvU = 1,
+  uvV = 1,
+): void {
+  list.push(prepGeo(new THREE.BoxGeometry(w, h, d), x, y, z, rx, ry, rz, uvU, uvV));
+}
+
+function addCylPart(
+  list: THREE.BufferGeometry[],
+  rTop: number,
+  rBot: number,
+  len: number,
+  seg: number,
+  x = 0,
+  y = 0,
+  z = 0,
+  rx = 0,
+  ry = 0,
+  rz = 0,
+): void {
+  list.push(prepGeo(new THREE.CylinderGeometry(rTop, rBot, len, seg), x, y, z, rx, ry, rz));
+}
+
+/** Add a straight strut/pipe spanning from world/local point A to B. */
+function addSegmentPart(
+  list: THREE.BufferGeometry[],
+  a: [number, number, number],
+  b: [number, number, number],
+  radius: number,
+  radialSegs: number,
+  square = false,
+): void {
+  const va = new THREE.Vector3(...a);
+  const vb = new THREE.Vector3(...b);
+  const dir = vb.clone().sub(va);
+  const len = dir.length();
+  if (len < 1e-4) return;
+  const mid = va.clone().add(vb).multiplyScalar(0.5);
+  const geo = square
+    ? new THREE.BoxGeometry(radius * 2, len, radius * 2)
+    : new THREE.CylinderGeometry(radius, radius, len, radialSegs);
+  const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.normalize());
+  const m = new THREE.Matrix4().compose(mid, q, new THREE.Vector3(1, 1, 1));
+  geo.applyMatrix4(m);
+  list.push(geo.index ? geo.toNonIndexed() : geo);
+}
+
+/**
+ * Rebuild all 4 elevated sniper platforms & staircases as open industrial
+ * steelwork — completely replacing the raw unit-cube concrete blocks & solid
+ * rail walls while staying 1:1 aligned with MAP.boxes colliders:
+ *   - 4 true H-beam columns w/ baseplates, 16 hex anchor bolts & gussets
+ *   - Multi-bay cross X-bracing & mid-height tie beams (open see-through bays)
+ *   - Perimeter & cross I-beam main girders w/ underside AO shadow patches
+ *   - Checker-plate steel deck (procedural normal/roughness) w/ drain scuppers
+ *   - Tubular Ø48mm double-rail guardrails (posts ≤1.5m), 90° torus elbows &
+ *     100mm rusted steel kickplates
+ *   - Twin C-channel stair stringers, bolted top/bottom connection plates,
+ *     mid-span steel support posts, 18 open-riser 5cm solid steel treads with
+ *     yellow-black anti-slip nosing, and double-sided Ø42mm tubular handrails
+ *   - Under-platform marine electrical distribution box + conduit & overhead
+ *     industrial gooseneck work lamp casting warm light onto every platform.
+ */
+function buildSteelTowers(group: THREE.Group): {
+  frameMesh: THREE.InstancedMesh;
+  railMesh: THREE.InstancedMesh;
+} {
+  const TOWERS: [number, number, number][] = [
+    [-26, 14, 0],
+    [-26, -14, 0],
+    [26, 14, Math.PI],
+    [26, -14, Math.PI],
+  ];
+
+  const frameParts: THREE.BufferGeometry[] = [];
+  const checkerParts: THREE.BufferGeometry[] = [];
+  const railParts: THREE.BufferGeometry[] = [];
+  const kickParts: THREE.BufferGeometry[] = [];
+  const stripeParts: THREE.BufferGeometry[] = [];
+  const elecParts: THREE.BufferGeometry[] = [];
+  const lampParts: THREE.BufferGeometry[] = [];
+  const aoParts: THREE.BufferGeometry[] = [];
+
+  // ---- 1. Four H-beam columns (x=±1.62, z=±1.62, y=0..2.98) ----
+  const COL = 1.62;
+  for (const cx of [-COL, COL]) {
+    for (const cz of [-COL, COL]) {
+      // Base plate + 4 hex anchor bolts + welded gusset stiffeners
+      addBoxPart(frameParts, 0.50, 0.045, 0.50, cx, 0.0225, cz);
+      for (const bx of [-0.17, 0.17]) {
+        for (const bz of [-0.17, 0.17]) {
+          addCylPart(frameParts, 0.026, 0.026, 0.065, 6, cx + bx, 0.055, cz + bz);
+          addBoxPart(frameParts, 0.075, 0.012, 0.075, cx + bx, 0.048, cz + bz);
+        }
+      }
+      addBoxPart(frameParts, 0.36, 0.22, 0.024, cx, 0.15, cz);
+      addBoxPart(frameParts, 0.024, 0.22, 0.36, cx, 0.15, cz);
+
+      // True H-section column (2 flanges + center web)
+      addBoxPart(frameParts, 0.26, 2.94, 0.036, cx, 1.51, cz - 0.112);
+      addBoxPart(frameParts, 0.26, 2.94, 0.036, cx, 1.51, cz + 0.112);
+      addBoxPart(frameParts, 0.036, 2.94, 0.20, cx, 1.51, cz);
+
+      // Top column cap plate & knee gussets supporting perimeter I-beams
+      addBoxPart(frameParts, 0.38, 0.036, 0.38, cx, 2.97, cz);
+      addBoxPart(frameParts, 0.46, 0.20, 0.03, cx * 1.12, 2.86, cz);
+      addBoxPart(frameParts, 0.03, 0.20, 0.46, cx, 2.86, cz * 1.12);
+    }
+  }
+
+  // ---- 2. Mid-height horizontal tie beams + cross X-bracing on open bays ----
+  // Horizontal tie beams at y = 1.50
+  addBoxPart(frameParts, 0.10, 0.12, COL * 2, -COL, 1.50, 0);
+  addBoxPart(frameParts, 0.10, 0.12, COL * 2, COL, 1.50, 0);
+  addBoxPart(frameParts, COL * 2, 0.12, 0.10, 0, 1.50, -COL);
+  addBoxPart(frameParts, COL * 2, 0.12, 0.10, 0, 1.50, COL);
+
+  const addXBay = (
+    p00: [number, number, number],
+    p10: [number, number, number],
+    p01: [number, number, number],
+    p11: [number, number, number],
+  ) => {
+    addSegmentPart(frameParts, p00, p11, 0.032, 4, true);
+    addSegmentPart(frameParts, p10, p01, 0.032, 4, true);
+    // Bolted center gusset where diagonal struts cross
+    const mx = (p00[0] + p11[0]) * 0.5;
+    const my = (p00[1] + p11[1]) * 0.5;
+    const mz = (p00[2] + p11[2]) * 0.5;
+    addBoxPart(frameParts, 0.16, 0.16, 0.16, mx, my, mz);
+  };
+  // Back bay (x = -COL): lower + upper X-bracing
+  addXBay([-COL, 0.12, -COL], [-COL, 0.12, COL], [-COL, 1.46, -COL], [-COL, 1.46, COL]);
+  addXBay([-COL, 1.54, -COL], [-COL, 1.54, COL], [-COL, 2.92, -COL], [-COL, 2.92, COL]);
+  // Left & Right side bays (z = ±COL): lower + upper X-bracing (clearly visible from front/side!)
+  for (const sz of [-COL, COL]) {
+    addXBay([-COL, 0.12, sz], [COL, 0.12, sz], [-COL, 1.46, sz], [COL, 1.46, sz]);
+    addXBay([-COL, 1.54, sz], [COL, 1.54, sz], [-COL, 2.92, sz], [COL, 2.92, sz]);
+  }
+  // Front bay (x = +COL): upper X-bracing only, leaving lower arch open to view under-platform props
+  addXBay([COL, 1.54, -COL], [COL, 1.54, COL], [COL, 2.92, -COL], [COL, 2.92, COL]);
+
+  // ---- 3. Main I-Beam Girders (工字钢截面) at y = 2.96..3.24 ----
+  const addIBeamX = (len: number, yMid: number, zPos: number) => {
+    addBoxPart(frameParts, len, 0.03, 0.18, 0, yMid + 0.125, zPos); // top flange
+    addBoxPart(frameParts, len, 0.22, 0.034, 0, yMid, zPos); // web
+    addBoxPart(frameParts, len, 0.03, 0.18, 0, yMid - 0.125, zPos); // bottom flange
+  };
+  const addIBeamZ = (len: number, yMid: number, xPos: number) => {
+    addBoxPart(frameParts, 0.18, 0.03, len, xPos, yMid + 0.125, 0); // top flange
+    addBoxPart(frameParts, 0.034, 0.22, len, xPos, yMid, 0); // web
+    addBoxPart(frameParts, 0.18, 0.03, len, xPos, yMid - 0.125, 0); // bottom flange
+  };
+  // Perimeter I-beams + 2 inner cross joists
+  addIBeamX(4.38, 3.10, -2.06);
+  addIBeamX(4.38, 3.10, 2.06);
+  addIBeamZ(4.06, 3.10, -2.06);
+  addIBeamZ(4.06, 3.10, 2.06);
+  addIBeamZ(3.96, 3.10, -0.72);
+  addIBeamZ(3.96, 3.10, 0.72);
+  // Corner bolted splice gusset plates on outer beam corners
+  for (const sx of [-2.16, 2.16]) {
+    for (const sz of [-2.16, 2.16]) {
+      addBoxPart(frameParts, 0.08, 0.28, 0.08, sx, 3.10, sz);
+    }
+  }
+
+  // Underside beam & column-footplate AO shadow patches (soft dark ambient occlusion)
+  aoParts.push(prepGeo(new THREE.PlaneGeometry(5.0, 5.0), 0, 0.011, 0, -Math.PI / 2));
+  for (const cx of [-COL, COL]) {
+    for (const cz of [-COL, COL]) {
+      aoParts.push(prepGeo(new THREE.PlaneGeometry(1.15, 1.15), cx, 0.014, cz, -Math.PI / 2));
+    }
+  }
+  aoParts.push(prepGeo(new THREE.PlaneGeometry(4.3, 4.3), 0, 2.94, 0, Math.PI / 2));
+
+  // ---- 4. Checker-Plate Steel Deck (top at y = 3.30, 4.4×4.4m) ----
+  addBoxPart(checkerParts, 4.40, 0.06, 4.40, 0, 3.27, 0, 0, 0, 0, 3.5, 3.5);
+  // Corner drainage scupper collars (排水孔护圈)
+  for (const dx of [-1.84, 1.84]) {
+    for (const dz of [-1.84, 1.84]) {
+      const ring = new THREE.TorusGeometry(0.065, 0.014, 6, 12);
+      frameParts.push(prepGeo(ring, dx, 3.304, dz, Math.PI / 2));
+    }
+  }
+
+  // ---- 5. Industrial Tubular Guardrails (Ø48mm, posts ≤1.5m, 90° corner elbows) ----
+  const R_PIPE = 0.024; // Ø48mm
+  const ELBOW_R = 0.085;
+  const RAIL_XY = 2.05;
+  const TOP_Y = 4.33;
+  const MID_Y = 3.83;
+
+  const postCoords: [number, number][] = [
+    // Back side (x=-2.05): 4 posts, spacing 1.37m
+    [-RAIL_XY, -RAIL_XY],
+    [-RAIL_XY, -0.68],
+    [-RAIL_XY, 0.68],
+    [-RAIL_XY, RAIL_XY],
+    // Left & right sides (z=±2.05): intermediate + front corner posts
+    [-0.68, -RAIL_XY],
+    [0.68, -RAIL_XY],
+    [RAIL_XY, -RAIL_XY],
+    [-0.68, RAIL_XY],
+    [0.68, RAIL_XY],
+    [RAIL_XY, RAIL_XY],
+    // Front entry opening jamb posts (1.60m clear stair entry)
+    [RAIL_XY, -0.80],
+    [RAIL_XY, 0.80],
+  ];
+  for (const [px, pz] of postCoords) {
+    addCylPart(railParts, R_PIPE, R_PIPE, 1.03, 8, px, 3.815, pz);
+    addBoxPart(frameParts, 0.11, 0.016, 0.11, px, 3.308, pz); // welded base flange
+  }
+
+  // Double horizontal Ø48mm pipes + 90° curved corner elbows
+  for (const ry of [TOP_Y, MID_Y]) {
+    // Back rail (z ∈ [-2.05+E, +2.05-E])
+    addSegmentPart(railParts, [-RAIL_XY, ry, -RAIL_XY + ELBOW_R], [-RAIL_XY, ry, RAIL_XY - ELBOW_R], R_PIPE, 8);
+    // Left & right rails (x ∈ [-2.05+E, +2.05-E])
+    addSegmentPart(railParts, [-RAIL_XY + ELBOW_R, ry, -RAIL_XY], [RAIL_XY - ELBOW_R, ry, -RAIL_XY], R_PIPE, 8);
+    addSegmentPart(railParts, [-RAIL_XY + ELBOW_R, ry, RAIL_XY], [RAIL_XY - ELBOW_R, ry, RAIL_XY], R_PIPE, 8);
+    // Front entry stubs (stopping at z = ±0.80)
+    addSegmentPart(railParts, [RAIL_XY, ry, -RAIL_XY + ELBOW_R], [RAIL_XY, ry, -0.80], R_PIPE, 8);
+    addSegmentPart(railParts, [RAIL_XY, ry, 0.80], [RAIL_XY, ry, RAIL_XY - ELBOW_R], R_PIPE, 8);
+
+    // 4 curved 90° corner elbows (torus quarter-arcs)
+    const corners: [number, number, number][] = [
+      [RAIL_XY - ELBOW_R, RAIL_XY - ELBOW_R, 0],
+      [RAIL_XY - ELBOW_R, -RAIL_XY + ELBOW_R, Math.PI / 2],
+      [-RAIL_XY + ELBOW_R, -RAIL_XY + ELBOW_R, Math.PI],
+      [-RAIL_XY + ELBOW_R, RAIL_XY - ELBOW_R, -Math.PI / 2],
+    ];
+    for (const [ex, ez, rotY] of corners) {
+      const elbow = new THREE.TorusGeometry(ELBOW_R, R_PIPE, 6, 8, Math.PI / 2);
+      railParts.push(prepGeo(elbow, ex, ry, ez, Math.PI / 2, rotY, 0));
+    }
+  }
+
+  // 100mm steel kickplates (踢脚板, y=3.305..3.405) around all 5 rail runs
+  addBoxPart(kickParts, 0.024, 0.10, 4.12, -RAIL_XY, 3.355, 0, 0, 0, 0, 3.2, 1);
+  addBoxPart(kickParts, 4.12, 0.10, 0.024, 0, 3.355, -RAIL_XY, 0, 0, 0, 3.2, 1);
+  addBoxPart(kickParts, 4.12, 0.10, 0.024, 0, 3.355, RAIL_XY, 0, 0, 0, 3.2, 1);
+  addBoxPart(kickParts, 0.024, 0.10, 1.25, RAIL_XY, 3.355, -1.425, 0, 0, 0, 1.2, 1);
+  addBoxPart(kickParts, 0.024, 0.10, 1.25, RAIL_XY, 3.355, 1.425, 0, 0, 0, 1.2, 1);
+
+  // ---- 6. Open-Stringer Channel-Beam Staircase (x=2.20..8.20, y=3.30..0, w=1.60m) ----
+  const ST_X0 = 2.16;
+  const ST_Y0 = 3.16;
+  const ST_X1 = 8.16;
+  const ST_Y1 = 0.04;
+  const ST_DX = ST_X1 - ST_X0; // 6.00
+  const ST_DY = ST_Y1 - ST_Y0; // -3.12
+  const ST_LEN = Math.hypot(ST_DX, ST_DY);
+  const ST_ANG = Math.atan2(ST_DY, ST_DX); // -0.4795 rad
+  const ST_MX = (ST_X0 + ST_X1) * 0.5;
+  const ST_MY = (ST_Y0 + ST_Y1) * 0.5;
+  const ST_Z = 0.80;
+
+  const flNX = -Math.sin(ST_ANG) * 0.107;
+  const flNY = Math.cos(ST_ANG) * 0.107;
+  for (const sz of [-ST_Z, ST_Z]) {
+    const inward = sz > 0 ? -0.032 : 0.032;
+    // True C-channel side stringer (outer vertical web + flush upper & lower inward flanges)
+    addBoxPart(frameParts, ST_LEN, 0.24, 0.024, ST_MX, ST_MY, sz, 0, 0, ST_ANG);
+    addBoxPart(frameParts, ST_LEN, 0.026, 0.088, ST_MX + flNX, ST_MY + flNY, sz + inward, 0, 0, ST_ANG);
+    addBoxPart(frameParts, ST_LEN, 0.026, 0.088, ST_MX - flNX, ST_MY - flNY, sz + inward, 0, 0, ST_ANG);
+
+    // Top bolted steel connection plate (平台连接板) joining stringer to main I-beam
+    addBoxPart(frameParts, 0.36, 0.34, 0.034, 2.16, 3.10, sz);
+    for (const bx of [-0.10, 0.10]) {
+      for (const by of [-0.10, 0.10]) {
+        addCylPart(
+          frameParts,
+          0.020,
+          0.020,
+          0.06,
+          6,
+          2.16 + bx,
+          3.10 + by,
+          sz + (sz > 0 ? 0.015 : -0.015),
+          Math.PI / 2,
+        );
+      }
+    }
+
+    // Bottom deck anchor footplate + anchor bolts
+    addBoxPart(frameParts, 0.42, 0.04, 0.22, 8.16, 0.02, sz);
+    addCylPart(frameParts, 0.022, 0.022, 0.06, 6, 8.28, 0.045, sz);
+    addCylPart(frameParts, 0.022, 0.022, 0.06, 6, 8.02, 0.045, sz);
+
+    // Mid-span structural support column bracing the 6m staircase to the deck
+    addBoxPart(frameParts, 0.12, 1.54, 0.12, 5.20, 0.79, sz);
+    addBoxPart(frameParts, 0.28, 0.035, 0.28, 5.20, 0.0175, sz);
+  }
+  // Cross tie beam between the two mid-span stair support posts
+  addBoxPart(frameParts, 0.08, 0.09, ST_Z * 2, 5.20, 0.72, 0);
+
+  // 18 solid 5cm checker-plate stair treads (open risers!) + anti-slip edge nosing
+  const STEPS = 18;
+  const RISE = 3.30 / (STEPS + 0.5); // ~17.8cm ergonomic industrial rise
+  for (let k = 0; k < STEPS; k++) {
+    const tx = 8.00 - k * 0.33;
+    const tyTop = (k + 1) * RISE;
+    // Solid 5cm steel tread plate
+    addBoxPart(checkerParts, 0.31, 0.05, 1.54, tx, tyTop - 0.025, 0, 0, 0, 0, 0.45, 1.5);
+    // Yellow-black anti-slip nosing strip along front edge of every step
+    addBoxPart(stripeParts, 0.052, 0.010, 1.52, tx + 0.132, tyTop + 0.004, 0, 0, 0, 0, 0.25, 3.0);
+  }
+
+  // Platform entry landing hazard stripe + stair-foot approach hazard stripe
+  addBoxPart(stripeParts, 0.34, 0.008, 1.62, 2.02, 3.304, 0, 0, 0, 0, 0.5, 2.4);
+  addBoxPart(stripeParts, 0.40, 0.008, 1.70, 8.44, 0.018, 0, 0, 0, 0, 0.6, 2.6);
+
+  // Double-sided stair handrails (Ø42mm round pipe + vertical stanchions on BOTH sides)
+  const R_HAND = 0.021; // Ø42mm
+  const R_KNEE = 0.016; // Ø32mm mid rail
+  const H_HAND = 1.04;
+  for (const sz of [-ST_Z, ST_Z]) {
+    // 5 stanchion posts rising vertically from the C-channel stringer
+    for (let p = 0; p < 5; p++) {
+      const f = p / 4;
+      const sx = ST_X1 - f * ST_DX;
+      const sy = ST_Y1 - f * ST_DY;
+      addCylPart(railParts, R_HAND, R_HAND, H_HAND, 8, sx, sy + H_HAND * 0.5, sz);
+    }
+    // Sloped top Ø42mm handrail + sloped mid knee-rail + smooth join into platform jamb post
+    addSegmentPart(railParts, [ST_X1, ST_Y1 + H_HAND, sz], [ST_X0, ST_Y0 + H_HAND, sz], R_HAND, 8);
+    addSegmentPart(railParts, [ST_X0, ST_Y0 + H_HAND, sz], [RAIL_XY, TOP_Y, sz], R_HAND, 8);
+    addSegmentPart(
+      railParts,
+      [ST_X1, ST_Y1 + H_HAND * 0.52, sz],
+      [ST_X0, ST_Y0 + H_HAND * 0.52, sz],
+      R_KNEE,
+      6,
+    );
+    addSegmentPart(railParts, [ST_X0, ST_Y0 + H_HAND * 0.52, sz], [RAIL_XY, MID_Y, sz], R_KNEE, 6);
+  }
+
+  // ---- 7. Under-Platform Marine Electrical Distribution Box (配电箱) + Conduit ----
+  addBoxPart(elecParts, 0.28, 0.74, 0.56, COL + 0.06, 1.38, -1.16);
+  // Steel mounting straps & vertical electrical conduit running up column to work lamp
+  addBoxPart(frameParts, 0.16, 0.06, 0.62, COL - 0.05, 1.62, -1.16);
+  addBoxPart(frameParts, 0.16, 0.06, 0.62, COL - 0.05, 1.14, -1.16);
+  addCylPart(frameParts, 0.022, 0.022, 1.56, 6, COL - 0.02, 2.38, -1.42);
+
+  // ---- 8. Overhead Platform Work Lamp (吊灯/工作灯) ----
+  // Gooseneck steel mast rising from back-center guardrail post
+  addCylPart(frameParts, 0.036, 0.042, 2.52, 8, -RAIL_XY, 4.56, 0);
+  addSegmentPart(frameParts, [-RAIL_XY, 5.78, 0], [-0.82, 5.78, 0], 0.032, 8);
+  addSegmentPart(frameParts, [-RAIL_XY, 5.15, 0], [-1.42, 5.78, 0], 0.022, 6); // angled brace
+  addCylPart(frameParts, 0.024, 0.024, 0.22, 6, -0.82, 5.68, 0); // pendant stem
+  // Flared industrial enamel lamp shade hood
+  addCylPart(frameParts, 0.10, 0.32, 0.20, 12, -0.82, 5.52, 0);
+  // Warm self-lit bulb inside hood
+  lampParts.push(prepGeo(new THREE.SphereGeometry(0.11, 10, 8), -0.82, 5.42, 0));
+
+  // ---- Merge each material group & instance across all 4 towers ----
+  const mkInst = (
+    parts: THREE.BufferGeometry[],
+    mat: THREE.Material,
+    name: string,
+    cast: boolean,
+    recv: boolean,
+    renderOrder = 0,
+  ): THREE.InstancedMesh => {
+    const merged = mergeGeometries(parts, false);
+    if (!merged) throw new Error(`failed to merge ${name}`);
+    const mesh = new THREE.InstancedMesh(merged, mat, TOWERS.length);
+    mesh.name = name;
+    TOWERS.forEach(([tx, tz, ry], i) => setInst(mesh, i, tx, 0, tz, 1, 1, 1, ry));
+    mesh.instanceMatrix.needsUpdate = true;
+    mesh.castShadow = cast;
+    mesh.receiveShadow = recv;
+    if (renderOrder) mesh.renderOrder = renderOrder;
+    group.add(mesh);
+    return mesh;
+  };
+
+  const frameMesh = mkInst(frameParts, getMaterial('steelFrame'), 'tower-steel-frame', true, true);
+  mkInst(checkerParts, getMaterial('checker'), 'tower-checker-deck', true, true);
+  const railMesh = mkInst(railParts, getMaterial('rail'), 'tower-guardrails', true, true);
+  mkInst(kickParts, getMaterial('kickplate'), 'tower-kickplates', true, true);
+  mkInst(stripeParts, getMaterial('stripe'), 'tower-hazard-stripes', false, true);
+  mkInst(elecParts, getMaterial('elecBox'), 'tower-elec-boxes', true, true);
+  mkInst(lampParts, getMaterial('lamp'), 'tower-work-lamps', false, false);
+  mkInst(aoParts, getMaterial('ao'), 'tower-beam-ao', false, false, 1);
+
+  // Warm work-lamp PointLight hanging beneath each of the 4 platform hoods
+  for (const [tx, tz, ry] of TOWERS) {
+    const lx = tx + (ry === 0 ? -0.82 : 0.82);
+    const l = new THREE.PointLight(PALETTE.lampWarm, 24, 17, 2);
+    l.position.set(lx, 5.22, tz);
+    group.add(l);
+  }
+
+  return { frameMesh, railMesh };
+}
+
+/**
+ * Render MAP's crate-jump steps (w≤1, d≤1) and low central covers (h=0.55) as
+ * stacked braced wooden supply crates & cargo skids instead of narrow
+ * corrugated shipping-container slivers.
+ */
+function buildCrateJumpStairs(group: THREE.Group): void {
+  const stepBoxes = MAP.boxes.filter(
+    (b) => b.kind === 'container' && b.h < 2.5,
+  );
+  const instances: [number, number, number, number, number, number, number][] = [];
+  for (const b of stepBoxes) {
+    if (b.w <= 1.0 && b.d <= 1.0) {
+      // Split vertical jump columns into stacked individual wooden crates (~0.6m each)
+      const layers = Math.max(1, Math.round(b.h / 0.6));
+      const lh = b.h / layers;
+      for (let k = 0; k < layers; k++) {
+        const shrink = k === layers - 1 ? 0.96 : 1.0;
+        const yaw = ((Math.round(b.x * 3 + b.z * 5 + k * 7) % 5) - 2) * 0.025;
+        instances.push([b.x, b.y + (k + 0.5) * lh, b.z, b.w * shrink, lh, b.d * shrink, yaw]);
+      }
+    } else {
+      // Low central covers (2.4 × 0.55 × 1.2): two side-by-side timber cargo crates
+      const hw = b.w * 0.49;
+      instances.push([b.x - b.w * 0.25, b.y + b.h * 0.5, b.z, hw, b.h, b.d, 0.015]);
+      instances.push([b.x + b.w * 0.25, b.y + b.h * 0.5, b.z, hw, b.h, b.d, -0.015]);
+    }
+  }
+  const mesh = new THREE.InstancedMesh(
+    new THREE.BoxGeometry(1, 1, 1),
+    getMaterial('crate'),
+    instances.length,
+  );
+  mesh.name = 'crate-jump-stairs';
+  instances.forEach(([x, y, z, sx, sy, sz, ry], i) =>
+    setInst(mesh, i, x, y, z, sx, sy, sz, ry),
+  );
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  group.add(mesh);
+}
+
 export function buildMap(scene: THREE.Scene): MapMeshes {
   const group = new THREE.Group();
   group.name = 'map';
 
   const unitCube = new THREE.BoxGeometry(1, 1, 1);
   const byKind = {} as Record<Box['kind'], THREE.InstancedMesh>;
-  const kinds: Box['kind'][] = ['deck', 'container', 'tower', 'rail', 'pipe'];
+  // Deck, full ISO containers (h≥2.5), and enclosed flank pipes keep box colliders;
+  // towers & rails are built as open industrial steelwork by buildSteelTowers(),
+  // and crate-stairs / low covers are built as stacked timber crates by buildCrateJumpStairs().
+  const kinds: Box['kind'][] = ['deck', 'container', 'pipe'];
 
   for (const kind of kinds) {
-    const boxes = MAP.boxes.filter((b) => b.kind === kind);
+    const boxes = MAP.boxes.filter((b) =>
+      kind === 'container' ? b.kind === 'container' && b.h >= 2.5 : b.kind === kind,
+    );
     if (boxes.length === 0) continue;
     const mat = getMaterial(kind as MaterialKind);
     const geo = kind === 'container' ? unitCube.clone() : unitCube;
@@ -906,6 +1423,11 @@ export function buildMap(scene: THREE.Scene): MapMeshes {
     group.add(mesh);
     byKind[kind] = mesh;
   }
+
+  const towers = buildSteelTowers(group);
+  byKind.tower = towers.frameMesh;
+  byKind.rail = towers.railMesh;
+  buildCrateJumpStairs(group);
 
   buildBollards(group);
   buildDeckLines(group);

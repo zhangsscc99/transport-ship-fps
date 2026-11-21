@@ -78,8 +78,8 @@ export function addLights(scene: THREE.Scene): Lights {
   bow.position.set(33.5, 5.4, 0);
   scene.add(bow);
 
-  const tower = new THREE.PointLight(PALETTE.lampWarm, 40, 24, 2);
-  tower.position.set(26, 5.6, -14);
+  const tower = new THREE.PointLight(PALETTE.lampWarm, 18, 22, 2);
+  tower.position.set(26, 5.4, -14);
   scene.add(tower);
 
   // Texel-grid snapping helpers (no per-frame alloc)

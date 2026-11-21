@@ -36,7 +36,11 @@ export type MaterialKind =
   | 'stripe'
   | 'cone'
   | 'rope'
-  | 'skid';
+  | 'skid'
+  | 'checker'
+  | 'steelFrame'
+  | 'kickplate'
+  | 'elecBox';
 
 const cache = new Map<MaterialKind, THREE.Material>();
 
@@ -478,6 +482,47 @@ uniform vec3 uSunCol;`,
         map: getTexture('skid'),
         transparent: true,
         depthWrite: false,
+      });
+    case 'checker':
+      // Industrial diamond checker-plate steel deck & stair treads
+      return new THREE.MeshStandardMaterial({
+        color: PALETTE.checker,
+        map: getTexture('checker'),
+        roughnessMap: getTexture('checkerRough'),
+        normalMap: getTexture('checkerNormal'),
+        normalScale: new THREE.Vector2(0.85, 0.85),
+        roughness: 1.0,
+        metalness: 0.68,
+        envMapIntensity: 1.45,
+      });
+    case 'steelFrame':
+      // Structural H-beams, I-beams, C-channel stringers & diagonal X-bracing
+      return new THREE.MeshStandardMaterial({
+        color: PALETTE.steelFrame,
+        map: getTexture('steelFrame'),
+        normalMap: getTexture('steelFrameNormal'),
+        normalScale: new THREE.Vector2(0.55, 0.55),
+        roughness: 0.42,
+        metalness: 0.72,
+        envMapIntensity: 1.35,
+      });
+    case 'kickplate':
+      // Guardrail 100mm toe-board with rust weeping streaks
+      return new THREE.MeshStandardMaterial({
+        color: PALETTE.kickplate,
+        map: getTexture('kickplate'),
+        roughness: 0.58,
+        metalness: 0.52,
+        envMapIntensity: 1.1,
+      });
+    case 'elecBox':
+      // Marine electrical distribution box mounted beneath elevated platforms
+      return new THREE.MeshStandardMaterial({
+        color: PALETTE.elecBox,
+        map: getTexture('elecBox'),
+        roughness: 0.46,
+        metalness: 0.48,
+        envMapIntensity: 1.15,
       });
   }
 }

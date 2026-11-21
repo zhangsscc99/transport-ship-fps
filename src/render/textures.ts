@@ -30,7 +30,14 @@ export type TextureKey =
   | 'stencil'
   | 'skid'
   | 'ao'
-  | 'aoEdge';
+  | 'aoEdge'
+  | 'checker'
+  | 'checkerRough'
+  | 'checkerNormal'
+  | 'steelFrame'
+  | 'steelFrameNormal'
+  | 'kickplate'
+  | 'elecBox';
 
 const cache = new Map<TextureKey, THREE.Texture>();
 
@@ -1144,6 +1151,367 @@ function genAoEdge(): HTMLCanvasElement {
   return c;
 }
 
+// --- Shared height-field for 512² industrial checker plate (diamond tread
+// lozenges + welded 128px plate seams + recessed corner drainage holes) ---
+function buildCheckerHeight(size: number): Float32Array {
+  const h = new Float32Array(size * size);
+  const rnd = mulberry32(307);
+  const cell = 16; // 32×32 diamond lozenges per tile (~3–4cm pitch in world)
+  // 4 drainage holes near plate intersections
+  const drains: [number, number][] = [
+    [28, 28],
+    [284, 28],
+    [28, 284],
+    [284, 284],
+  ];
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      // Alternating vertical & horizontal raised diamond/teardrop lugs
+      const cx = Math.floor(x / cell);
+      const cy = Math.floor(y / cell);
+      const lx = (x % cell) / cell - 0.5;
+      const ly = (y % cell) / cell - 0.5;
+      const horiz = (cx + cy) % 2 === 0;
+      const u = horiz ? lx : ly;
+      const v = horiz ? ly : lx;
+      // Sharp diamond tread lug centered in cell
+      const dist = Math.abs(u) / 0.36 + Math.abs(v) / 0.14;
+      let val = dist < 1 ? (1 - dist * dist) * 0.95 : 0;
+
+      // Welded plate seams every 256px (raised weld bead flanked by groove)
+      const sx = Math.min(x % 256, 256 - (x % 256));
+      const sy = Math.min(y % 256, 256 - (y % 256));
+      const sm = Math.min(sx, sy);
+      if (sm < 5) {
+        const along = sx < sy ? y : x;
+        const bead = 0.45 + 0.35 * Math.sin(along * 0.9);
+        val = sm < 2.2 ? bead : -0.35 * (1 - (sm - 2.2) / 2.8);
+      }
+
+      // Drainage holes (deep recessed circular scuppers with slight lip)
+      for (const [dx0, dy0] of drains) {
+        const dr = Math.hypot(x - dx0, y - dy0);
+        if (dr < 7.5) {
+          val = -1.3;
+        } else if (dr < 10) {
+          val = Math.max(val, 0.35 * (1 - Math.abs(dr - 8.7) / 1.3));
+        }
+      }
+
+      h[y * size + x] = val + (rnd() - 0.5) * 0.05;
+    }
+  }
+  return h;
+}
+
+let cachedCheckerH: Float32Array | null = null;
+function getCheckerHeight(): Float32Array {
+  if (!cachedCheckerH) cachedCheckerH = buildCheckerHeight(512);
+  return cachedCheckerH;
+}
+
+// --- 512² checker-plate albedo: gunmetal steel + bright tread crests +
+// welded seams + corner drainage holes + edge wear & rust flecks ---
+function genChecker(): HTMLCanvasElement {
+  const size = 512;
+  const [c, ctx] = makeCanvas(size);
+  const h = getCheckerHeight();
+  const rnd = mulberry32(311);
+  const img = ctx.createImageData(size, size);
+  const d = img.data;
+  for (let i = 0; i < size * size; i++) {
+    const hv = h[i];
+    let base = 188 + hv * 36;
+    if (hv < -0.9) base = 26; // recessed drainage hole bore
+    const n = (rnd() - 0.5) * 10;
+    const v = Math.max(22, Math.min(242, base + n));
+    d[i * 4] = v;
+    d[i * 4 + 1] = Math.min(245, v + 2);
+    d[i * 4 + 2] = Math.min(248, v + 6);
+    d[i * 4 + 3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+
+  // Subtle foot-traffic wear patches & oil smudges
+  for (let i = 0; i < 36; i++) {
+    const r = 18 + rnd() * 54;
+    ctx.fillStyle = rnd() < 0.5 ? 'rgba(32,38,44,0.12)' : 'rgba(225,232,238,0.10)';
+    ctx.beginPath();
+    ctx.arc(rnd() * size, rnd() * size, r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  // Rust flecks tucked along the 256px weld seams & around drain scuppers
+  rustAlongSeams(ctx, size, 256, rnd, 160);
+  ctx.fillStyle = PALETTE.rust;
+  for (const [dx0, dy0] of [
+    [28, 28],
+    [284, 28],
+    [28, 284],
+    [284, 284],
+  ]) {
+    for (let k = 0; k < 14; k++) {
+      const a = rnd() * Math.PI * 2;
+      const dist = 7 + rnd() * 10;
+      ctx.globalAlpha = 0.16 + rnd() * 0.28;
+      ctx.fillRect(dx0 + Math.cos(a) * dist, dy0 + Math.sin(a) * dist, 1.5 + rnd() * 2.5, 1.5 + rnd() * 2.5);
+    }
+  }
+  ctx.globalAlpha = 1;
+  return c;
+}
+
+// --- 512² checker-plate roughness: polished raised lugs (~0.28) vs matte valleys (~0.64) ---
+function genCheckerRough(): HTMLCanvasElement {
+  const size = 512;
+  const [c, ctx] = makeCanvas(size);
+  const h = getCheckerHeight();
+  const rnd = mulberry32(313);
+  const img = ctx.createImageData(size, size);
+  const d = img.data;
+  for (let i = 0; i < size * size; i++) {
+    const hv = h[i];
+    // Raised lugs are worn smoother by boots; grooves/drains stay rough
+    let r = hv > 0.25 ? 74 : hv < -0.5 ? 235 : 148 - hv * 40;
+    r = Math.max(52, Math.min(245, r + (rnd() - 0.5) * 18));
+    d[i * 4] = r;
+    d[i * 4 + 1] = r;
+    d[i * 4 + 2] = r;
+    d[i * 4 + 3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+  return c;
+}
+
+// --- 512² checker-plate tangent-space normal map ---
+function genCheckerNormal(): HTMLCanvasElement {
+  const size = 512;
+  const [c, ctx] = makeCanvas(size);
+  const h = getCheckerHeight();
+  const img = ctx.createImageData(size, size);
+  const d = img.data;
+  const at = (x: number, y: number) => h[((y + size) % size) * size + ((x + size) % size)];
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const gx = (at(x + 1, y) - at(x - 1, y)) * 1.8;
+      const gy = (at(x, y + 1) - at(x, y - 1)) * 1.8;
+      const il = 1 / Math.hypot(gx, gy, 1);
+      const i = (y * size + x) * 4;
+      d[i] = (-gx * il * 0.5 + 0.5) * 255;
+      d[i + 1] = (-gy * il * 0.5 + 0.5) * 255;
+      d[i + 2] = (il * 0.5 + 0.5) * 255;
+      d[i + 3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  return c;
+}
+
+// --- 256² structural painted steel (H-beams / I-beams / C-channels): mill
+// scale grain, weld seams, rivet rows, edge wear & joint rust ---
+function genSteelFrame(): HTMLCanvasElement {
+  const size = 256;
+  const [c, ctx] = makeCanvas(size);
+  const rnd = mulberry32(331);
+  ctx.fillStyle = '#d4d9de';
+  ctx.fillRect(0, 0, size, size);
+
+  // Subtle rolled-steel tonal streaks
+  for (let i = 0; i < 42; i++) {
+    ctx.fillStyle = rnd() < 0.5 ? 'rgba(28,36,44,0.07)' : 'rgba(245,248,252,0.08)';
+    ctx.fillRect(0, rnd() * size, size, 2 + rnd() * 8);
+  }
+  grain(ctx, size, rnd, 0.06);
+
+  // Welded splice bands & bolt heads
+  ctx.fillStyle = 'rgba(28,34,42,0.34)';
+  ctx.fillRect(0, 124, size, 4);
+  ctx.fillStyle = 'rgba(235,240,246,0.28)';
+  ctx.fillRect(0, 122, size, 2);
+  for (let x = 20; x < size; x += 36) {
+    ctx.fillStyle = 'rgba(24,30,36,0.52)';
+    ctx.beginPath();
+    ctx.arc(x, 114, 3.2, 0, Math.PI * 2);
+    ctx.arc(x, 138, 3.2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = 'rgba(230,236,242,0.36)';
+    ctx.beginPath();
+    ctx.arc(x - 1, 113, 1.4, 0, Math.PI * 2);
+    ctx.arc(x - 1, 137, 1.4, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Light rust oxidation weeping from splice & bottom flange
+  for (let i = 0; i < 38; i++) {
+    ctx.fillStyle = rustRgba(0.9 + rnd() * 0.25, 0.14 + rnd() * 0.28);
+    ctx.fillRect(rnd() * size, 120 + rnd() * 34, 1.5 + rnd() * 4, 4 + rnd() * 18);
+  }
+  const bot = ctx.createLinearGradient(0, size * 0.78, 0, size);
+  bot.addColorStop(0, 'rgba(92,50,28,0)');
+  bot.addColorStop(1, 'rgba(92,50,28,0.34)');
+  ctx.fillStyle = bot;
+  ctx.fillRect(0, 0, size, size);
+  return c;
+}
+
+// --- 256² structural steel normal map: weld seam ridge + rivet bumps + fine scale ---
+function genSteelFrameNormal(): HTMLCanvasElement {
+  const size = 256;
+  const [c, ctx] = makeCanvas(size);
+  const h = new Float32Array(size * size);
+  const rnd = mulberry32(337);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      let v = (rnd() - 0.5) * 0.08;
+      if (Math.abs(y - 125) < 3) v += 0.6 * (1 - Math.abs(y - 125) / 3);
+      for (let bx = 20; bx < size; bx += 36) {
+        const d1 = Math.hypot(x - bx, y - 114);
+        const d2 = Math.hypot(x - bx, y - 138);
+        if (d1 < 3.6) v += 0.7 * (1 - d1 / 3.6);
+        if (d2 < 3.6) v += 0.7 * (1 - d2 / 3.6);
+      }
+      h[y * size + x] = v;
+    }
+  }
+  const img = ctx.createImageData(size, size);
+  const d = img.data;
+  const at = (x: number, y: number) => h[((y + size) % size) * size + ((x + size) % size)];
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const gx = (at(x + 1, y) - at(x - 1, y)) * 1.1;
+      const gy = (at(x, y + 1) - at(x, y - 1)) * 1.1;
+      const il = 1 / Math.hypot(gx, gy, 1);
+      const i = (y * size + x) * 4;
+      d[i] = (-gx * il * 0.5 + 0.5) * 255;
+      d[i + 1] = (-gy * il * 0.5 + 0.5) * 255;
+      d[i + 2] = (il * 0.5 + 0.5) * 255;
+      d[i + 3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  return c;
+}
+
+// --- 256² guardrail 100mm kickplate: weathered steel + prominent rust weeping streaks ---
+function genKickplate(): HTMLCanvasElement {
+  const size = 256;
+  const [c, ctx] = makeCanvas(size);
+  const rnd = mulberry32(347);
+  ctx.fillStyle = '#cdd3da';
+  ctx.fillRect(0, 0, size, size);
+  grain(ctx, size, rnd, 0.06);
+
+  // Top beveled lip + vertical plate weld joints
+  ctx.fillStyle = 'rgba(240,244,248,0.42)';
+  ctx.fillRect(0, 0, size, 10);
+  ctx.fillStyle = 'rgba(28,34,40,0.4)';
+  ctx.fillRect(0, 10, size, 4);
+  for (let x = 64; x < size; x += 64) {
+    ctx.fillStyle = 'rgba(30,36,42,0.38)';
+    ctx.fillRect(x - 1, 0, 3, size);
+  }
+
+  // Prominent vertical rust-drip streaks weeping down from top lip & bolts
+  for (let i = 0; i < 42; i++) {
+    const sx = rnd() * size;
+    const sw = 2 + rnd() * 5;
+    const len = 50 + rnd() * 190;
+    const g = ctx.createLinearGradient(0, 8, 0, 8 + len);
+    g.addColorStop(0, rustRgba(0.95 + rnd() * 0.2, 0.55 + rnd() * 0.3));
+    g.addColorStop(0.55, rustRgba(0.85, 0.32));
+    g.addColorStop(1, rustRgba(0.8, 0));
+    ctx.fillStyle = g;
+    ctx.fillRect(sx, 8, sw, len);
+  }
+  // Bottom wet deck splash grime + oxide crust
+  const bot = ctx.createLinearGradient(0, size * 0.62, 0, size);
+  bot.addColorStop(0, 'rgba(84,44,24,0)');
+  bot.addColorStop(1, 'rgba(84,44,24,0.58)');
+  ctx.fillStyle = bot;
+  ctx.fillRect(0, 0, size, size);
+  return c;
+}
+
+// --- 256² marine electrical distribution cabinet (配电箱) ---
+function genElecBox(): HTMLCanvasElement {
+  const size = 256;
+  const [c, ctx] = makeCanvas(size);
+  const rnd = mulberry32(353);
+  ctx.fillStyle = '#c8cfd6';
+  ctx.fillRect(0, 0, size, size);
+  grain(ctx, size, rnd, 0.05);
+
+  // Recessed hinged door seam + weather seal
+  ctx.strokeStyle = 'rgba(24,30,38,0.82)';
+  ctx.lineWidth = 6;
+  ctx.strokeRect(14, 14, size - 28, size - 28);
+  ctx.strokeStyle = 'rgba(240,245,250,0.45)';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(19, 19, size - 38, size - 38);
+
+  // Hinges on left, locking latch handle on right
+  ctx.fillStyle = '#2d3640';
+  ctx.fillRect(10, 56, 12, 26);
+  ctx.fillRect(10, 174, 12, 26);
+  ctx.fillRect(size - 38, 108, 16, 42);
+  ctx.fillStyle = '#8d99a6';
+  ctx.fillRect(size - 35, 114, 10, 28);
+
+  // Pilot status LEDs (green power / amber ready / red fault)
+  const leds: [number, string][] = [
+    [62, '#34d399'],
+    [92, '#f59e0b'],
+    [122, '#ef4444'],
+  ];
+  for (const [lx, col] of leds) {
+    ctx.fillStyle = '#1f262e';
+    ctx.beginPath();
+    ctx.arc(lx, 46, 9, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = col;
+    ctx.beginPath();
+    ctx.arc(lx, 46, 6, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // High-voltage yellow/black warning triangle decal
+  ctx.save();
+  ctx.beginPath();
+  ctx.moveTo(128, 72);
+  ctx.lineTo(176, 152);
+  ctx.lineTo(80, 152);
+  ctx.closePath();
+  ctx.fillStyle = PALETTE.deckLine;
+  ctx.fill();
+  ctx.lineWidth = 6;
+  ctx.strokeStyle = '#1a1f24';
+  ctx.stroke();
+  // Lightning bolt inside triangle
+  ctx.fillStyle = '#1a1f24';
+  ctx.beginPath();
+  ctx.moveTo(132, 92);
+  ctx.lineTo(116, 120);
+  ctx.lineTo(128, 120);
+  ctx.lineTo(122, 144);
+  ctx.lineTo(144, 114);
+  ctx.lineTo(131, 114);
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+
+  // Bottom ventilation louver slots
+  ctx.fillStyle = 'rgba(22,28,34,0.78)';
+  for (let i = 0; i < 6; i++) {
+    ctx.fillRect(46, 174 + i * 10, 164, 5);
+  }
+  // Light rust grime along bottom frame
+  const g = ctx.createLinearGradient(0, size * 0.78, 0, size);
+  g.addColorStop(0, 'rgba(92,50,28,0)');
+  g.addColorStop(1, 'rgba(92,50,28,0.36)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, size, size);
+  return c;
+}
+
 const GEN: Record<TextureKey, () => HTMLCanvasElement> = {
   deck: genDeck,
   deckRough: genDeckRough,
@@ -1170,6 +1538,13 @@ const GEN: Record<TextureKey, () => HTMLCanvasElement> = {
   skid: genSkid,
   ao: genAo,
   aoEdge: genAoEdge,
+  checker: genChecker,
+  checkerRough: genCheckerRough,
+  checkerNormal: genCheckerNormal,
+  steelFrame: genSteelFrame,
+  steelFrameNormal: genSteelFrameNormal,
+  kickplate: genKickplate,
+  elecBox: genElecBox,
 };
 
 const SRGB_KEYS: ReadonlySet<TextureKey> = new Set([
@@ -1188,6 +1563,10 @@ const SRGB_KEYS: ReadonlySet<TextureKey> = new Set([
   'stripe',
   'stencil',
   'skid',
+  'checker',
+  'steelFrame',
+  'kickplate',
+  'elecBox',
 ]);
 const DECK_REPEAT: ReadonlySet<TextureKey> = new Set([
   'deck',
