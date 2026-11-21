@@ -21,7 +21,17 @@ import { KeyboardMouseInput, mergeInputs } from './game/input';
 import { TouchControls } from './input/touch';
 import { WeaponRack } from './game/weapons';
 import { createEntity } from './game/entities';
-import { traceHit, falloffFactor, applyDamage, HEADSHOT_MULT, type Ray } from './game/damage';
+import {
+  traceHit,
+  falloffFactor,
+  applyDamage,
+  updatePlayerRegen,
+  PLAYER_MAX_HP,
+  LOW_HP_THRESHOLD,
+  CRITICAL_HP_THRESHOLD,
+  HEADSHOT_MULT,
+  type Ray,
+} from './game/damage';
 import { createMatch } from './game/match';
 import { EnemyManager, type Faction } from './game/ai';
 import { parseDifficulty, type DifficultyId } from './game/difficulty';
@@ -38,6 +48,7 @@ declare global {
       y: number;
       z: number;
       hp: number;
+      maxHp: number;
       ammo: number;
       mag: number;
       weapon: string;
@@ -55,7 +66,7 @@ declare global {
     };
     __sfx: { counts: Record<string, number>; muted: boolean; unlocked: boolean };
     __bgm: BgmTelemetry;
-    __fx: { hits: number; kills: number; flashOpacity: number; lowHpPulse: number };
+    __fx: { hits: number; kills: number; flashOpacity: number; lowHpPulse: number; desat: number };
     __anim: {
       reloadActive: boolean;
       reloadElapsedMs: number;
@@ -77,6 +88,7 @@ declare global {
       modelSource: string;
       modelLoaded: boolean;
       hp: number;
+      maxHp: number;
       ammo: number;
       shotsFired: number;
       hasLos: boolean;
@@ -173,7 +185,9 @@ let lastReloadStageSfx = 0;
 /** Accumulated delta-time simulation clock (ms) for frame-rate-independent weapon/reload timers. */
 let simNowMs = 0;
 
-const playerEnt = createEntity('player', player.position, 100, PLAYER_RADIUS, MOVE.eyeHeight);
+const playerEnt = createEntity('player', player.position, PLAYER_MAX_HP, PLAYER_RADIUS, MOVE.eyeHeight);
+let lastHurtSimMs = -1e9;
+let desatActive = false;
 const enemyMgr = new EnemyManager('normal');
 const enemyRenderer = new EnemyRenderer(engine.scene);
 
@@ -204,6 +218,11 @@ const startRound = (settings: { difficulty: DifficultyId; muted: boolean; musicE
   playerEnt.hp = playerEnt.maxHp;
   playerEnt.deadUntil = 0;
   playerEnt.invincibleUntil = 0;
+  lastHurtSimMs = -1e9;
+  if (desatActive) {
+    desatActive = false;
+    canvas.style.filter = '';
+  }
   playerDeathSimAt = -1;
   deathPanelShown = false;
   roundStartSimAt = simNowMs;
@@ -247,6 +266,11 @@ const menu = new Menu(document.body, {
     sfx.setGatlingMotor(0, false);
     playerEnt.alive = true;
     playerEnt.hp = playerEnt.maxHp;
+    lastHurtSimMs = -1e9;
+    if (desatActive) {
+      desatActive = false;
+      canvas.style.filter = '';
+    }
     playerDeathSimAt = -1;
     deathPanelShown = false;
     hud.setDeathVeil(0);
@@ -308,6 +332,7 @@ function aimDir(): Vec3 {
 function hurtPlayer(dmg: number, angleRad?: number): void {
   const now = performance.now();
   if (!playerEnt.alive || now < playerEnt.invincibleUntil) return;
+  if (dmg > 0) lastHurtSimMs = simNowMs;
   const killed = applyDamage(playerEnt, dmg, now);
   hud.hitFrom(angleRad ?? Math.random() * Math.PI * 2, now);
   sfx.play('hurt');
@@ -427,12 +452,25 @@ engine.onFrame = (dt) => {
         stepAcc = 0;
       }
 
-      // Low-HP heartbeat pulse when 0 < hp <= 30
-      if (playerEnt.hp > 0 && playerEnt.hp <= 30 && simNowMs - lastHeartbeatMs > 950) {
+      // Low-HP heartbeat pulse when 0 < hp < 40
+      if (playerEnt.hp > 0 && playerEnt.hp < LOW_HP_THRESHOLD && simNowMs - lastHeartbeatMs > 950) {
         lastHeartbeatMs = simNowMs;
         sfx.play('heartbeat', { volume: 0.75 });
       }
     }
+  }
+
+  // Out-of-combat player HP regen: starts 6s after last hit, 12 HP/s back to 200
+  const isRegenerating =
+    acting && playerEnt.alive
+      ? updatePlayerRegen(playerEnt, lastHurtSimMs, simNowMs, dt)
+      : false;
+
+  // Subtle screen desaturation when critical HP (< 20)
+  const wantsDesat = playerEnt.alive && playerEnt.hp > 0 && playerEnt.hp < CRITICAL_HP_THRESHOLD;
+  if (wantsDesat !== desatActive) {
+    desatActive = wantsDesat;
+    canvas.style.filter = wantsDesat ? 'saturate(0.48) contrast(1.04)' : '';
   }
   // Player death sequence: 0.6s fall-down camera → settlement panel (kills / survival / difficulty)
   let deathFallProgress = 0;
@@ -621,6 +659,7 @@ engine.onFrame = (dt) => {
   hud.update({
     hp: playerEnt.hp,
     maxHp: playerEnt.maxHp,
+    regenerating: isRegenerating,
     ammo: w.ammo,
     mag: w.spec.mag,
     reloading: w.reloading,
@@ -645,6 +684,7 @@ engine.onFrame = (dt) => {
   dbg.y = player.position.y;
   dbg.z = player.position.z;
   dbg.hp = playerEnt.hp;
+  dbg.maxHp = playerEnt.maxHp;
   dbg.ammo = w.ammo;
   dbg.mag = w.spec.mag;
   dbg.weapon = w.spec.id;
@@ -692,6 +732,7 @@ engine.onFrame = (dt) => {
       modelSource: enemyRenderer.modelSource,
       modelLoaded: enemyRenderer.isModelLoaded,
       hp: b.entity.hp,
+      maxHp: b.entity.maxHp,
       ammo: b.ammo,
       shotsFired: b.shotsFired,
       hasLos: b.hasLos,
@@ -711,6 +752,7 @@ const dbg = {
   y: sy,
   z: sz,
   hp: playerEnt.hp,
+  maxHp: playerEnt.maxHp,
   ammo: rack.current.ammo,
   mag: rack.current.spec.mag,
   weapon: rack.current.spec.id as string,
