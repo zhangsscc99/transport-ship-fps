@@ -66,7 +66,7 @@ export interface Collider {
     height: number,
     dt: number,
     wasOnGround: boolean,
-  ): { pos: Vec3; vel: Vec3; onGround: boolean; drowned: boolean };
+  ): { pos: Vec3; vel: Vec3; onGround: boolean; drowned: boolean; hitAirWall?: boolean };
   hits(x: number, y: number, z: number, r: number, h: number): boolean;
 }
 
@@ -85,8 +85,10 @@ export class Player {
   pitch = 0;
   crouch = false;
   onGround = true;
-  /** Set by the collider when the body leaves the ship / hits water. */
+  /** Set by the collider when the body falls below waterY. */
   drowned = false;
+  /** True on frames where the player capsule slid against a dock-edge air wall. */
+  hitAirWall = false;
 
   constructor(spawn: Vec3 = { x: 0, y: 0, z: 0 }, yaw = 0) {
     this.position = { ...spawn };
@@ -155,9 +157,11 @@ export class Player {
       this.velocity.y = res.vel.y;
       this.velocity.z = res.vel.z;
       this.onGround = res.onGround;
+      this.hitAirWall = Boolean(res.hitAirWall);
       if (res.drowned) this.drowned = true;
       return;
     }
+    this.hitAirWall = false;
 
     // --- fallback: bounds check + flat ground (slide along edges) ---
     const inside = world.isInside ?? (() => true);

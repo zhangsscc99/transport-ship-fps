@@ -189,6 +189,7 @@ export class Hud {
 
   private hurtEl: HTMLDivElement;
   private lowHpEl: HTMLDivElement;
+  private fallFadeEl: HTMLDivElement;
   private arcEl: HTMLDivElement;
   private killEl: HTMLDivElement;
   private muteBtn: HTMLDivElement;
@@ -358,6 +359,12 @@ export class Hud {
     this.hurtEl.dataset.fx = 'hurt';
     this.lowHpEl = div(`position:absolute;inset:0;background:${HURT_BG};opacity:0;pointer-events:none;`, this.root);
     this.lowHpEl.dataset.fx = 'lowhp';
+    this.fallFadeEl = div(
+      `position:absolute;inset:0;background:radial-gradient(ellipse 85% 75% at 50% 50%, rgba(4,8,12,0.92) 32%, #000000 100%);` +
+        `opacity:0;display:none;pointer-events:none;z-index:25;`,
+      this.root,
+    );
+    this.fallFadeEl.dataset.fx = 'fall-fade';
 
     this.arcEl = div(
       `position:absolute;left:50%;top:50%;width:44vmin;height:44vmin;` +
@@ -459,6 +466,20 @@ export class Hud {
     }
     this.swapBlurEl.style.display = 'block';
     this.swapBlurEl.style.opacity = `${Math.min(1, amount).toFixed(2)}`;
+  }
+
+  /** Black vignette fade [0..1] used during fall-respawn safety recovery. */
+  setFallFade(amount: number): void {
+    const a = Math.max(0, Math.min(1, amount));
+    if (a <= 0.005) {
+      if (this.fallFadeEl.style.display !== 'none') {
+        this.fallFadeEl.style.display = 'none';
+        this.fallFadeEl.style.opacity = '0';
+      }
+      return;
+    }
+    this.fallFadeEl.style.display = 'block';
+    this.fallFadeEl.style.opacity = a.toFixed(3);
   }
 
   setMuted(m: boolean): void {

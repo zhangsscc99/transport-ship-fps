@@ -54,8 +54,19 @@ function pipe(cx, cz, len) {
 }
 pipe(-30, 1, 32);
 pipe(30, -1, 32);
+var WALKABLE_POLYGON = [
+  { x: -27.8, z: -19.65 },
+  { x: 31.85, z: -19.65 },
+  { x: 31.85, z: 16.9 },
+  { x: 27.8, z: 16.9 },
+  { x: 27.8, z: 19.65 },
+  { x: -31.85, z: 19.65 },
+  { x: -31.85, z: -16.9 },
+  { x: -27.8, z: -16.9 }
+];
 var MAP = {
   bounds: { w: 64, d: 40 },
+  walkablePolygon: WALKABLE_POLYGON,
   boxes: BOXES,
   spawns: {
     teamA: [

@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 // src/game/collision.ts
 var PLAYER_RADIUS = 0.35;
 var STEP_HEIGHT = 0.35;
+var AIR_WALL_SLIDE_DAMP = 0.35;
 var EPS = 1e-4;
 var MAX_SUBSTEP = 0.15;
 var MAX_STEPS = 64;
@@ -16,14 +17,127 @@ function circleHitsRect(x, z, r, b) {
   const dz = z - qz;
   return dx * dx + dz * dz < r * r - EPS;
 }
+function pointInPolygon(x, z, poly) {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const xi = poly[i].x;
+    const zi = poly[i].z;
+    const xj = poly[j].x;
+    const zj = poly[j].z;
+    if (zi > z !== zj > z && x < (xj - xi) * (z - zi) / (zj - zi) + xi) {
+      inside = !inside;
+    }
+  }
+  return inside;
+}
+function closestOnSegment(x, z, ax, az, bx, bz) {
+  const abx = bx - ax;
+  const abz = bz - az;
+  const lenSq = abx * abx + abz * abz;
+  const t = lenSq > 1e-12 ? clamp(((x - ax) * abx + (z - az) * abz) / lenSq, 0, 1) : 0;
+  const qx = ax + abx * t;
+  const qz = az + abz * t;
+  const dx = x - qx;
+  const dz = z - qz;
+  return { qx, qz, t, distSq: dx * dx + dz * dz };
+}
+function defaultRectPolygon(bounds) {
+  const hw = bounds.w / 2 - 0.15;
+  const hd = bounds.d / 2 - 0.15;
+  return [
+    { x: -hw, z: -hd },
+    { x: hw, z: -hd },
+    { x: hw, z: hd },
+    { x: -hw, z: hd }
+  ];
+}
 var CollisionWorld = class {
-  constructor(boxes, bounds, waterY) {
+  constructor(boxes, bounds, waterY, polygon) {
     this.boxes = boxes;
     this.bounds = bounds;
     this.waterY = waterY;
+    this.polygon = polygon && polygon.length >= 3 ? polygon : defaultRectPolygon(bounds);
   }
+  polygon;
   insideBounds(x, z) {
     return Math.abs(x) <= this.bounds.w / 2 && Math.abs(z) <= this.bounds.d / 2;
+  }
+  /** True when a capsule of `radius` at (x,z) lies completely within the walkable polygon. */
+  isInsideWalkable(x, z, radius = PLAYER_RADIUS) {
+    if (!pointInPolygon(x, z, this.polygon)) return false;
+    const minDistSq = Math.max(0, radius - EPS) ** 2;
+    const n = this.polygon.length;
+    for (let i = 0; i < n; i++) {
+      const a = this.polygon[i];
+      const b = this.polygon[(i + 1) % n];
+      const c = closestOnSegment(x, z, a.x, a.z, b.x, b.z);
+      if (c.distSq < minDistSq) return false;
+    }
+    return true;
+  }
+  /**
+   * Constrain candidate `(x, z)` so a capsule of `radius` remains inside the
+   * CCW walkable polygon. Returns resolved `(x, z)`, unit inward push normal
+   * `(nx, nz)`, and `hit: true` when an air-wall boundary constrained motion.
+   */
+  constrainToPolygon(candX, candZ, radius) {
+    let x = candX;
+    let z = candZ;
+    let hit = false;
+    const poly = this.polygon;
+    const n = poly.length;
+    for (let iter = 0; iter < 4; iter++) {
+      const inside = pointInPolygon(x, z, poly);
+      let bestDistSq = Infinity;
+      let bestQx = x;
+      let bestQz = z;
+      let bestT = 0.5;
+      let bestNx = 0;
+      let bestNz = 0;
+      for (let i = 0; i < n; i++) {
+        const a = poly[i];
+        const b = poly[(i + 1) % n];
+        const seg = closestOnSegment(x, z, a.x, a.z, b.x, b.z);
+        if (seg.distSq < bestDistSq) {
+          bestDistSq = seg.distSq;
+          bestQx = seg.qx;
+          bestQz = seg.qz;
+          bestT = seg.t;
+          const ex = b.x - a.x;
+          const ez = b.z - a.z;
+          const el = Math.hypot(ex, ez) || 1;
+          bestNx = -ez / el;
+          bestNz = ex / el;
+        }
+      }
+      const dist = Math.sqrt(bestDistSq);
+      if (!inside) {
+        hit = true;
+        x = bestQx + bestNx * radius;
+        z = bestQz + bestNz * radius;
+      } else if (dist < radius - EPS) {
+        hit = true;
+        const push = radius - dist;
+        if (bestT > 1e-4 && bestT < 1 - 1e-4) {
+          x += bestNx * push;
+          z += bestNz * push;
+        } else if (dist > 1e-6) {
+          x += (x - bestQx) / dist * push;
+          z += (z - bestQz) / dist * push;
+        } else {
+          x += bestNx * push;
+          z += bestNz * push;
+        }
+      } else {
+        break;
+      }
+    }
+    if (!hit) return { x, z, nx: 0, nz: 0, hit: false };
+    const px = x - candX;
+    const pz = z - candZ;
+    const pl = Math.hypot(px, pz);
+    if (pl < 1e-7) return { x, z, nx: 0, nz: 0, hit: true };
+    return { x, z, nx: px / pl, nz: pz / pl, hit: true };
   }
   /**
    * Does a cylinder with feet at y and top at y+h overlap any box?
@@ -56,10 +170,11 @@ var CollisionWorld = class {
     return best;
   }
   /**
-   * Advance a cylinder by vel*dt with collision response.
+   * Advance a cylinder by vel*dt with box collision + walkable-polygon air walls.
    * `wasOnGround` gates auto-stepping (no stepping mid-air).
-   * Returns the resolved position/velocity; `drowned` when the body left
-   * the ship bounds or sank below waterY.
+   * Air walls project candidate positions onto the nearest inward edge normal,
+   * preserve wall sliding at 35% horizontal speed, and never block stairs/ramps.
+   * `drowned` only triggers as a fallback when `pos.y < waterY`.
    */
   move(pos, vel, radius, height, dt, wasOnGround) {
     const p = { x: pos.x, y: pos.y, z: pos.z };
@@ -70,7 +185,11 @@ var CollisionWorld = class {
     const scratch = [];
     let onGround = wasOnGround;
     let drowned = false;
+    let hitAirWall = false;
+    let airWallDamped = false;
     for (let i = 0; i < steps; i++) {
+      const prevX = p.x;
+      const prevZ = p.z;
       if (v.x !== 0) {
         const nx = p.x + v.x * h;
         this.blockers(nx, p.y, p.z, radius, height, scratch);
@@ -98,6 +217,42 @@ var CollisionWorld = class {
         } else {
           const face = v.z > 0 ? Math.min(...scratch.map((b) => b.z - b.d / 2)) : Math.max(...scratch.map((b) => b.z + b.d / 2));
           p.z = v.z > 0 ? Math.min(nz, face - radius) : Math.max(nz, face + radius);
+          v.z = 0;
+        }
+      }
+      const wall = this.constrainToPolygon(p.x, p.z, radius);
+      if (wall.hit) {
+        hitAirWall = true;
+        const slideDx = wall.x - prevX;
+        const slideDz = wall.z - prevZ;
+        if (!airWallDamped) {
+          airWallDamped = true;
+          const dampX = prevX + slideDx * AIR_WALL_SLIDE_DAMP;
+          const dampZ = prevZ + slideDz * AIR_WALL_SLIDE_DAMP;
+          const recheck = this.constrainToPolygon(dampX, dampZ, radius);
+          p.x = recheck.x;
+          p.z = recheck.z;
+          const vn = v.x * wall.nx + v.z * wall.nz;
+          if (vn < 0) {
+            v.x = (v.x - vn * wall.nx) * AIR_WALL_SLIDE_DAMP;
+            v.z = (v.z - vn * wall.nz) * AIR_WALL_SLIDE_DAMP;
+          } else {
+            v.x *= AIR_WALL_SLIDE_DAMP;
+            v.z *= AIR_WALL_SLIDE_DAMP;
+          }
+        } else {
+          p.x = wall.x;
+          p.z = wall.z;
+          const vn = v.x * wall.nx + v.z * wall.nz;
+          if (vn < 0) {
+            v.x -= vn * wall.nx;
+            v.z -= vn * wall.nz;
+          }
+        }
+        if (this.hits(p.x, p.y, p.z, radius, height)) {
+          p.x = prevX;
+          p.z = prevZ;
+          v.x = 0;
           v.z = 0;
         }
       }
@@ -133,12 +288,12 @@ var CollisionWorld = class {
         }
         onGround = false;
       }
-      if (!this.insideBounds(p.x, p.z) || p.y < this.waterY) {
+      if (p.y < this.waterY) {
         drowned = true;
         break;
       }
     }
-    return { pos: p, vel: v, onGround, drowned };
+    return { pos: p, vel: v, onGround, drowned, hitAirWall };
   }
 };
 
@@ -178,8 +333,10 @@ var Player = class {
   pitch = 0;
   crouch = false;
   onGround = true;
-  /** Set by the collider when the body leaves the ship / hits water. */
+  /** Set by the collider when the body falls below waterY. */
   drowned = false;
+  /** True on frames where the player capsule slid against a dock-edge air wall. */
+  hitAirWall = false;
   constructor(spawn = { x: 0, y: 0, z: 0 }, yaw = 0) {
     this.position = { ...spawn };
     this.velocity = { x: 0, y: 0, z: 0 };
@@ -235,9 +392,11 @@ var Player = class {
       this.velocity.y = res.vel.y;
       this.velocity.z = res.vel.z;
       this.onGround = res.onGround;
+      this.hitAirWall = Boolean(res.hitAirWall);
       if (res.drowned) this.drowned = true;
       return;
     }
+    this.hitAirWall = false;
     const inside = world2.isInside ?? (() => true);
     const p = this.position;
     let nx = p.x + this.velocity.x * dt;
@@ -323,8 +482,19 @@ function pipe(cx, cz, len) {
 }
 pipe(-30, 1, 32);
 pipe(30, -1, 32);
+var WALKABLE_POLYGON = [
+  { x: -27.8, z: -19.65 },
+  { x: 31.85, z: -19.65 },
+  { x: 31.85, z: 16.9 },
+  { x: 27.8, z: 16.9 },
+  { x: 27.8, z: 19.65 },
+  { x: -31.85, z: 19.65 },
+  { x: -31.85, z: -16.9 },
+  { x: -27.8, z: -16.9 }
+];
 var MAP = {
   bounds: { w: 64, d: 40 },
+  walkablePolygon: WALKABLE_POLYGON,
   boxes: BOXES,
   spawns: {
     teamA: [
@@ -355,9 +525,153 @@ var MAP = {
   ]
 };
 
+// src/game/damage.ts
+var EPS2 = 1e-6;
+var HEADSHOT_ZONE = 0.85;
+function rayBoxT(o, d, b) {
+  let tmin = 0;
+  let tmax = Infinity;
+  const axes = [
+    [o.x, d.x, b.x - b.w / 2, b.x + b.w / 2],
+    [o.y, d.y, b.y, b.y + b.h],
+    [o.z, d.z, b.z - b.d / 2, b.z + b.d / 2]
+  ];
+  for (const [ov, dv, lo, hi] of axes) {
+    if (Math.abs(dv) < EPS2) {
+      if (ov <= lo || ov >= hi) return Infinity;
+      continue;
+    }
+    let t1 = (lo - ov) / dv;
+    let t2 = (hi - ov) / dv;
+    if (t1 > t2) [t1, t2] = [t2, t1];
+    if (t1 > tmin) tmin = t1;
+    if (t2 < tmax) tmax = t2;
+    if (tmin > tmax) return Infinity;
+  }
+  return tmin > EPS2 ? tmin : tmax > EPS2 ? 0 : Infinity;
+}
+function rayCylinderT(o, d, pos, r, height) {
+  const ox = o.x - pos.x;
+  const oz = o.z - pos.z;
+  const y0 = pos.y;
+  const y1 = pos.y + height;
+  let best = Infinity;
+  const a = d.x * d.x + d.z * d.z;
+  if (a > EPS2) {
+    const b = 2 * (ox * d.x + oz * d.z);
+    const c = ox * ox + oz * oz - r * r;
+    const disc = b * b - 4 * a * c;
+    if (disc >= 0) {
+      const sq = Math.sqrt(disc);
+      for (const t of [(-b - sq) / (2 * a), (-b + sq) / (2 * a)]) {
+        if (t <= EPS2) continue;
+        const y = o.y + t * d.y;
+        if (y >= y0 && y <= y1 && t < best) best = t;
+      }
+    }
+  }
+  if (Math.abs(d.y) > EPS2) {
+    for (const cap of [y0, y1]) {
+      const t = (cap - o.y) / d.y;
+      if (t <= EPS2 || t >= best) continue;
+      const x = o.x + t * d.x - pos.x;
+      const z = o.z + t * d.z - pos.z;
+      if (x * x + z * z <= r * r) best = t;
+    }
+  }
+  return best;
+}
+var at = (o, d, t) => ({
+  x: o.x + t * d.x,
+  y: o.y + t * d.y,
+  z: o.z + t * d.z
+});
+function boxFaceNormal(p, b) {
+  const dxMin = Math.abs(p.x - (b.x - b.w / 2));
+  const dxMax = Math.abs(p.x - (b.x + b.w / 2));
+  const dyMin = Math.abs(p.y - b.y);
+  const dyMax = Math.abs(p.y - (b.y + b.h));
+  const dzMin = Math.abs(p.z - (b.z - b.d / 2));
+  const dzMax = Math.abs(p.z - (b.z + b.d / 2));
+  let best = dxMin;
+  let nx = -1, ny = 0, nz = 0;
+  if (dxMax < best) {
+    best = dxMax;
+    nx = 1;
+    ny = 0;
+    nz = 0;
+  }
+  if (dyMin < best) {
+    best = dyMin;
+    nx = 0;
+    ny = -1;
+    nz = 0;
+  }
+  if (dyMax < best) {
+    best = dyMax;
+    nx = 0;
+    ny = 1;
+    nz = 0;
+  }
+  if (dzMin < best) {
+    best = dzMin;
+    nx = 0;
+    ny = 0;
+    nz = -1;
+  }
+  if (dzMax < best) {
+    nx = 0;
+    ny = 0;
+    nz = 1;
+  }
+  return { x: nx, y: ny, z: nz };
+}
+function traceHit(ray, boxes, entities) {
+  let boxT = Infinity;
+  let hitBox = null;
+  for (const b of boxes) {
+    const t = rayBoxT(ray.origin, ray.dir, b);
+    if (t < boxT) {
+      boxT = t;
+      hitBox = b;
+    }
+  }
+  let entT = boxT;
+  let hitEnt = null;
+  for (const e of entities) {
+    if (!e.alive) continue;
+    const t = rayCylinderT(ray.origin, ray.dir, e.pos, e.radius, e.height);
+    if (t < entT) {
+      entT = t;
+      hitEnt = e;
+    }
+  }
+  if (hitEnt) {
+    const point = at(ray.origin, ray.dir, entT);
+    return {
+      kind: "entity",
+      entity: hitEnt,
+      point,
+      dist: entT,
+      headshot: point.y - hitEnt.pos.y > hitEnt.height * HEADSHOT_ZONE
+    };
+  }
+  if (hitBox) {
+    const point = at(ray.origin, ray.dir, boxT);
+    return {
+      kind: "box",
+      box: hitBox,
+      point,
+      normal: boxFaceNormal(point, hitBox),
+      dist: boxT
+    };
+  }
+  return null;
+}
+
 // src/game/collision.test.ts
 var DT = 1 / 120;
-var world = new CollisionWorld(MAP.boxes, MAP.bounds, MAP.waterY);
+var world = new CollisionWorld(MAP.boxes, MAP.bounds, MAP.waterY, MAP.walkablePolygon);
 var WQ = { collider: world };
 function input(patch = {}) {
   return { ...emptyInput(), ...patch };
@@ -400,10 +714,40 @@ test("jumping under a pipe roof bumps the head and lands back", () => {
   assert.equal(p.position.y, 0);
   assert.ok(p.onGround);
 });
-test("leaving the ship bounds drowns", () => {
-  const p = new Player({ x: 31, y: 0, z: 19 });
-  step(p, input({ moveX: 1 }), 1);
-  assert.equal(p.drowned, true);
+test("dock-edge air wall blocks falling into sea and keeps capsule in walkable polygon", () => {
+  const p = new Player({ x: -10, y: 0, z: 18 });
+  step(p, input({ moveZ: -1 }), 3);
+  assert.equal(p.drowned, false);
+  assert.ok(p.position.y > -0.5, `fell off dock: y=${p.position.y}`);
+  assert.ok(world.isInsideWalkable(p.position.x, p.position.z, PLAYER_RADIUS), "escaped walkable polygon");
+  assert.equal(p.hitAirWall, true);
+  const ps = new Player({ x: 0, y: 0, z: 19.25 });
+  step(ps, input({ moveZ: -1, moveX: 1 }), 0.6);
+  assert.ok(ps.position.x > 0.3, `failed to slide along air wall (x=${ps.position.x})`);
+  assert.ok(
+    Math.hypot(ps.velocity.x, ps.velocity.z) <= MOVE.walkSpeed * AIR_WALL_SLIDE_DAMP + 0.05,
+    `slide speed not attenuated: ${Math.hypot(ps.velocity.x, ps.velocity.z)}`
+  );
+  assert.ok(world.isInsideWalkable(ps.position.x, ps.position.z, PLAYER_RADIUS));
+});
+test("walking down tower stairs from platform edge is NOT blocked by air walls", () => {
+  const p = new Player({ x: -24.5, y: 3.3, z: 14 });
+  let everHitWall = false;
+  for (let i = 0; i < Math.round(3 / DT); i++) {
+    p.update(DT, input({ moveX: 1 }), WQ);
+    if (p.hitAirWall) everHitWall = true;
+  }
+  assert.equal(everHitWall, false, "air wall blocked stair descent");
+  assert.ok(p.position.x > -18, `did not clear stairs: x=${p.position.x}`);
+  assert.ok(Math.abs(p.position.y) < 0.05, `did not reach deck: y=${p.position.y}`);
+});
+test("air wall does NOT block bullets (rays pass freely out over the sea)", () => {
+  const hit = traceHit(
+    { origin: { x: -10, y: 1.5, z: 18 }, dir: { x: 0, y: 0, z: 1 } },
+    MAP.boxes,
+    []
+  );
+  assert.equal(hit, null, "bullet should pass over dock edge without hitting air wall");
 });
 test("sinking below waterY drowns (direct move call)", () => {
   const res = world.move(

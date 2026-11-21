@@ -1,11 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Player, MOVE, emptyInput, type InputState, type Vec3 } from './player.ts';
-import { CollisionWorld, PLAYER_RADIUS } from './collision.ts';
+import { CollisionWorld, PLAYER_RADIUS, AIR_WALL_SLIDE_DAMP } from './collision.ts';
 import { MAP, type Box } from './map.ts';
+import { traceHit } from './damage.ts';
 
 const DT = 1 / 120;
-const world = new CollisionWorld(MAP.boxes, MAP.bounds, MAP.waterY);
+const world = new CollisionWorld(MAP.boxes, MAP.bounds, MAP.waterY, MAP.walkablePolygon);
 const WQ = { collider: world };
 
 function input(patch: Partial<InputState> = {}): InputState {
@@ -59,10 +60,46 @@ test('jumping under a pipe roof bumps the head and lands back', () => {
   assert.ok(p.onGround);
 });
 
-test('leaving the ship bounds drowns', () => {
-  const p = new Player({ x: 31, y: 0, z: 19 }); // clear of the east pipe (z∈[-17,15])
-  step(p, input({ moveX: 1 }), 1.0);
-  assert.equal(p.drowned, true);
+test('dock-edge air wall blocks falling into sea and keeps capsule in walkable polygon', () => {
+  // Walk straight toward +Z sea edge (mooring bay gap x=-10 where there is no visual railing)
+  const p = new Player({ x: -10, y: 0, z: 18 });
+  step(p, input({ moveZ: -1 }), 3.0); // yaw=0, moveZ=-1 moves +Z toward sea
+  assert.equal(p.drowned, false);
+  assert.ok(p.position.y > -0.5, `fell off dock: y=${p.position.y}`);
+  assert.ok(world.isInsideWalkable(p.position.x, p.position.z, PLAYER_RADIUS), 'escaped walkable polygon');
+  assert.equal(p.hitAirWall, true);
+
+  // Diagonal motion into air wall slides along the edge at ~35% horizontal speed (no sticking)
+  const ps = new Player({ x: 0, y: 0, z: 19.25 });
+  step(ps, input({ moveZ: -1, moveX: 1 }), 0.6);
+  assert.ok(ps.position.x > 0.3, `failed to slide along air wall (x=${ps.position.x})`);
+  assert.ok(
+    Math.hypot(ps.velocity.x, ps.velocity.z) <= MOVE.walkSpeed * AIR_WALL_SLIDE_DAMP + 0.05,
+    `slide speed not attenuated: ${Math.hypot(ps.velocity.x, ps.velocity.z)}`,
+  );
+  assert.ok(world.isInsideWalkable(ps.position.x, ps.position.z, PLAYER_RADIUS));
+});
+
+test('walking down tower stairs from platform edge is NOT blocked by air walls', () => {
+  // Start on (-26, 14) tower platform top (y=3.3), walk +X down the stairs toward deck center
+  const p = new Player({ x: -24.5, y: 3.3, z: 14 });
+  let everHitWall = false;
+  for (let i = 0; i < Math.round(3.0 / DT); i++) {
+    p.update(DT, input({ moveX: 1 }), WQ);
+    if (p.hitAirWall) everHitWall = true;
+  }
+  assert.equal(everHitWall, false, 'air wall blocked stair descent');
+  assert.ok(p.position.x > -18, `did not clear stairs: x=${p.position.x}`);
+  assert.ok(Math.abs(p.position.y) < 0.05, `did not reach deck: y=${p.position.y}`);
+});
+
+test('air wall does NOT block bullets (rays pass freely out over the sea)', () => {
+  const hit = traceHit(
+    { origin: { x: -10, y: 1.5, z: 18 }, dir: { x: 0, y: 0, z: 1 } },
+    MAP.boxes,
+    [],
+  );
+  assert.equal(hit, null, 'bullet should pass over dock edge without hitting air wall');
 });
 
 test('sinking below waterY drowns (direct move call)', () => {

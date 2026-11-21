@@ -12,6 +12,7 @@ import { updateWater } from './render/materials';
 import { PlayerCamera } from './render/camera';
 import { WeaponView } from './render/weapon';
 import { WorldVfx, type VfxTelemetry } from './render/vfx';
+import { easeInOutCubic } from './render/tween';
 import { Hud } from './render/hud';
 import { Player, MOVE, type Vec3 } from './game/player';
 import { MAP, spawnPoint } from './game/map';
@@ -56,6 +57,7 @@ declare global {
     __test: {
       hurt(dmg: number): void;
       teleport(x: number, z: number, yawDeg: number, pitchDeg: number, y?: number): void;
+      isInsideWalkable(x: number, z: number): boolean;
     };
     __match: {
       phase: string;
@@ -84,9 +86,15 @@ const lights = addLights(engine.scene);
 buildMap(engine.scene);
 setAnisotropyCap(engine.renderer.capabilities.getMaxAnisotropy());
 
-const world = new CollisionWorld(MAP.boxes, MAP.bounds, MAP.waterY);
+const world = new CollisionWorld(MAP.boxes, MAP.bounds, MAP.waterY, MAP.walkablePolygon);
 const [sx, sy, sz] = spawnPoint('A', 0);
 const player = new Player({ x: sx, y: sy, z: sz });
+const lastSafePos: Vec3 = { x: sx, y: sy, z: sz };
+let fallRespawnPhase: 'none' | 'fadeIn' | 'fadeOut' = 'none';
+let fallRespawnElapsed = 0;
+const FALL_FADE_IN_SEC = 0.4;
+const FALL_FADE_OUT_SEC = 0.3;
+const FALL_INVINCIBLE_MS = 1000;
 const kb = new KeyboardMouseInput(canvas);
 const touch = new TouchControls(document.body);
 const view = new PlayerCamera(window.innerWidth / window.innerHeight);
@@ -139,8 +147,15 @@ const menu = new Menu(document.body, {
     player.velocity.y = 0;
     player.velocity.z = 0;
     player.drowned = false;
+    player.hitAirWall = false;
     player.yaw = 0;
     player.pitch = 0;
+    lastSafePos.x = rx;
+    lastSafePos.y = ry;
+    lastSafePos.z = rz;
+    fallRespawnPhase = 'none';
+    fallRespawnElapsed = 0;
+    hud.setFallFade(0);
     view.snap(player);
     rack.index = 0;
     rack.resetSwap();
@@ -201,19 +216,89 @@ engine.onFrame = (dt) => {
   }
 
   if (acting && playerEnt.alive) {
-    player.update(dt, inp, { collider: world });
-    if (player.drowned && playerEnt.alive) hurtPlayer(9999, Math.PI);
+    // Fallback safety recovery if player ever drops below y < -2:
+    // 0.4s black vignette fade-in → teleport to last safe grounded point
+    // (or spawn), reset velocity, interrupt reload ONLY, 1s invincibility → 0.3s fade-out.
+    if (fallRespawnPhase === 'none' && player.position.y < MAP.waterY) {
+      fallRespawnPhase = 'fadeIn';
+      fallRespawnElapsed = 0;
+      player.velocity.x = 0;
+      player.velocity.y = 0;
+      player.velocity.z = 0;
+      player.drowned = false;
+      rack.current.cancelReload();
+      playerEnt.invincibleUntil = Math.max(playerEnt.invincibleUntil, now + FALL_INVINCIBLE_MS);
+    }
 
-    // footsteps — throttled by distance travelled, so interval follows speed
-    const hSpeed = Math.hypot(player.velocity.x, player.velocity.z);
-    if (player.onGround && hSpeed > 0.5) {
-      stepAcc += hSpeed * dt;
-      if (stepAcc >= STEP_STRIDE) {
-        stepAcc = 0;
-        sfx.play('footstep');
+    if (fallRespawnPhase === 'fadeIn') {
+      fallRespawnElapsed += dt;
+      hud.setFallFade(easeInOutCubic(Math.min(1, fallRespawnElapsed / FALL_FADE_IN_SEC)));
+      if (fallRespawnElapsed >= FALL_FADE_IN_SEC) {
+        const safeOk =
+          lastSafePos.y >= -0.05 &&
+          world.isInsideWalkable(lastSafePos.x, lastSafePos.z, PLAYER_RADIUS) &&
+          !world.hits(lastSafePos.x, lastSafePos.y, lastSafePos.z, PLAYER_RADIUS, MOVE.eyeHeight);
+        const [fx, fy, fz] = safeOk
+          ? [lastSafePos.x, lastSafePos.y, lastSafePos.z]
+          : spawnPoint('A', 0);
+        player.position.x = fx;
+        player.position.y = fy;
+        player.position.z = fz;
+        player.velocity.x = 0;
+        player.velocity.y = 0;
+        player.velocity.z = 0;
+        player.onGround = true;
+        player.drowned = false;
+        player.hitAirWall = false;
+        rack.current.cancelReload();
+        playerEnt.invincibleUntil = Math.max(playerEnt.invincibleUntil, now + FALL_INVINCIBLE_MS);
+        view.snap(player);
+        fallRespawnPhase = 'fadeOut';
+        fallRespawnElapsed = 0;
       }
     } else {
-      stepAcc = 0;
+      if (fallRespawnPhase === 'fadeOut') {
+        fallRespawnElapsed += dt;
+        const remain = 1 - easeInOutCubic(Math.min(1, fallRespawnElapsed / FALL_FADE_OUT_SEC));
+        hud.setFallFade(remain);
+        if (fallRespawnElapsed >= FALL_FADE_OUT_SEC) {
+          fallRespawnPhase = 'none';
+          hud.setFallFade(0);
+        }
+      }
+
+      player.update(dt, inp, { collider: world });
+      if (player.hitAirWall) view.triggerWallBump();
+
+      // Record latest valid grounded position for fall-respawn fallback
+      if (
+        player.onGround &&
+        player.position.y >= -0.05 &&
+        world.isInsideWalkable(player.position.x, player.position.z, PLAYER_RADIUS) &&
+        !world.hits(
+          player.position.x,
+          player.position.y,
+          player.position.z,
+          PLAYER_RADIUS,
+          MOVE.eyeHeight,
+        )
+      ) {
+        lastSafePos.x = player.position.x;
+        lastSafePos.y = player.position.y;
+        lastSafePos.z = player.position.z;
+      }
+
+      // footsteps — throttled by distance travelled, so interval follows speed
+      const hSpeed = Math.hypot(player.velocity.x, player.velocity.z);
+      if (player.onGround && hSpeed > 0.5) {
+        stepAcc += hSpeed * dt;
+        if (stepAcc >= STEP_STRIDE) {
+          stepAcc = 0;
+          sfx.play('footstep');
+        }
+      } else {
+        stepAcc = 0;
+      }
     }
   }
   if (acting && !playerEnt.alive) {
@@ -393,13 +478,14 @@ window.__test = {
     if (y !== undefined) {
       player.position.y = y;
       player.velocity.y = 0;
-      player.onGround = true;
+      player.onGround = y >= -0.05;
     }
     player.position.z = z;
     player.yaw = (yawDeg * Math.PI) / 180;
     player.pitch = (pitchDeg * Math.PI) / 180;
     view.snap(player);
   },
+  isInsideWalkable: (x: number, z: number) => world.isInsideWalkable(x, z, PLAYER_RADIUS),
 };
 const mdbg = {
   phase: 'menu',

@@ -41,8 +41,10 @@ var Player = class {
   pitch = 0;
   crouch = false;
   onGround = true;
-  /** Set by the collider when the body leaves the ship / hits water. */
+  /** Set by the collider when the body falls below waterY. */
   drowned = false;
+  /** True on frames where the player capsule slid against a dock-edge air wall. */
+  hitAirWall = false;
   constructor(spawn = { x: 0, y: 0, z: 0 }, yaw = 0) {
     this.position = { ...spawn };
     this.velocity = { x: 0, y: 0, z: 0 };
@@ -98,9 +100,11 @@ var Player = class {
       this.velocity.y = res.vel.y;
       this.velocity.z = res.vel.z;
       this.onGround = res.onGround;
+      this.hitAirWall = Boolean(res.hitAirWall);
       if (res.drowned) this.drowned = true;
       return;
     }
+    this.hitAirWall = false;
     const inside = world.isInside ?? (() => true);
     const p = this.position;
     let nx = p.x + this.velocity.x * dt;
@@ -186,8 +190,19 @@ function pipe(cx, cz, len) {
 }
 pipe(-30, 1, 32);
 pipe(30, -1, 32);
+var WALKABLE_POLYGON = [
+  { x: -27.8, z: -19.65 },
+  { x: 31.85, z: -19.65 },
+  { x: 31.85, z: 16.9 },
+  { x: 27.8, z: 16.9 },
+  { x: 27.8, z: 19.65 },
+  { x: -31.85, z: 19.65 },
+  { x: -31.85, z: -16.9 },
+  { x: -27.8, z: -16.9 }
+];
 var MAP = {
   bounds: { w: 64, d: 40 },
+  walkablePolygon: WALKABLE_POLYGON,
   boxes: BOXES,
   spawns: {
     teamA: [

@@ -8,6 +8,11 @@
 //   - Deck top is y=0; the layout is 180°-rotation symmetric: team A spawns
 //     at +z, team B at -z, and every structure at (x,z) has a mirror at (-x,-z).
 
+export interface Vec2 {
+  x: number;
+  z: number;
+}
+
 export interface Box {
   x: number;
   y: number;
@@ -99,8 +104,26 @@ function pipe(cx: number, cz: number, len: number): void {
 pipe(-30, 1, 32); // interior x∈[-30.9,-29.1], open ends z=-15 & z=17
 pipe(30, -1, 32); // mirrored: interior x∈[29.1,30.9], ends z=15 & z=-17
 
+/**
+ * CCW walkable deck polygon in XZ (inset cleanly inside the 64×40m dock edges,
+ * mooring rails, bow/stern crane bases, and corner visual containers).
+ * Air walls enforce player capsule (r=0.35m) containment within this polygon
+ * without entering MAP.boxes, so bullets and raycasts pass freely over water.
+ */
+export const WALKABLE_POLYGON: readonly Vec2[] = [
+  { x: -27.8, z: -19.65 },
+  { x: 31.85, z: -19.65 },
+  { x: 31.85, z: 16.9 },
+  { x: 27.8, z: 16.9 },
+  { x: 27.8, z: 19.65 },
+  { x: -31.85, z: 19.65 },
+  { x: -31.85, z: -16.9 },
+  { x: -27.8, z: -16.9 },
+];
+
 export const MAP = {
   bounds: { w: 64, d: 40 },
+  walkablePolygon: WALKABLE_POLYGON,
   boxes: BOXES,
   spawns: {
     teamA: [
