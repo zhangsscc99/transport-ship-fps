@@ -85,6 +85,9 @@ declare global {
       id: string;
       faction: Faction;
       state: string;
+      alive: boolean;
+      advancing: boolean;
+      dist: number;
       anim: string;
       clip: string;
       clipsPlayed: string[];
@@ -102,6 +105,12 @@ declare global {
       z: number;
       tris: number;
     }[];
+    __enemiesSummary: () => {
+      minDist: number;
+      engaged: number;
+      shotsFired: number;
+      lastContactAgoMs: number;
+    };
     __test: {
       hurt(dmg: number): void;
       teleport(x: number, z: number, yawDeg: number, pitchDeg: number, y?: number): void;
@@ -754,10 +763,14 @@ engine.onFrame = (dt) => {
 
   enemiesDbg.length = 0;
   for (const b of enemyMgr.bots) {
+    const dist = Math.hypot(b.entity.pos.x - player.position.x, b.entity.pos.z - player.position.z);
     enemiesDbg.push({
       id: b.id,
       faction: b.faction,
       state: b.state,
+      alive: b.entity.alive,
+      advancing: b.advancing,
+      dist,
       anim: b.anim,
       clip: enemyRenderer.getActiveClip(b.id),
       clipsPlayed: enemyRenderer.getClipsPlayed(b.id),
@@ -830,6 +843,26 @@ window.__vfx = vfxDbg;
 window.__hands = weaponView.handsTelemetry;
 const enemiesDbg: Window['__enemies'] = [];
 window.__enemies = enemiesDbg;
+window.__enemiesSummary = () => {
+  let minDist = Infinity;
+  let engaged = 0;
+  let maxLastContactAt = -Infinity;
+  for (const b of enemyMgr.bots) {
+    if (!b.entity.alive || b.state === 'DEAD') continue;
+    const d = Math.hypot(b.entity.pos.x - player.position.x, b.entity.pos.z - player.position.z);
+    if (d < minDist) minDist = d;
+    if (b.state === 'ENGAGE') engaged++;
+    if (b.lastContactAt > maxLastContactAt) maxLastContactAt = b.lastContactAt;
+  }
+  const lastContactAgoMs =
+    maxLastContactAt > -Infinity ? Math.max(0, Math.round(simNowMs - maxLastContactAt)) : Infinity;
+  return {
+    minDist,
+    engaged,
+    shotsFired: enemyMgr.totalShotsFired,
+    lastContactAgoMs,
+  };
+};
 window.__enemyTags = enemyTags.telemetry;
 window.__test = {
   hurt: (dmg: number) => hurtPlayer(dmg),
