@@ -37,16 +37,17 @@ const MAT: Record<MatKey, THREE.Material> & {
   flashCore: THREE.MeshBasicMaterial;
 } = {
   metal: (() => {
-    const m = std('gunMetal', 0.14); // receiver / barrel / rail / sights / muzzle
-    m.metalness = 0.62; // let the fill light's diffuse term actually land
-    m.roughness = 0.42;
+    const m = std('gunMetal', 0.10); // receiver / barrel / rail / sights / muzzle
+    m.metalness = 0.82; // crisp metallic sky IBL reflection
+    m.roughness = 0.30;
+    m.envMapIntensity = 1.65;
     return m;
   })(),
-  poly: std('gunPoly', 0.16), // handguard / stock / grip / pump
-  mag: std('gunMag', 0.15), // magazine + small dark fittings
+  poly: std('gunPoly', 0.12), // handguard / stock / grip / pump
+  mag: std('gunMag', 0.12), // magazine + small dark fittings
   edge: getMaterial('gunEdge'), // 1–2px highlight strip along the top edge
-  glove: std('glove', 0.16), // hands — a step brighter than the gun
-  cuff: std('rail', 0.10), // wrist cuff — small bright accent
+  glove: std('glove', 0.12), // hands — a step brighter than the gun
+  cuff: std('rail', 0.08), // wrist cuff — small bright accent
   flash: new THREE.MeshBasicMaterial({
     color: PALETTE.accent,
     transparent: true,

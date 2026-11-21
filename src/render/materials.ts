@@ -12,8 +12,11 @@ export type MaterialKind =
   | 'tower'
   | 'rail'
   | 'pipe'
+  | 'bollard'
+  | 'mast'
   | 'paint'
   | 'wood'
+  | 'crate'
   | 'crane'
   | 'barrel'
   | 'grate'
@@ -48,18 +51,21 @@ export function updateWater(tSec: number): void {
 }
 
 function buildDeck(): THREE.MeshStandardMaterial {
+  // Wet steel deck: roughnessMap averages ~0.34 (in [0.25, 0.40]),
+  // envMapIntensity = 1.25 so the rain-slicked deck reflects the sky dome.
   const m = new THREE.MeshStandardMaterial({
     map: getTexture('deck'),
     roughnessMap: getTexture('deckRough'),
     normalMap: getTexture('deckNormal'),
-    normalScale: new THREE.Vector2(0.7, 0.7),
-    roughness: 1,
-    metalness: 0.15,
+    normalScale: new THREE.Vector2(0.45, 0.45),
+    roughness: 1.0,
+    metalness: 0.28,
+    envMapIntensity: 1.25,
   });
-  // Wet-deck patch: uWet scales a puddle mask that locally drops roughness and
-  // adds metalness — standing water without a second material or render pass.
+  // Wet-deck patch: uWet smoothly drops local roughness toward 0.12 and nudges
+  // specular response on pooled patches without harsh edges.
   m.onBeforeCompile = (shader) => {
-    shader.uniforms.uWet = { value: 0.6 };
+    shader.uniforms.uWet = { value: 0.65 };
     shader.uniforms.uPuddle = { value: getTexture('puddle') };
     shader.fragmentShader = shader.fragmentShader
       .replace(
@@ -69,16 +75,16 @@ function buildDeck(): THREE.MeshStandardMaterial {
       .replace(
         '#include <roughnessmap_fragment>',
         `#include <roughnessmap_fragment>
-	float wetDeck = uWet * smoothstep(0.35, 0.75, texture2D(uPuddle, vMapUv).r);
-	roughnessFactor = mix(roughnessFactor, 0.1, wetDeck);`,
+	float wetDeck = uWet * smoothstep(0.32, 0.78, texture2D(uPuddle, vMapUv).r);
+	roughnessFactor = mix(roughnessFactor, 0.12, wetDeck);`,
       )
       .replace(
         '#include <metalnessmap_fragment>',
         `#include <metalnessmap_fragment>
-	metalnessFactor = mix(metalnessFactor, 0.35, wetDeck);`,
+	metalnessFactor = mix(metalnessFactor, 0.42, wetDeck);`,
       );
   };
-  m.customProgramCacheKey = () => 'wet-deck'; // distinct program from unpatched standards
+  m.customProgramCacheKey = () => 'wet-deck-v2';
   return m;
 }
 
@@ -172,140 +178,189 @@ diffuseColor.rgb = mix( diffuseColor.rgb, vec3( 0.30, 0.15, 0.05 ) * 0.95, rustM
       return m;
     }
     case 'tower':
+      // Weathered poured concrete: roughness 0.90 (within 0.85–0.95)
       return new THREE.MeshStandardMaterial({
         color: PALETTE.tower[0],
-        map: getTexture('metal'),
-        roughness: 0.85,
-        metalness: 0.2,
+        map: getTexture('concrete'),
+        roughness: 0.9,
+        metalness: 0.02,
+        envMapIntensity: 0.85,
       });
     case 'rail':
+      // Galvanized steel guard rails: metallic IBL catches sky highlights
       return new THREE.MeshStandardMaterial({
         color: PALETTE.tower[1],
         map: getTexture('metal'),
-        roughness: 0.8,
-        metalness: 0.3,
+        roughness: 0.28,
+        metalness: 0.84,
+        envMapIntensity: 1.45,
       });
     case 'pipe':
+      // Industrial steel pipe corridors & pipe bundles
       return new THREE.MeshStandardMaterial({
         color: PALETTE.pipe,
         map: getTexture('metal'),
-        roughness: 0.9,
-        metalness: 0.2,
+        roughness: 0.3,
+        metalness: 0.82,
+        envMapIntensity: 1.4,
+      });
+    case 'bollard':
+      // Heavy cast-steel mooring bollards
+      return new THREE.MeshStandardMaterial({
+        color: PALETTE.pipe,
+        map: getTexture('metal'),
+        roughness: 0.28,
+        metalness: 0.86,
+        envMapIntensity: 1.5,
+      });
+    case 'mast':
+      // On-ship steel masts & stern deck crane: lit metallic PBR (not flat silhouette)
+      return new THREE.MeshStandardMaterial({
+        color: PALETTE.tower[1],
+        map: getTexture('metal'),
+        roughness: 0.3,
+        metalness: 0.85,
+        envMapIntensity: 1.5,
       });
     case 'paint':
-      // deck markings — slight emissive so the warning lines stay readable in gloom
+      // Scuffed deck warning lines — textured, slight emissive for readability
       return new THREE.MeshStandardMaterial({
         color: PALETTE.deckLine,
+        map: getTexture('paint'),
         emissive: PALETTE.deckLine,
-        emissiveIntensity: 0.35,
-        roughness: 0.6,
-        metalness: 0,
+        emissiveIntensity: 0.22,
+        roughness: 0.52,
+        metalness: 0.04,
+        envMapIntensity: 0.85,
       });
     case 'wood':
       return new THREE.MeshStandardMaterial({
         color: PALETTE.wood,
-        map: getTexture('metal'),
-        roughness: 0.95,
-        metalness: 0,
+        map: getTexture('wood'),
+        roughness: 0.86,
+        metalness: 0.0,
+        envMapIntensity: 0.7,
+      });
+    case 'crate':
+      return new THREE.MeshStandardMaterial({
+        color: PALETTE.wood,
+        map: getTexture('crate'),
+        roughness: 0.84,
+        metalness: 0.0,
+        envMapIntensity: 0.72,
       });
     case 'crane':
-      // distant silhouette — unlit on purpose, fog still fades it into the sky
-      return new THREE.MeshBasicMaterial({ color: PALETTE.crane });
-    case 'barrel':
-      // oil drums — white base so per-instance rust/paint tints stay true
+      // Distant harbour cranes & freighters — subtly textured, naturally faded by FogExp2
       return new THREE.MeshStandardMaterial({
-        map: getTexture('metal'),
-        roughness: 0.55,
-        metalness: 0.45,
+        color: PALETTE.crane,
+        map: getTexture('craneTex'),
+        roughness: 0.82,
+        metalness: 0.25,
+        envMapIntensity: 0.65,
+      });
+    case 'barrel':
+      // Steel oil drums — rolling-hoop texture, white base tinted per-instance
+      return new THREE.MeshStandardMaterial({
+        map: getTexture('barrel'),
+        roughness: 0.32,
+        metalness: 0.8,
+        envMapIntensity: 1.4,
       });
     case 'grate':
       return new THREE.MeshStandardMaterial({
         map: getTexture('grate'),
-        roughness: 0.9,
-        metalness: 0.25,
+        roughness: 0.34,
+        metalness: 0.78,
+        envMapIntensity: 1.3,
       });
     case 'ao':
-      // fake contact shadow — unlit alpha blob, never writes depth
+      // Soft contact shadow under grounded colliders
       return new THREE.MeshBasicMaterial({
         map: getTexture('ao'),
         transparent: true,
         depthWrite: false,
       });
     case 'aoEdge':
-      // crisp contact-shadow band at a prop's base — fades outward, no depth
+      // Contact-shadow feather hugging collider bases
       return new THREE.MeshBasicMaterial({
         map: getTexture('aoEdge'),
         transparent: true,
         depthWrite: false,
       });
     case 'lamp':
-      // work-light bulb — self-lit dot at the lamp head
-      return new THREE.MeshBasicMaterial({ color: PALETTE.lampWarm });
+      // Self-lit warm bulb
+      return new THREE.MeshStandardMaterial({
+        color: PALETTE.lampWarm,
+        map: getTexture('paint'),
+        emissive: PALETTE.lampWarm,
+        emissiveIntensity: 1.8,
+        roughness: 0.25,
+        metalness: 0.0,
+        envMapIntensity: 0.8,
+      });
     case 'gunMetal':
-      // receiver / barrel — mid-metal that catches the sky env so the outline
-      // separates from dark cover without glowing
+      // Receiver / barrel — high-metal steel catching real PMREM sky reflections
       return new THREE.MeshStandardMaterial({
         color: PALETTE.gun[1],
         map: getTexture('metal'),
         metalness: 0.85,
-        roughness: 0.3,
-        envMapIntensity: 1.2,
+        roughness: 0.28,
+        envMapIntensity: 1.5,
       });
     case 'gunPoly':
       return new THREE.MeshStandardMaterial({
         color: PALETTE.gun[0],
         map: getTexture('metal'),
-        metalness: 0.05,
-        roughness: 0.75,
+        metalness: 0.08,
+        roughness: 0.72,
+        envMapIntensity: 0.9,
       });
     case 'gunMag':
-      // magazine + small dark fittings — darker, near-matte
       return new THREE.MeshStandardMaterial({
         color: PALETTE.gunDark,
         map: getTexture('metal'),
-        metalness: 0.5,
-        roughness: 0.62,
+        metalness: 0.76,
+        roughness: 0.34,
+        envMapIntensity: 1.25,
       });
     case 'gunEdge':
-      // highlight band — emissive strip keeps the silhouette readable in gloom
       return new THREE.MeshStandardMaterial({
         color: PALETTE.gun[2],
+        map: getTexture('metal'),
         emissive: PALETTE.gunHi,
-        emissiveIntensity: 0.55,
-        metalness: 0.6,
-        roughness: 0.4,
+        emissiveIntensity: 0.4,
+        metalness: 0.84,
+        roughness: 0.26,
+        envMapIntensity: 1.5,
       });
     case 'glove':
-      // hands/forearms — a step brighter than the receiver so the two read apart
       return new THREE.MeshStandardMaterial({
         color: PALETTE.glove,
         map: getTexture('metal'),
         metalness: 0.05,
-        roughness: 0.9,
+        roughness: 0.86,
+        envMapIntensity: 0.75,
       });
     case 'puddle': {
-      // standing water — a dielectric film, NOT a metal: metalness .85 was
-      // what collapsed it to an oil stain at nadir view. Now it mirrors the
-      // bright PMREM dusk sky (envMapIntensity ≥2), carries a faint cool
-      // Blinn-Phong sun-glint through the perturbed ripple normals (F212c:
-      // sun term ×0.45 + skylight-weighted tint killed the lava glare, and
-      // the shore-band rim light is gone — no decal outline), darkens ~12%
-      // toward its centre on a uv-radius gradient, and reflects at 0.55 in
-      // the thin film just inside the feathered alpha edge so the junction
-      // reads damp-dark — all on the scrolled dual-sample ripples from F212.
+      // Standing water on steel deck: low-roughness sky mirror with organic
+      // multi-lobe alpha shoreline & gentle scrolling wind ripples. Relies on
+      // the PMREM sky IBL + Fresnel + crisp sun glint rather than a flat blue tint.
       const ripple = getTexture('puddleNormal');
-      ripple.repeat.set(3, 3); // F212c: finer ripples — no colour-block patches
+      ripple.repeat.set(2, 2);
       const m = new THREE.MeshStandardMaterial({
-        color: PALETTE.sea[1],
-        metalness: 0.1,
-        roughness: 0.08,
-        envMapIntensity: 2.6,
+        color: PALETTE.sea[0],
+        metalness: 0.14,
+        roughness: 0.04,
+        envMapIntensity: 2.35,
         alphaMap: getTexture('puddleAlpha'),
         transparent: true,
         depthWrite: false,
         side: THREE.FrontSide,
         normalMap: ripple,
-        normalScale: new THREE.Vector2(0.3, 0.3),
+        normalScale: new THREE.Vector2(0.12, 0.12),
+        polygonOffset: true,
+        polygonOffsetFactor: -1,
+        polygonOffsetUnits: -1,
       });
       m.onBeforeCompile = (shader) => {
         shader.uniforms.uTime = waterTime;
@@ -323,87 +378,100 @@ uniform vec3 uSunCol;`,
           )
           .replace(
             '#include <normal_fragment_maps>',
-            `vec3 mapN = texture2D( normalMap, vNormalMapUv + uTime * vec2( 0.021, 0.013 ) ).xyz * 2.0 - 1.0;
-	vec3 mapN2 = texture2D( normalMap, vNormalMapUv * 1.83 + uTime * vec2( -0.016, 0.024 ) ).xyz * 2.0 - 1.0;
+            `vec3 mapN = texture2D( normalMap, vNormalMapUv + uTime * vec2( 0.014, 0.009 ) ).xyz * 2.0 - 1.0;
+	vec3 mapN2 = texture2D( normalMap, vNormalMapUv * 1.67 + uTime * vec2( -0.011, 0.016 ) ).xyz * 2.0 - 1.0;
 	mapN = normalize( vec3( mapN.xy + mapN2.xy, mapN.z * mapN2.z ) );
 	mapN.xy *= normalScale;
 	normal = normalize( tbn * mapN );
-	float shore = texture2D( alphaMap, vAlphaMapUv ).g; // 1 open water → 0 feathered rim
-	float depth = smoothstep( 0.5, 0.95, shore ); // deeper water toward the middle
-	float pRad = smoothstep( 0.0, 1.0, length( vAlphaMapUv - 0.5 ) * 2.0 ); // 0 centre → 1 quad edge
-	float fres = pow( 1.0 - clamp( dot( normal, normalize( vViewPosition ) ), 0.0, 1.0 ), 4.0 );
-	diffuseColor.rgb *= mix( 1.0, 0.55, depth ); // deep centre a shade darker
-	diffuseColor.rgb *= mix( 0.88, 1.0, pRad ); // volume: centre ~12% deeper than the rim
-	diffuseColor.rgb = mix( diffuseColor.rgb, uSkyTint, fres * 0.7 ); // grazing → sky mirror`,
+	float shore = texture2D( alphaMap, vAlphaMapUv ).g;
+	float depth = smoothstep( 0.35, 0.92, shore );
+	float fres = pow( 1.0 - clamp( dot( normal, normalize( vViewPosition ) ), 0.0, 1.0 ), 3.5 );
+	// Dark wet-steel base underneath; grazing angles mirror sky via PMREM + subtle Fresnel
+	diffuseColor.rgb *= mix( 0.9, 0.55, depth );`,
           )
           .replace(
             '#include <opaque_fragment>',
             `{
 	vec3 pV = normalize( vViewPosition );
 	vec3 pSun = normalize( ( viewMatrix * vec4( uSunDirW, 0.0 ) ).xyz );
-	vec3 pH = normalize( pV + pSun ); // Blinn half-vector — wave facets tilted
-	vec3 pR = reflect( -pV, normal ); // toward it light up along the sun azimuth
-	float pSpec = pow( clamp( dot( normal, pH ), 0.0, 1.0 ), 10.0 ) * 1.17; // F212c: ×0.45
-	float pGlint = pow( clamp( dot( pR, pSun ), 0.0, 1.0 ), 160.0 ) * 2.25; // ×0.45 — no lava
-	float pThin = 1.0 - smoothstep( 0.35, 0.41, shore ); // ~6% band inside the alpha edge
-	float pRefl = mix( 1.0, 0.55, pThin ); // thin film: weak reflection, deck shows through
-	vec3 pSpecCol = mix( uSkyTint, uSunCol, 0.35 ); // skylight leads, warm sun only tints
-	outgoingLight += pSpecCol * ( pSpec + pGlint ) * pRefl;
-	outgoingLight += uSkyTint * ( 0.14 + fres * 0.5 ) * mix( 1.0, 0.55, depth ) * pRefl;
+	vec3 pR = reflect( -pV, normal );
+	float pGlint = pow( clamp( dot( pR, pSun ), 0.0, 1.0 ), 220.0 ) * 2.4;
+	float pBroad = pow( clamp( dot( pR, pSun ), 0.0, 1.0 ), 18.0 ) * 0.45;
+	float pRefl = smoothstep( 0.15, 0.65, shore );
+	outgoingLight += mix( uSkyTint, uSunCol, 0.65 ) * ( pBroad + pGlint ) * pRefl;
+	outgoingLight += uSkyTint * ( 0.04 + fres * 0.32 ) * depth * pRefl;
 	}
 	#include <opaque_fragment>`,
           );
       };
-      m.customProgramCacheKey = () => 'puddle-water'; // distinct program from unpatched standards
+      m.customProgramCacheKey = () => 'puddle-water-v2';
       return m;
     }
     case 'lampRed':
-      // warning-beacon bulb — self-lit dot
-      return new THREE.MeshBasicMaterial({ color: PALETTE.lampRed });
+      return new THREE.MeshStandardMaterial({
+        color: PALETTE.lampRed,
+        map: getTexture('paint'),
+        emissive: PALETTE.lampRed,
+        emissiveIntensity: 2.0,
+        roughness: 0.25,
+        metalness: 0.0,
+        envMapIntensity: 0.8,
+      });
     case 'window': {
-      // lit cabin window / hatch — stays crisp through the mist
-      const m = new THREE.MeshBasicMaterial({ color: PALETTE.lampWarm });
+      const m = new THREE.MeshStandardMaterial({
+        color: PALETTE.lampWarm,
+        map: getTexture('paint'),
+        emissive: PALETTE.lampWarm,
+        emissiveIntensity: 1.5,
+        roughness: 0.2,
+        metalness: 0.1,
+        envMapIntensity: 0.9,
+      });
       m.fog = false;
       return m;
     }
     case 'hull':
-      // topsides — painted steel above the waterline
+      // Ship topsides — painted maritime steel catching sky IBL
       return new THREE.MeshStandardMaterial({
         color: PALETTE.hull,
         map: getTexture('metal'),
-        roughness: 0.62,
-        metalness: 0.45,
+        roughness: 0.34,
+        metalness: 0.78,
+        envMapIntensity: 1.35,
       });
     case 'hullBand':
-      // antifouling band at the waterline — dull oxide red
+      // Antifouling waterline band
       return new THREE.MeshStandardMaterial({
         color: PALETTE.hullBand,
         map: getTexture('metal'),
-        roughness: 0.85,
-        metalness: 0.1,
+        roughness: 0.78,
+        metalness: 0.15,
+        envMapIntensity: 0.85,
       });
     case 'stripe':
-      // painted hazard band on the deck — matte, still picks up light
       return new THREE.MeshStandardMaterial({
         map: getTexture('stripe'),
-        roughness: 0.85,
+        roughness: 0.78,
         metalness: 0.05,
+        envMapIntensity: 0.85,
       });
     case 'cone':
       return new THREE.MeshStandardMaterial({
         color: PALETTE.cone,
-        map: getTexture('metal'),
-        roughness: 0.7,
-        metalness: 0,
+        map: getTexture('coneTex'),
+        roughness: 0.45,
+        metalness: 0.04,
+        envMapIntensity: 1.0,
       });
     case 'rope':
       return new THREE.MeshStandardMaterial({
         color: PALETTE.rope,
-        roughness: 0.95,
-        metalness: 0,
+        map: getTexture('rope'),
+        roughness: 0.92,
+        metalness: 0.0,
+        envMapIntensity: 0.65,
       });
     case 'skid':
-      // tyre scuffs — transparent decal sheet, never writes depth
       return new THREE.MeshBasicMaterial({
         map: getTexture('skid'),
         transparent: true,

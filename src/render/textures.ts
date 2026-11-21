@@ -17,6 +17,14 @@ export type TextureKey =
   | 'containerWear'
   | 'containerNormal'
   | 'metal'
+  | 'concrete'
+  | 'wood'
+  | 'crate'
+  | 'rope'
+  | 'paint'
+  | 'coneTex'
+  | 'barrel'
+  | 'craneTex'
   | 'grate'
   | 'stripe'
   | 'stencil'
@@ -155,7 +163,7 @@ function genContainerNormal(): HTMLCanvasElement {
   return c;
 }
 
-// --- 128² diagonal hazard stripes (warning yellow / near-black), worn ---
+// --- 128² diagonal hazard stripes (warning yellow / dark slate), worn ---
 function genStripes(): HTMLCanvasElement {
   const size = 128;
   const [c, ctx] = makeCanvas(size);
@@ -163,7 +171,7 @@ function genStripes(): HTMLCanvasElement {
   for (let y = 0; y < size; y++) {
     for (let x = 0; x < size; x++) {
       const band = Math.floor((x + y) / 16) % 2;
-      ctx.fillStyle = band ? PALETTE.deckLine : '#171a1e';
+      ctx.fillStyle = band ? PALETTE.deckLine : '#1e2329';
       ctx.fillRect(x, y, 1, 1);
     }
   }
@@ -215,7 +223,7 @@ function genStencil(): HTMLCanvasElement {
   return c;
 }
 
-// --- 256² tyre-scuff decal: transparent sheet, a few dark arcing streaks ---
+// --- 256² tyre-scuff decal: transparent sheet, a few dark slate arcing streaks ---
 function genSkid(): HTMLCanvasElement {
   const size = 256;
   const [c, ctx] = makeCanvas(size);
@@ -227,7 +235,7 @@ function genSkid(): HTMLCanvasElement {
     const arc = (rnd() - 0.5) * 1.6;
     const len = 90 + rnd() * 120;
     const w = 9 + rnd() * 9;
-    ctx.strokeStyle = 'rgba(8,10,13,0.5)';
+    ctx.strokeStyle = 'rgba(20,25,31,0.42)';
     ctx.lineWidth = w;
     ctx.lineCap = 'round';
     ctx.beginPath();
@@ -242,7 +250,7 @@ function genSkid(): HTMLCanvasElement {
   }
   // feather the edges with soft speckle
   for (let i = 0; i < 60; i++) {
-    ctx.fillStyle = `rgba(8,10,13,${0.06 + rnd() * 0.2})`;
+    ctx.fillStyle = `rgba(20,25,31,${0.05 + rnd() * 0.16})`;
     const s = 2 + rnd() * 7;
     ctx.fillRect(rnd() * size, rnd() * size, s, s);
   }
@@ -304,117 +312,152 @@ function genDeck(): HTMLCanvasElement {
   return c;
 }
 
-// --- grayscale roughness for the deck: worn paint variation ---
+// --- grayscale roughness for the wet deck: base ~0.34 (0.25–0.40 band) with
+// organic damp sheen blotches and rougher oxidized plate seams ---
 function genDeckRough(): HTMLCanvasElement {
   const size = 512;
   const [c, ctx] = makeCanvas(size);
   const rnd = mulberry32(23);
-  ctx.fillStyle = '#cccccc'; // ~0.8 base roughness
+  ctx.fillStyle = '#5a5a5a'; // ~0.35 base wet-steel roughness
   ctx.fillRect(0, 0, size, size);
-  grain(ctx, size, rnd, 0.14);
+
+  // broad damp/dry patches staying within 0.24–0.44
+  for (let i = 0; i < 48; i++) {
+    const x = rnd() * size;
+    const y = rnd() * size;
+    const r = 24 + rnd() * 88;
+    const damp = rnd() < 0.55;
+    const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+    g.addColorStop(0, damp ? 'rgba(54,54,54,0.65)' : 'rgba(116,116,116,0.55)');
+    g.addColorStop(1, 'rgba(90,90,90,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  grain(ctx, size, rnd, 0.12);
+
+  // plate seams are rougher (trapped grit & rust)
+  ctx.fillStyle = 'rgba(185,185,185,0.55)';
+  for (let p = 128; p < size; p += 128) {
+    ctx.fillRect(p - 2, 0, 4, size);
+    ctx.fillRect(0, p - 2, size, 4);
+  }
   return c;
 }
 
-// --- puddle mask (linear): white = standing water, sampled by the deck's uWet patch ---
+// --- puddle mask (linear): white = standing water film on the wet deck ---
 function genPuddle(): HTMLCanvasElement {
   const size = 512;
   const [c, ctx] = makeCanvas(size);
   const rnd = mulberry32(31);
   ctx.fillStyle = '#000000';
   ctx.fillRect(0, 0, size, size);
-  for (let i = 0; i < 30; i++) {
+  for (let i = 0; i < 36; i++) {
     const x = rnd() * size;
     const y = rnd() * size;
-    const r = 18 + rnd() * 72;
-    const g = ctx.createRadialGradient(x, y, 0, x, y, r);
-    g.addColorStop(0, 'rgba(255,255,255,0.95)');
-    g.addColorStop(0.6, 'rgba(255,255,255,0.45)');
+    const rx = 24 + rnd() * 84;
+    const ry = rx * (0.45 + rnd() * 0.75);
+    const rot = rnd() * Math.PI;
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(rot);
+    ctx.scale(1, ry / rx);
+    const g = ctx.createRadialGradient(0, 0, 0, 0, 0, rx);
+    g.addColorStop(0, 'rgba(255,255,255,0.92)');
+    g.addColorStop(0.55, 'rgba(255,255,255,0.48)');
     g.addColorStop(1, 'rgba(255,255,255,0)');
     ctx.fillStyle = g;
     ctx.beginPath();
-    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.arc(0, 0, rx, 0, Math.PI * 2);
     ctx.fill();
+    ctx.restore();
   }
   return c;
 }
 
-// --- 512² puddle silhouette (linear): white = open water for alphaMap.
-// Varied-radius circles stamped along a curving, swaying spine give an
-// elongated organic blob; every stamp is clamped so all ink fades out ≥42px
-// before the texture edge — no cropped straight rims on the quad.
+// --- 512² organic puddle silhouette (linear): white = standing water for
+// alphaMap. Uses multi-harmonic radial lobes + irregular peripheral inlets and
+// a wide feathered damp shoreline so it reads as natural pooled water on steel
+// deck plates — never a rectangle or uniform oval sticker.
 function genPuddleAlpha(): HTMLCanvasElement {
   const size = 512;
   const [c, ctx] = makeCanvas(size);
-  const rnd = mulberry32(71);
-  ctx.fillStyle = '#000000';
-  ctx.fillRect(0, 0, size, size);
+  const rnd = mulberry32(77);
+  const img = ctx.createImageData(size, size);
+  const d = img.data;
 
-  const cx = size / 2;
-  const cy = size / 2;
-  const count = 6 + Math.floor(rnd() * 5); // 6..10 stamps along the spine
-  const dir = rnd() * Math.PI * 2; // spine direction
-  const bend = (rnd() - 0.5) * 1.4; // spine curvature
-  const span = 200 + rnd() * 60; // half-length the stamps wander out to
-  const perpA = 30 + rnd() * 40; // sideways sway amplitude
-  const wob = 1.5 + rnd() * 1.5; // sway frequency along the spine
-  const ph = rnd() * Math.PI * 2;
-  for (let i = 0; i < count; i++) {
-    const t = i / (count - 1); // 0..1 along the spine
-    const along = (t - 0.5) * 2 * span;
-    const side = Math.sin(t * Math.PI * wob + ph) * perpA + (rnd() - 0.5) * 26;
-    const a = dir + bend * (t - 0.5);
-    let px = cx + Math.cos(a) * along - Math.sin(a) * side;
-    let py = cy + Math.sin(a) * along + Math.cos(a) * side;
-    const r = 66 + rnd() * 46;
-    const lim = size / 2 - 42 - r;
-    const dx = px - cx;
-    const dy = py - cy;
-    const d = Math.hypot(dx, dy);
-    if (d > lim && d > 0) {
-      px = cx + (dx / d) * lim;
-      py = cy + (dy / d) * lim;
+  // Deterministic lobe centers inside the quad (generous margin from edges)
+  const lobes: { x: number; y: number; rx: number; ry: number; rot: number }[] = [
+    { x: 0.46, y: 0.50, rx: 0.30, ry: 0.19, rot: 0.32 },
+    { x: 0.62, y: 0.42, rx: 0.21, ry: 0.15, rot: -0.45 },
+    { x: 0.31, y: 0.57, rx: 0.19, ry: 0.14, rot: 0.85 },
+    { x: 0.56, y: 0.63, rx: 0.17, ry: 0.11, rot: 0.12 },
+    { x: 0.39, y: 0.38, rx: 0.15, ry: 0.12, rot: -0.70 },
+  ];
+  const phases = Array.from({ length: 8 }, () => rnd() * Math.PI * 2);
+
+  for (let py = 0; py < size; py++) {
+    const v = py / size;
+    for (let px = 0; px < size; px++) {
+      const u = px / size;
+      // Smooth union (metaball sum) of irregular ellipses
+      let field = 0;
+      for (const l of lobes) {
+        const dx = u - l.x;
+        const dy = v - l.y;
+        const cs = Math.cos(l.rot);
+        const sn = Math.sin(l.rot);
+        const lx = (dx * cs + dy * sn) / l.rx;
+        const ly = (-dx * sn + dy * cs) / l.ry;
+        const r2 = lx * lx + ly * ly;
+        field += Math.exp(-r2 * 1.45);
+      }
+      // Organic shoreline ripple via smooth multi-frequency trigonometric noise
+      const n1 = Math.sin(u * 19.0 + phases[0]) * Math.cos(v * 17.0 + phases[1]);
+      const n2 = Math.sin((u * 31.0 - v * 27.0) + phases[2]) * 0.5;
+      const n3 = Math.cos((u * 47.0 + v * 41.0) + phases[3]) * 0.25;
+      const warp = (n1 + n2 + n3) * 0.11;
+
+      // Edge-fade guard so water never touches quad border (zero hard crop)
+      const edge = Math.min(u, 1 - u, v, 1 - v);
+      const edgeMask = Math.min(1, Math.max(0, (edge - 0.04) / 0.12));
+
+      const raw = (field + warp - 0.62) / 0.42;
+      const a = Math.min(1, Math.max(0, raw)) * edgeMask;
+      const smooth = a * a * (3 - 2 * a);
+      const byte = Math.round(smooth * 255);
+      const idx = (py * size + px) * 4;
+      d[idx] = byte;
+      d[idx + 1] = byte;
+      d[idx + 2] = byte;
+      d[idx + 3] = 255;
     }
-    const g = ctx.createRadialGradient(px, py, r * 0.3, px, py, r);
-    // F212c: wider outer feather — alpha 0.35→0.05 now spans ~17% of the
-    // stamp radius (was ~9%), so the shoreline fades in steps instead of
-    // snapping on like a sticker cut.
-    g.addColorStop(0, 'rgba(255,255,255,1)');
-    g.addColorStop(0.55, 'rgba(255,255,255,0.95)');
-    g.addColorStop(0.8, 'rgba(255,255,255,0.35)');
-    g.addColorStop(1, 'rgba(255,255,255,0)');
-    ctx.fillStyle = g;
-    ctx.beginPath();
-    ctx.arc(px, py, r, 0, Math.PI * 2);
-    ctx.fill();
   }
+  ctx.putImageData(img, 0, 0);
   return c;
 }
 
-// --- 256² tileable water-ripple normal map. Integer wave vectors make the
-// summed-sine height field exactly periodic; the analytic gradient is packed
-// as rgb = normalize(-dh/dx, -dh/dy, 1)*0.5+0.5 with z dominant, so it reads
-// as ripples instead of fake dunes. Frequencies stay ≤5 cycles/tile — the
-// analytic gradient is already perfectly smooth, and keeping the spectrum in
-// the mid band means no pixel-scale normal jumps (no blocky sparkle).
+// --- 256² tileable gentle capillary ripple normal map. Low-slope continuous
+// swells + soft wind ripples so puddles reflect the sky cleanly like glass
+// without waffle-grid artifacts.
 function genPuddleNormal(): HTMLCanvasElement {
   const size = 256;
   const [c, ctx] = makeCanvas(size);
   const rnd = mulberry32(97);
-  // (mx, my) = cycles per uv tile; 1/hypot(m) all lands in the 0.19..0.7 band
   const K: [number, number][] = [
-    [4, 1],
-    [-3, 4],
-    [2, -4],
-    [-4, -2],
-    [1, 3],
-    [5, -2],
-    [-2, -3],
+    [1, 2],
+    [-2, 1],
+    [3, -1],
+    [-1, -3],
+    [2, 3],
+    [-3, 2],
   ];
   const waves = K.map(([mx, my]) => ({
     mx,
     my,
     f: Math.hypot(mx, my),
-    slope: 0.055 + rnd() * 0.1, // per-wave gradient amplitude — ripples, not dunes
+    slope: 0.028 + rnd() * 0.032,
     ph: rnd() * Math.PI * 2,
   }));
   const img = ctx.createImageData(size, size);
@@ -426,7 +469,6 @@ function genPuddleNormal(): HTMLCanvasElement {
       let gx = 0;
       let gy = 0;
       for (const w of waves) {
-        // h = sin(2π m·uv + φ) scaled so |∇h| peak == slope
         const s = (w.slope * Math.cos(Math.PI * 2 * (w.mx * u + w.my * v) + w.ph)) / w.f;
         gx += s * w.mx;
         gy += s * w.my;
@@ -795,14 +837,237 @@ function genMetal(): HTMLCanvasElement {
 
   // dust settling toward the bottom of the sheet
   const g = ctx.createLinearGradient(0, 0, 0, size);
-  g.addColorStop(0.7, 'rgba(22,18,12,0)');
-  g.addColorStop(1, 'rgba(22,18,12,0.22)');
+  g.addColorStop(0.7, 'rgba(24,22,20,0)');
+  g.addColorStop(1, 'rgba(24,22,20,0.22)');
   ctx.fillStyle = g;
   ctx.fillRect(0, 0, size, size);
   return c;
 }
 
-// --- 128² drainage grate: dark plate + stamped slots + rim highlight + rust ---
+// --- 256² weathered poured concrete (towers & stairs): formwork joints,
+// tie-rod holes, mineral aggregate grain, subtle vertical rain staining ---
+function genConcrete(): HTMLCanvasElement {
+  const size = 256;
+  const [c, ctx] = makeCanvas(size);
+  const rnd = mulberry32(131);
+  ctx.fillStyle = '#c8ccd0';
+  ctx.fillRect(0, 0, size, size);
+
+  // broad mineral blotches
+  for (let i = 0; i < 36; i++) {
+    const r = 16 + rnd() * 48;
+    ctx.fillStyle = rnd() < 0.5 ? '#b3b8be' : '#dadde0';
+    ctx.globalAlpha = 0.08 + rnd() * 0.1;
+    ctx.beginPath();
+    ctx.arc(rnd() * size, rnd() * size, r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+  grain(ctx, size, rnd, 0.09);
+
+  // horizontal formwork pour lines + tie holes
+  ctx.fillStyle = 'rgba(42,48,56,0.32)';
+  for (let y = 64; y < size; y += 64) {
+    ctx.fillRect(0, y, size, 2);
+    for (let x = 32; x < size; x += 64) {
+      ctx.beginPath();
+      ctx.arc(x, y - 32, 2.6, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+  // vertical rainwater streaks
+  for (let i = 0; i < 28; i++) {
+    const x = rnd() * size;
+    const len = 30 + rnd() * 140;
+    const g = ctx.createLinearGradient(0, 0, 0, len);
+    g.addColorStop(0, 'rgba(48,54,60,0.20)');
+    g.addColorStop(1, 'rgba(48,54,60,0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(x, 0, 1.5 + rnd() * 3, len);
+  }
+  return c;
+}
+
+// --- 256² slatted timber planks (pallets & cable reels) ---
+function genWood(): HTMLCanvasElement {
+  const size = 256;
+  const [c, ctx] = makeCanvas(size);
+  const rnd = mulberry32(149);
+  ctx.fillStyle = '#d6c8b4';
+  ctx.fillRect(0, 0, size, size);
+
+  const plankH = 32;
+  for (let row = 0; row < size / plankH; row++) {
+    const y = row * plankH;
+    const shade = 0.88 + rnd() * 0.24;
+    ctx.fillStyle = `rgb(${Math.round(212 * shade)},${Math.round(196 * shade)},${Math.round(172 * shade)})`;
+    ctx.fillRect(0, y, size, plankH - 2);
+    // wood grain lines
+    for (let k = 0; k < 14; k++) {
+      ctx.strokeStyle = rnd() < 0.5 ? 'rgba(65,45,25,0.14)' : 'rgba(245,235,215,0.12)';
+      ctx.lineWidth = 0.7 + rnd() * 1.2;
+      ctx.beginPath();
+      const gy = y + 2 + rnd() * (plankH - 5);
+      ctx.moveTo(0, gy);
+      ctx.bezierCurveTo(size * 0.33, gy + (rnd() - 0.5) * 4, size * 0.66, gy + (rnd() - 0.5) * 4, size, gy);
+      ctx.stroke();
+    }
+    // dark plank gap + nails
+    ctx.fillStyle = 'rgba(32,24,18,0.65)';
+    ctx.fillRect(0, y + plankH - 2, size, 2);
+    ctx.fillStyle = 'rgba(36,34,32,0.55)';
+    for (const nx of [18, size - 18]) {
+      ctx.fillRect(nx, y + 6, 3, 3);
+      ctx.fillRect(nx, y + plankH - 11, 3, 3);
+    }
+  }
+  grain(ctx, size, rnd, 0.05);
+  return c;
+}
+
+// --- 256² braced shipping crate: wood planks + perimeter frame + diagonal brace ---
+function genCrate(): HTMLCanvasElement {
+  const size = 256;
+  const [c, ctx] = makeCanvas(size);
+  const rnd = mulberry32(163);
+  ctx.drawImage(genWood(), 0, 0);
+
+  // diagonal cross-batten
+  ctx.save();
+  ctx.strokeStyle = 'rgba(220,206,184,0.85)';
+  ctx.lineWidth = 24;
+  ctx.beginPath();
+  ctx.moveTo(22, size - 22);
+  ctx.lineTo(size - 22, 22);
+  ctx.stroke();
+  ctx.strokeStyle = 'rgba(40,28,18,0.5)';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(20, 20, size - 40, size - 40);
+  ctx.restore();
+
+  // outer frame battens
+  ctx.fillStyle = 'rgba(225,210,188,0.88)';
+  const b = 22;
+  ctx.fillRect(0, 0, size, b);
+  ctx.fillRect(0, size - b, size, b);
+  ctx.fillRect(0, 0, b, size);
+  ctx.fillRect(size - b, 0, b, size);
+  ctx.strokeStyle = 'rgba(38,28,20,0.65)';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(1, 1, size - 2, size - 2);
+  ctx.strokeRect(b, b, size - b * 2, size - b * 2);
+
+  // corner grime & stencil mark
+  ctx.fillStyle = 'rgba(34,26,20,0.45)';
+  ctx.font = "700 18px 'Courier New',monospace";
+  ctx.fillText('CARGO-04', 42, 54);
+  grain(ctx, size, rnd, 0.05);
+  return c;
+}
+
+// --- 128² twisted hemp mooring rope ---
+function genRope(): HTMLCanvasElement {
+  const size = 128;
+  const [c, ctx] = makeCanvas(size);
+  const rnd = mulberry32(179);
+  ctx.fillStyle = '#c8b89a';
+  ctx.fillRect(0, 0, size, size);
+  for (let i = -size; i < size * 2; i += 12) {
+    ctx.strokeStyle = 'rgba(62,48,30,0.45)';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(i, 0);
+    ctx.lineTo(i + size * 0.65, size);
+    ctx.stroke();
+    ctx.strokeStyle = 'rgba(248,236,210,0.28)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(i + 4, 0);
+    ctx.lineTo(i + 4 + size * 0.65, size);
+    ctx.stroke();
+  }
+  grain(ctx, size, rnd, 0.1);
+  return c;
+}
+
+// --- 128² scuffed safety paint (deck lines) ---
+function genPaint(): HTMLCanvasElement {
+  const size = 128;
+  const [c, ctx] = makeCanvas(size);
+  const rnd = mulberry32(191);
+  ctx.fillStyle = '#ececec';
+  ctx.fillRect(0, 0, size, size);
+  grain(ctx, size, rnd, 0.09);
+  ctx.fillStyle = 'rgba(42,48,54,0.35)';
+  for (let i = 0; i < 80; i++) {
+    ctx.fillRect(rnd() * size, rnd() * size, 1 + rnd() * 5, 1 + rnd() * 3);
+  }
+  return c;
+}
+
+// --- 128² traffic/safety cone with reflective white collar bands ---
+function genConeTex(): HTMLCanvasElement {
+  const size = 128;
+  const [c, ctx] = makeCanvas(size);
+  const rnd = mulberry32(197);
+  ctx.fillStyle = '#e8e8e8';
+  ctx.fillRect(0, 0, size, size);
+  ctx.fillStyle = '#f8fafc';
+  ctx.fillRect(0, 32, size, 16);
+  ctx.fillRect(0, 62, size, 12);
+  grain(ctx, size, rnd, 0.06);
+  return c;
+}
+
+// --- 256² steel oil drum: two rolling hoops + brushed metal + base grime ---
+function genBarrel(): HTMLCanvasElement {
+  const size = 256;
+  const [c, ctx] = makeCanvas(size);
+  const rnd = mulberry32(211);
+  ctx.fillStyle = '#dde0e4';
+  ctx.fillRect(0, 0, size, size);
+  grain(ctx, size, rnd, 0.06);
+
+  // two embossed horizontal rolling ribs
+  for (const ry of [84, 172]) {
+    ctx.fillStyle = 'rgba(28,34,40,0.45)';
+    ctx.fillRect(0, ry - 4, size, 8);
+    ctx.fillStyle = 'rgba(255,255,255,0.35)';
+    ctx.fillRect(0, ry - 6, size, 3);
+  }
+  // oil drips & rust spots
+  for (let i = 0; i < 24; i++) {
+    ctx.fillStyle = `rgba(90,48,26,${0.18 + rnd() * 0.25})`;
+    ctx.fillRect(rnd() * size, rnd() * size, 2 + rnd() * 8, 4 + rnd() * 18);
+  }
+  const g = ctx.createLinearGradient(0, size * 0.72, 0, size);
+  g.addColorStop(0, 'rgba(26,28,32,0)');
+  g.addColorStop(1, 'rgba(26,28,32,0.34)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, size, size);
+  return c;
+}
+
+// --- 128² weathered girder texture for distant cranes/freighters ---
+function genCraneTex(): HTMLCanvasElement {
+  const size = 128;
+  const [c, ctx] = makeCanvas(size);
+  const rnd = mulberry32(223);
+  ctx.fillStyle = '#d4dae0';
+  ctx.fillRect(0, 0, size, size);
+  grain(ctx, size, rnd, 0.08);
+  ctx.strokeStyle = 'rgba(30,38,46,0.22)';
+  ctx.lineWidth = 2;
+  for (let i = 0; i < size; i += 32) {
+    ctx.beginPath();
+    ctx.moveTo(i, 0);
+    ctx.lineTo(i, size);
+    ctx.stroke();
+  }
+  return c;
+}
+
+// --- 128² drainage grate: dark steel plate + stamped slots + rim highlight + rust ---
 function genGrate(): HTMLCanvasElement {
   const size = 128;
   const [c, ctx] = makeCanvas(size);
@@ -812,19 +1077,19 @@ function genGrate(): HTMLCanvasElement {
   ctx.fillRect(0, 0, size, size);
   grain(ctx, size, rnd, 0.1);
 
-  // recessed frame
-  ctx.strokeStyle = 'rgba(6,9,12,0.9)';
+  // recessed frame (>= #141a21, never pure black)
+  ctx.strokeStyle = 'rgba(20,26,33,0.92)';
   ctx.lineWidth = 5;
   ctx.strokeRect(4, 4, size - 8, size - 8);
 
-  // drain slots: two columns of long slots, near-black (holes)
-  ctx.fillStyle = 'rgba(4,6,9,0.95)';
+  // drain slots: two columns of recessed slots
+  ctx.fillStyle = 'rgba(18,23,29,0.94)';
   for (let col = 0; col < 2; col++) {
     const x = 24 + col * 48;
     for (let i = 0; i < 5; i++) ctx.fillRect(x, 14 + i * 22, 32, 12);
   }
   // stamped lip: thin highlight along each slot's top edge
-  ctx.fillStyle = 'rgba(220,230,240,0.14)';
+  ctx.fillStyle = 'rgba(220,232,244,0.22)';
   for (let col = 0; col < 2; col++) {
     const x = 24 + col * 48;
     for (let i = 0; i < 5; i++) ctx.fillRect(x, 14 + i * 22, 32, 1.5);
@@ -833,27 +1098,27 @@ function genGrate(): HTMLCanvasElement {
   return c;
 }
 
-// --- 128² radial falloff blob: pure-alpha fake-AO shadow mask ---
+// --- 128² radial falloff blob: soft cool-slate contact shadow mask ---
 function genAo(): HTMLCanvasElement {
   const size = 128;
   const [c, ctx] = makeCanvas(size);
   const g = ctx.createRadialGradient(size / 2, size / 2, size * 0.08, size / 2, size / 2, size * 0.5);
-  g.addColorStop(0, 'rgba(0,0,0,0.6)');
-  g.addColorStop(0.65, 'rgba(0,0,0,0.3)');
-  g.addColorStop(1, 'rgba(0,0,0,0)');
+  g.addColorStop(0, 'rgba(14,19,26,0.42)');
+  g.addColorStop(0.65, 'rgba(14,19,26,0.18)');
+  g.addColorStop(1, 'rgba(14,19,26,0)');
   ctx.fillStyle = g;
   ctx.fillRect(0, 0, size, size);
   return c;
 }
 
-// --- 64² linear falloff strip: contact-shadow band, alpha fades away from the base ---
+// --- 64² linear falloff strip: soft contact-shadow band at collider bases ---
 function genAoEdge(): HTMLCanvasElement {
   const size = 64;
   const [c, ctx] = makeCanvas(size);
   const g = ctx.createLinearGradient(0, 0, 0, size);
-  g.addColorStop(0, 'rgba(0,0,0,0.55)');
-  g.addColorStop(0.5, 'rgba(0,0,0,0.22)');
-  g.addColorStop(1, 'rgba(0,0,0,0)');
+  g.addColorStop(0, 'rgba(14,19,26,0.36)');
+  g.addColorStop(0.5, 'rgba(14,19,26,0.14)');
+  g.addColorStop(1, 'rgba(14,19,26,0)');
   ctx.fillStyle = g;
   ctx.fillRect(0, 0, size, size);
   return c;
@@ -871,6 +1136,14 @@ const GEN: Record<TextureKey, () => HTMLCanvasElement> = {
   containerWear: genContainerWear,
   containerNormal: genContainerNormal,
   metal: genMetal,
+  concrete: genConcrete,
+  wood: genWood,
+  crate: genCrate,
+  rope: genRope,
+  paint: genPaint,
+  coneTex: genConeTex,
+  barrel: genBarrel,
+  craneTex: genCraneTex,
   grate: genGrate,
   stripe: genStripes,
   stencil: genStencil,
@@ -883,6 +1156,14 @@ const SRGB_KEYS: ReadonlySet<TextureKey> = new Set([
   'deck',
   'container',
   'metal',
+  'concrete',
+  'wood',
+  'crate',
+  'rope',
+  'paint',
+  'coneTex',
+  'barrel',
+  'craneTex',
   'grate',
   'stripe',
   'stencil',
