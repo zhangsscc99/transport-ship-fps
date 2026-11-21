@@ -267,9 +267,9 @@ function getHandMaterials() {
     roughness: 0.55,
     metalness: 0.02,
     envMap: skinEnv,
-    envMapIntensity: 1.25,
+    envMapIntensity: 1.05,
     emissive: new THREE.Color(PALETTE.skinWarm),
-    emissiveIntensity: 0.08,
+    emissiveIntensity: 0.04,
   });
   // Warm subsurface scattering approximation (wrap diffuse + warm crimson edge scatter)
   skin.onBeforeCompile = (shader) => {
@@ -277,8 +277,8 @@ function getHandMaterials() {
       '#include <opaque_fragment>',
       `{
         vec3 sV = normalize( vViewPosition );
-        float rimSss = pow( 1.0 - clamp( dot( normal, sV ), 0.0, 1.0 ), 2.2 );
-        outgoingLight += vec3( 0.24, 0.075, 0.042 ) * ( 0.28 + rimSss * 0.65 );
+        float rimSss = pow( 1.0 - clamp( dot( normal, sV ), 0.0, 1.0 ), 2.4 );
+        outgoingLight += vec3( 0.18, 0.055, 0.032 ) * ( 0.16 + rimSss * 0.55 );
       }
       #include <opaque_fragment>`,
     );
@@ -410,9 +410,10 @@ function buildLoftedSegment(opts: {
       const b = a + 1;
       const c = (r + 1) * stride + s;
       const d = c + 1;
-      // Ring increases along -Z, ang increases CCW in XY: outward normal = (a, b, c) & (b, d, c)
-      indices.push(a, b, c);
-      indices.push(b, d, c);
+      // Ring advances toward -Z, ang increases CCW in XY:
+      // (c - a) × (b - a) = (-Z) × (+theta) = +radial outward!
+      indices.push(a, c, b);
+      indices.push(b, c, d);
     }
   }
 
@@ -422,7 +423,8 @@ function buildLoftedSegment(opts: {
     positions.push(r0.cx ?? 0, r0.cy ?? 0, r0.z);
     uvs.push(0.5, r0.v);
     for (let s = 0; s < radialSegs; s++) {
-      indices.push(centerIdx, s + 1, s);
+      // Faces +Z (outward from start ring)
+      indices.push(centerIdx, s, s + 1);
     }
   }
   if (capEnd) {
@@ -433,7 +435,8 @@ function buildLoftedSegment(opts: {
     uvs.push(0.5, rLast.v);
     const base = lastIdx * stride;
     for (let s = 0; s < radialSegs; s++) {
-      indices.push(centerIdx, base + s, base + s + 1);
+      // Faces -Z (outward from end ring / fingertip)
+      indices.push(centerIdx, base + s + 1, base + s);
     }
   }
 
@@ -778,7 +781,7 @@ export class HumanHand {
 
     // --- 4. Build Tactical Sleeve + Stitched Cuff + Velcro Strap (bound to forearm bone) ---
     const sleeveParts: THREE.BufferGeometry[] = [];
-    // Forearm BDU sleeve extending from wrist (+0.048) to elbow (+0.34)
+    // Forearm BDU sleeve extending from wrist (+0.044) to elbow (+0.34) — ordered +Z -> -Z so outward normals match!
     const forearmTube = buildLoftedSegment({
       radialSegs: 8,
       capStart: true,

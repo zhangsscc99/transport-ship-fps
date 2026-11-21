@@ -191,7 +191,7 @@ const startRound = (settings: { difficulty: DifficultyId; muted: boolean; musicE
   bgm.setTrack('battle');
   hud.setMuted(settings.muted);
   match.resetToMenu();
-  match.start(performance.now());
+  match.start(simNowMs);
   menu.hide();
   menu.hideDeath();
   // fresh round: revive and re-arm the player at spawn
@@ -321,8 +321,8 @@ engine.onFrame = (dt) => {
   const now = performance.now();
   simNowMs += dt * 1000;
   const prevPhase = match.phase;
-  match.tick(now);
-  const acting = match.canAct(now);
+  match.tick(simNowMs);
+  const acting = match.canAct(simNowMs);
   const inp = mergeInputs(kb.snapshot(), touch.snapshot());
 
   menu.setCountdown(match.phase === 'countdown' ? match.countdownLeftMs : null);
@@ -501,14 +501,24 @@ engine.onFrame = (dt) => {
         y: player.position.y + player.eyeHeight,
         z: player.position.z,
       };
-      const shots = w.tryFire(simNowMs, eye, aimDir());
-      if (shots) {
+      // Frame-rate-independent micro-stepping so 900 RPM Gatling sustains true cadence even at low FPS
+      const prevSimMs = Math.max(0, simNowMs - dt * 1000);
+      const dtMs = dt * 1000;
+      const maxSubShots = w.spec.id === 'gatling' ? Math.min(10, Math.max(1, Math.ceil(dtMs / 10))) : 1;
+      let firedInFrame = false;
+      for (let sub = 0; sub < maxSubShots; sub++) {
+        const subT = maxSubShots === 1 ? simNowMs : prevSimMs + ((sub + 1) / maxSubShots) * dtMs;
+        const shots = w.tryFire(subT, eye, aimDir());
+        if (!shots) continue;
         playerFiredThisFrame = true;
         rack.clearBufferedFire();
-        weaponView.onFire(w.spec.id);
-        touch.pulseFire();
-        sfx.play(SHOT_SFX[w.spec.id]);
-        bgm.notifyFire();
+        if (!firedInFrame) {
+          firedInFrame = true;
+          weaponView.onFire(w.spec.id);
+          touch.pulseFire();
+          sfx.play(SHOT_SFX[w.spec.id]);
+          bgm.notifyFire();
+        }
         // Camera recoil separated from visual gun kick (20% kept, 80% easeOutQuad recovery)
         const rc = RECOIL_SPEC[w.spec.id];
         const pitchRad = (rc.deg * Math.PI) / 180;
@@ -520,8 +530,10 @@ engine.onFrame = (dt) => {
         weaponView.ejectWorld(scratchEject);
         scratchRight.set(1, 0, 0).applyQuaternion(view.camera.quaternion).normalize();
         scratchFwd.set(0, 0, -1).applyQuaternion(view.camera.quaternion).normalize();
-        worldVfx.spawnMuzzleSmoke(scratchMuzzle, dir);
-        worldVfx.spawnShell(scratchEject, scratchRight, scratchFwd, player.velocity, w.spec.id);
+        if (sub === 0) {
+          worldVfx.spawnMuzzleSmoke(scratchMuzzle, dir);
+          worldVfx.spawnShell(scratchEject, scratchRight, scratchFwd, player.velocity, w.spec.id);
+        }
 
         for (const ray of shots) {
           const hit = traceHit(ray, MAP.boxes, enemyMgr.entities);
@@ -539,7 +551,7 @@ engine.onFrame = (dt) => {
             enemyMgr.onBotDamaged(hit.entity, player.position, simNowMs);
             if (killed) {
               roundKills++;
-              match.registerKill('A', now);
+              match.registerKill('A', simNowMs);
               sfx.play('kill');
               hud.notifyKill(now);
             }

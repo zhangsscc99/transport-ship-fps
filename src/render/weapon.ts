@@ -549,12 +549,12 @@ function buildGatlingModel(): ArticulatedGun {
   // Right-side casing ejection chute
   box(body, 'mag', 0.024, 0.022, 0.058, 0.056, -0.012, -0.015);
 
-  // Top chainsaw carry bar
-  box(body, 'metal', 0.012, 0.076, 0.018, -0.038, 0.062, -0.155, 0, 0, -0.16);
-  box(body, 'metal', 0.012, 0.076, 0.018, 0.038, 0.062, -0.155, 0, 0, 0.16);
-  cylX(body, 'poly', 0.013, 0.098, 0, 0.098, -0.155, 10);
-  box(body, 'metal', 0.026, 0.012, 0.17, 0, 0.096, -0.075);
-  box(body, 'edge', 0.006, 0.005, 0.16, -0.012, 0.103, -0.075);
+  // Top chainsaw carry bar (positioned slightly forward so left arm never blocks the brass ammo belt!)
+  box(body, 'metal', 0.012, 0.076, 0.018, -0.038, 0.062, -0.215, 0, 0, -0.16);
+  box(body, 'metal', 0.012, 0.076, 0.018, 0.038, 0.062, -0.215, 0, 0, 0.16);
+  cylX(body, 'poly', 0.013, 0.098, 0, 0.098, -0.215, 10);
+  box(body, 'metal', 0.026, 0.012, 0.22, 0, 0.096, -0.105);
+  box(body, 'edge', 0.006, 0.005, 0.21, -0.012, 0.103, -0.105);
 
   // Rear spade trigger handle + lower pistol grip
   box(body, 'metal', 0.014, 0.062, 0.018, -0.036, 0.005, 0.148);
@@ -564,26 +564,26 @@ function buildGatlingModel(): ArticulatedGun {
   addGrip(body, 0.132, -0.035);
   mergeParts(body, root);
 
-  // --- 6 Rotating Barrels + 3 Clamp Rings ---
+  // --- 6 Rotating Barrels + 3 Clamp Rings (chunky iconic silhouette) ---
   const barrelCluster = new THREE.Group();
-  barrelCluster.position.set(0, -0.006, -0.11);
+  barrelCluster.position.set(0, -0.004, -0.11);
   const bParts: Parts = [];
-  const BARREL_RING_R = 0.034;
-  const BARREL_LEN = 0.54;
+  const BARREL_RING_R = 0.038;
+  const BARREL_LEN = 0.56;
   for (let i = 0; i < 6; i++) {
     const a = (i / 6) * Math.PI * 2;
     const bx = Math.cos(a) * BARREL_RING_R;
     const by = Math.sin(a) * BARREL_RING_R;
-    cylZ(bParts, 'metal', 0.0085, BARREL_LEN, bx, by, -BARREL_LEN * 0.5, 10);
-    cylZ(bParts, 'edge', 0.0098, 0.014, bx, by, -BARREL_LEN + 0.007, 10);
-    cylZ(bParts, 'mag', 0.0052, 0.006, bx, by, -BARREL_LEN - 0.001, 8);
+    cylZ(bParts, 'metal', 0.0096, BARREL_LEN, bx, by, -BARREL_LEN * 0.5, 10);
+    cylZ(bParts, 'edge', 0.0110, 0.016, bx, by, -BARREL_LEN + 0.008, 10);
+    cylZ(bParts, 'mag', 0.0058, 0.006, bx, by, -BARREL_LEN - 0.001, 8);
   }
-  cylZ(bParts, 'mag', 0.014, BARREL_LEN - 0.04, 0, 0, -BARREL_LEN * 0.48, 10);
-  for (const cz of [-0.07, -0.27, -0.47]) {
-    cylZ(bParts, 'metal', BARREL_RING_R + 0.013, 0.022, 0, 0, cz, 18);
-    cylZ(bParts, 'edge', BARREL_RING_R + 0.0145, 0.006, 0, 0, cz - 0.009, 18);
+  cylZ(bParts, 'mag', 0.015, BARREL_LEN - 0.04, 0, 0, -BARREL_LEN * 0.48, 10);
+  for (const cz of [-0.08, -0.29, -0.49]) {
+    cylZ(bParts, 'metal', BARREL_RING_R + 0.014, 0.024, 0, 0, cz, 18);
+    cylZ(bParts, 'edge', BARREL_RING_R + 0.0155, 0.006, 0, 0, cz - 0.009, 18);
   }
-  cylZ(bParts, 'accent', BARREL_RING_R + 0.014, 0.008, 0, 0, -0.27, 18);
+  cylZ(bParts, 'accent', BARREL_RING_R + 0.015, 0.009, 0, 0, -0.29, 18);
   mergeParts(bParts, barrelCluster);
 
   const blurGeo = new THREE.CylinderGeometry(
@@ -612,11 +612,11 @@ function buildGatlingModel(): ArticulatedGun {
   bolt.position.copy(boltRestPos);
   root.add(bolt);
 
-  // 300-round cylindrical drum
-  const magRestPos = new THREE.Vector3(-0.115, -0.105, -0.055);
+  // 300-round cylindrical drum (positioned forward-left so drum + gleaming brass belt sit unobscured in view!)
+  const magRestPos = new THREE.Vector3(-0.125, -0.092, -0.145);
   const mag = buildGatlingDrumGroup(false);
   mag.position.copy(magRestPos);
-  mag.rotation.set(0.08, 0.18, 0.16);
+  mag.rotation.set(0.08, 0.22, 0.16);
   root.add(mag);
 
   const dropMag = buildGatlingDrumGroup(true);
@@ -629,9 +629,9 @@ function buildGatlingModel(): ArticulatedGun {
   freshMag.visible = false;
   root.add(freshMag);
 
-  // 3-segment swinging brass ammo belt
+  // 3-segment swinging brass ammo belt curving cleanly from feed chute down into the drum mouth
   const beltAnchor = new THREE.Group();
-  beltAnchor.position.set(-0.072, -0.014, -0.034);
+  beltAnchor.position.set(-0.074, 0.014, -0.095);
   root.add(beltAnchor);
 
   const beltSegs: THREE.Group[] = [];
@@ -646,18 +646,18 @@ function buildGatlingModel(): ArticulatedGun {
 
   return {
     root,
-    muzzleZ: -0.665,
-    muzzleY: -0.006,
+    muzzleZ: -0.685,
+    muzzleY: -0.004,
     ejectPos: new THREE.Vector3(0.070, -0.012, -0.015),
-    baseOffset: new THREE.Vector3(-0.025, -0.045, 0.035),
+    baseOffset: new THREE.Vector3(-0.018, -0.015, 0.055),
     bodyBoxes: GATLING_BODY_BOXES,
-    // Left hand grips top chainsaw carry handle cleanly above drive housing
-    leftRest: { x: -0.014, y: 0.122, z: -0.140, rx: 0.14, ry: -0.18, rz: 0.16 },
+    // Left hand grips top chainsaw carry handle cleanly forward & clear of brass belt
+    leftRest: { x: -0.014, y: 0.122, z: -0.205, rx: 0.14, ry: -0.18, rz: 0.16 },
     // Right hand holds rear pistol/spade grip
     rightRest: { x: 0.046, y: -0.068, z: 0.132, rx: 0.26, ry: -0.14, rz: -1.42 },
     leftRestPose: HAND_POSES.gatlingLeftRest,
     rightRestPose: HAND_POSES.gatlingRightRest,
-    leftElbow: new THREE.Vector3(-0.34, -0.14, 0.24),
+    leftElbow: new THREE.Vector3(-0.46, -0.18, 0.14),
     rightElbow: new THREE.Vector3(0.26, -0.22, 0.44),
     mag,
     magRestPos,
@@ -932,16 +932,16 @@ export class WeaponView {
     const magSeatKick = pulse(t, 610, 650, 710, easeOutCubic, easeInOutCubic);
     const boltKick = pulse(t, 830, 875, 920, easeOutCubic, easeOutCubic) * ((1.5 * Math.PI) / 180);
 
-    // Angle the rifle slightly left/up so BOTH hands & all 5 fingers stay framed clearly
+    // Lift & angle the rifle cleanly so BOTH hands, all 5 separated skin fingers & sleeve cuffs sit well inside frame
     this.reloadGunPos.set(
-      lerp(0, -0.072, poseW),
-      lerp(0, 0.056, poseW) + magSeatKick * 0.012,
-      lerp(0, -0.088, poseW) + boltKick * 0.40,
+      lerp(0, -0.095, poseW),
+      lerp(0, 0.105, poseW) + magSeatKick * 0.012,
+      lerp(0, -0.065, poseW) + boltKick * 0.40,
     );
     this.reloadGunRot.set(
-      lerp(0, -0.14, poseW) + boltKick + magSeatKick * 0.022,
-      lerp(0, 0.28, poseW),
-      lerp(0, -(3.0 * Math.PI) / 180, poseW) - boltKick * 0.35,
+      lerp(0, -0.11, poseW) + boltKick + magSeatKick * 0.022,
+      lerp(0, 0.32, poseW),
+      lerp(0, -(3.5 * Math.PI) / 180, poseW) - boltKick * 0.35,
     );
     this.reloadSightDipRad = -(1.5 * Math.PI) / 180 * poseW;
 

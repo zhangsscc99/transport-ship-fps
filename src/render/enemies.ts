@@ -463,14 +463,12 @@ export class EnemyRig {
     legR.rotation.set(strideOpp * legAmp - this.aimBlend * 0.14 + coverDuck * 0.8, 0, 0.05 * this.aimBlend);
     shinR.rotation.set(-Math.max(0, -strideOpp) * 0.65 * moveFactor - coverDuck * 1.2, 0, 0);
 
-    // Arms holding rifle (low ready while patrolling → raised combat aim when engaging!)
-    const aimLift = 0.55 + this.aimBlend * 0.72; // raises arms forward along -Z
-    armR.rotation.set(
-      aimLift + fireKick * 0.22 - hitFlinch * 0.22 + breathe * 0.025,
-      -0.15 * this.aimBlend,
-      0.08,
-    );
-    forearmR.rotation.set(0.35 + this.aimBlend * 0.20, 0, 0);
+    // Arms holding rifle (low ready while patrolling → leveled shoulder aim when engaging!)
+    const aimLift = 0.55 + this.aimBlend * 0.68;
+    const armRx = aimLift + fireKick * 0.20 - hitFlinch * 0.22 + breathe * 0.025;
+    const foreRx = 0.32 + this.aimBlend * 0.22;
+    armR.rotation.set(armRx, -0.14 * this.aimBlend, 0.06);
+    forearmR.rotation.set(foreRx, 0, 0);
 
     armL.rotation.set(
       aimLift * 0.92 + fireKick * 0.14 + stride * 0.12 * (1 - this.aimBlend),
@@ -479,8 +477,8 @@ export class EnemyRig {
     );
     forearmL.rotation.set(0.55 + this.aimBlend * 0.22, 0.25, 0);
 
-    // Align rifle straight toward forward (-Z) when aiming
-    gun.rotation.set(-aimLift * 0.82 - 0.18 + fireKick * 0.16, 0.08, 0);
+    // Cancel parent armR + forearmR pitch so carried rifle aims horizontally forward (-Z) directly at player!
+    gun.rotation.set(-(armRx + foreRx) + fireKick * 0.16, 0.12 * this.aimBlend, 0);
 
     // Floating HP bar only when wounded
     const wounded = bot.entity.hp < bot.entity.maxHp && bot.entity.hp > 0;

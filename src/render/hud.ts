@@ -360,7 +360,7 @@ export class Hud {
 
     // --- Gatling-specific UI: 3×100-round rows + 250ms spin-up bar + heavy vibration/spread readout ---
     this.gatlingPanel = div(
-      `display:none;flex-direction:column;gap:3px;margin-top:5px;width:176px;pointer-events:none;`,
+      `display:none;flex-direction:column;gap:3px;margin-top:5px;width:196px;pointer-events:none;`,
       this.ammoWrap,
       'gatling-ui',
     );
@@ -407,7 +407,7 @@ export class Hud {
       'gatling-spin',
     );
     this.gatlingSpinLabel = div(
-      `font-size:8px;font-weight:800;letter-spacing:0.1em;color:${PALETTE.gatlingAccent};pointer-events:none;`,
+      `font-size:8px;font-weight:800;letter-spacing:0.08em;white-space:nowrap;color:${PALETTE.gatlingAccent};pointer-events:none;`,
       spinRow,
     );
     this.gatlingSpinLabel.textContent = 'ROTOR IDLE · 250MS SPIN';
