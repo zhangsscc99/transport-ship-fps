@@ -41,10 +41,10 @@ float skyToSun(vec3 d){ return clamp(dot(normalize(d.xz + vec2(1e-5)), normalize
 vec3 horizonColor(vec3 d){
   float ts = skyToSun(d);
   // Base horizon anchored near uFogCol so sea & distant cranes fade with zero hard seam
-  vec3 away = mix(uHorAway, uFogCol, 0.65);
-  vec3 c = mix(away, away * 1.12 + vec3(0.06, 0.04, 0.02), smoothstep(0.18, 0.72, ts));
-  c = mix(c, uHor * vec3(1.55, 1.32, 1.05), pow(ts, 4.5));
-  c = mix(c, vec3(1.0, 0.78, 0.48) * 2.4, pow(ts, 22.0));
+  vec3 away = mix(uHorAway, uFogCol, 0.55);
+  vec3 c = mix(away, away * 1.10 + vec3(0.05, 0.035, 0.015), smoothstep(0.18, 0.72, ts));
+  c = mix(c, uHor * vec3(1.22, 1.02, 0.80), pow(ts, 4.5));
+  c = mix(c, vec3(1.0, 0.76, 0.46) * 1.65, pow(ts, 22.0));
   return c;
 }
 `;
@@ -65,24 +65,24 @@ void main(){
 
   // ---- 1. Gradient sky dome (horizon → mid maritime blue → zenith) ----
   vec3 hc = horizonColor(d);
-  vec3 midC = mix(vec3(0.24, 0.36, 0.52), vec3(0.76, 0.58, 0.42), pow(ts, 3.0));
+  vec3 midC = mix(vec3(0.19, 0.30, 0.45), vec3(0.64, 0.47, 0.33), pow(ts, 3.0));
   vec3 clearC = mix(hc, midC, smoothstep(0.0, 0.18, h));
   clearC = mix(clearC, uZen, smoothstep(0.14, 0.62, h));
 
-  // Mie forward-scattering aureole around low sun
-  clearC += uSunCol * vec3(1.0, 0.90, 0.76) * (
-    pow(s, 6.0) * 0.16 +
-    pow(s, 48.0) * 0.50 +
-    pow(s, 420.0) * 2.0 +
-    pow(s, 4500.0) * 12.0
+  // Mie forward-scattering aureole around low sun (filmic, avoids white-out)
+  clearC += uSunCol * vec3(1.0, 0.88, 0.72) * (
+    pow(s, 7.0) * 0.11 +
+    pow(s, 52.0) * 0.36 +
+    pow(s, 480.0) * 1.45 +
+    pow(s, 5000.0) * 8.5
   );
 
   // ---- 2. Layer A: High wispy cirrus streaks (altitude high, soft warm glow) ----
   vec2 cuvHi = d.xz / (h + 0.24) * vec2(0.45, 1.35) + vec2(-0.005, 0.002) * uTime;
   float cirrusN = fbm3(cuvHi * 1.4 + fbm3(cuvHi * 0.6) * 0.8);
   float cirrus = smoothstep(0.50, 0.78, cirrusN) * smoothstep(0.06, 0.28, h) * (1.0 - smoothstep(0.55, 0.92, h));
-  vec3 cirrusCol = mix(vec3(0.52, 0.62, 0.74), uSunCol * 1.35, 0.35 + 0.65 * pow(ts, 2.0));
-  vec3 col = mix(clearC, cirrusCol, cirrus * 0.42);
+  vec3 cirrusCol = mix(vec3(0.42, 0.52, 0.64), uSunCol * 1.05, 0.35 + 0.65 * pow(ts, 2.0));
+  vec3 col = mix(clearC, cirrusCol, cirrus * 0.45);
 
   // ---- 3. Layer B: Mid volumetric cumulus cloud deck (self-shadowed underside relief) ----
   vec2 cuv = d.xz / (h + 0.11) * vec2(0.60, 0.92);

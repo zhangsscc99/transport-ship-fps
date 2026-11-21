@@ -24,7 +24,7 @@ export function applyAtmosphere(scene: THREE.Scene, renderer: THREE.WebGLRendere
   // Layer 1: Environment IBL from PMREM of the procedural sky dome.
   // High-metalness surfaces and wet deck clearly mirror sky & warm horizon.
   scene.environment = captureSkyEnv(renderer);
-  scene.environmentIntensity = 1.6;
+  scene.environmentIntensity = 1.15;
 
   return {
     sky: dome.mesh,

@@ -2,23 +2,23 @@
 // Source: docs/ART-SPEC.md §1. Every render material must pull from here.
 
 export const PALETTE = {
-  deck: ['#323940', '#3f4750', '#545f6b'], // 甲板钢板：暗/中/亮 3 档
+  deck: ['#22282e', '#2c333b', '#3d4651'], // 甲板钢板：深海冷钢 3 档，拉出湿反光与明暗层次
   deckLine: '#d1a82e', // 甲板警示黄线
   container: ['#8f3b2e', '#2b4d6f', '#3f5940', '#7d6138'], // 集装箱 4 主色：锈红 / 深蓝 / 橄榄绿 / 赭黄
   containerTop: '#6e7378',
   rust: '#7a3f22',
   tower: ['#5d656d', '#6e7780'], // 混凝土哨塔（中性偏冷灰）
   pipe: '#485460', // 管件/系缆桩——金属高光吃 IBL
-  sea: ['#192a36', '#213544', '#314c60'],
+  sea: ['#152430', '#1c2f3e', '#2c465a'],
   sky: ['#384c63', '#6f8db3'], // [0] 天顶，[1] 半球光天光色
   skyGround: '#2a2622', // 半球光地面反弹色（暖暗甲板）
-  skyHorizon: '#8ca1b6', // 地平线雾霾亮灰蓝 — 与雾色贴合
+  skyHorizon: '#7c93aa', // 地平线雾霾灰蓝 — 与雾色贴合
   // Saltline-inspired dusk/maritime sky — linear-space RGB triples
-  skyZen: [0.09, 0.14, 0.22],
-  skyHor: [0.98, 0.72, 0.44],
-  skyHorAway: [0.24, 0.33, 0.44],
+  skyZen: [0.065, 0.11, 0.185],
+  skyHor: [0.86, 0.58, 0.34],
+  skyHorAway: [0.19, 0.27, 0.38],
   fill: '#5b7fb3', // 冷色反方向补光
-  fog: '#788da3', // 指数雾色：取地平线灰蓝，与远景吊机/海面自然融出
+  fog: '#6c8298', // 指数雾色：取地平线灰蓝，与远景吊机/海面自然融出
   sun: '#ffe6c4', // 主方向光：低角度暖白太阳（15° 仰角）
   teamA: '#4fa4f1', // 我方：蓝
   teamB: '#d9534f', // 敌方：红

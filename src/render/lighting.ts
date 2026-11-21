@@ -36,13 +36,13 @@ export function configureRenderer(renderer: THREE.WebGLRenderer): void {
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.22;
+  renderer.toneMappingExposure = 1.18;
   renderer.outputColorSpace = THREE.SRGBColorSpace;
 }
 
 export function addLights(scene: THREE.Scene): Lights {
-  // --- Layer 2: Sun key light (warm-white #ffe6c4, intensity 2.7, 15.5° elev) ---
-  const sun = new THREE.DirectionalLight(SUN_COLOR.clone(), 2.7);
+  // --- Layer 2: Sun key light (warm-white #ffe6c4, intensity 2.45, 15.5° elev) ---
+  const sun = new THREE.DirectionalLight(SUN_COLOR.clone(), 2.45);
   sun.name = 'sun-key';
   sun.position.copy(SUN_DIR).multiplyScalar(SUN_DIST);
   sun.castShadow = true;

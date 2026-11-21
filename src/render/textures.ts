@@ -207,21 +207,20 @@ function genStencil(): HTMLCanvasElement {
   codes.forEach((code, i) => {
     const x0 = i * 128;
     const cx = x0 + 64;
-    // subtle corner bracket line
-    ctx.strokeStyle = 'rgba(232,236,240,0.72)';
-    ctx.lineWidth = 1.5;
-    ctx.strokeRect(x0 + 12, 16, 104, 92);
+    // subtle weathered stencil divider bar (no sticker-like box border)
+    ctx.fillStyle = 'rgba(232,236,240,0.65)';
+    ctx.fillRect(x0 + 18, 54, 92, 1.5);
     // primary container reporting mark
-    ctx.fillStyle = 'rgba(236,240,244,0.94)';
+    ctx.fillStyle = 'rgba(236,240,244,0.92)';
     ctx.font = "700 17px 'Courier New',monospace";
-    ctx.fillText(code, cx, 42);
+    ctx.fillText(code, cx, 38);
     // ISO size/type badge
     ctx.font = "700 12px 'Courier New',monospace";
-    ctx.fillStyle = 'rgba(232,236,240,0.85)';
-    ctx.fillText(iso[i], cx, 66);
+    ctx.fillStyle = 'rgba(232,236,240,0.82)';
+    ctx.fillText(iso[i], cx, 69);
     // gross/tare spec line
     ctx.font = "600 11px 'Courier New',monospace";
-    ctx.fillStyle = 'rgba(226,230,236,0.78)';
+    ctx.fillStyle = 'rgba(226,230,236,0.74)';
     ctx.fillText(subs[i], cx, 90);
   });
   // sprayed-paint erosion speckle

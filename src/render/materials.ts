@@ -343,22 +343,23 @@ diffuseColor.rgb = mix( diffuseColor.rgb, vec3( 0.24, 0.23, 0.22 ), topDirt * 0.
         envMapIntensity: 0.75,
       });
     case 'puddle': {
-      // Standing water on steel deck: low-roughness sky mirror with organic
-      // multi-lobe alpha shoreline & gentle scrolling wind ripples. Relies on
-      // the PMREM sky IBL + Fresnel + crisp sun glint rather than a flat blue tint.
+      // Standing water on wet steel deck: crystal-clear dark-backed rainwater
+      // mirroring the sky PMREM via Fresnel + gentle capillary wind ripples
+      // (zero milky diffuse wash).
       const ripple = getTexture('puddleNormal');
       ripple.repeat.set(2, 2);
       const m = new THREE.MeshStandardMaterial({
         color: PALETTE.sea[0],
-        metalness: 0.14,
-        roughness: 0.04,
-        envMapIntensity: 2.35,
+        metalness: 0.35,
+        roughness: 0.03,
+        envMapIntensity: 2.2,
         alphaMap: getTexture('puddleAlpha'),
         transparent: true,
+        opacity: 0.92,
         depthWrite: false,
         side: THREE.FrontSide,
         normalMap: ripple,
-        normalScale: new THREE.Vector2(0.12, 0.12),
+        normalScale: new THREE.Vector2(0.09, 0.09),
         polygonOffset: true,
         polygonOffsetFactor: -1,
         polygonOffsetUnits: -1,
@@ -385,10 +386,10 @@ uniform vec3 uSunCol;`,
 	mapN.xy *= normalScale;
 	normal = normalize( tbn * mapN );
 	float shore = texture2D( alphaMap, vAlphaMapUv ).g;
-	float depth = smoothstep( 0.35, 0.92, shore );
-	float fres = pow( 1.0 - clamp( dot( normal, normalize( vViewPosition ) ), 0.0, 1.0 ), 3.5 );
-	// Dark wet-steel base underneath; grazing angles mirror sky via PMREM + subtle Fresnel
-	diffuseColor.rgb *= mix( 0.9, 0.55, depth );`,
+	float depth = smoothstep( 0.30, 0.90, shore );
+	float fres = pow( 1.0 - clamp( dot( normal, normalize( vViewPosition ) ), 0.0, 1.0 ), 3.0 );
+	// Dark wet-steel floor beneath clear water; smoothstep shoreline darkens damp rim
+	diffuseColor.rgb *= mix( 0.72, 0.38, depth );`,
           )
           .replace(
             '#include <opaque_fragment>',
@@ -396,16 +397,16 @@ uniform vec3 uSunCol;`,
 	vec3 pV = normalize( vViewPosition );
 	vec3 pSun = normalize( ( viewMatrix * vec4( uSunDirW, 0.0 ) ).xyz );
 	vec3 pR = reflect( -pV, normal );
-	float pGlint = pow( clamp( dot( pR, pSun ), 0.0, 1.0 ), 220.0 ) * 2.4;
-	float pBroad = pow( clamp( dot( pR, pSun ), 0.0, 1.0 ), 18.0 ) * 0.45;
-	float pRefl = smoothstep( 0.15, 0.65, shore );
-	outgoingLight += mix( uSkyTint, uSunCol, 0.65 ) * ( pBroad + pGlint ) * pRefl;
-	outgoingLight += uSkyTint * ( 0.04 + fres * 0.32 ) * depth * pRefl;
+	float pGlint = pow( clamp( dot( pR, pSun ), 0.0, 1.0 ), 260.0 ) * 2.2;
+	float pBroad = pow( clamp( dot( pR, pSun ), 0.0, 1.0 ), 28.0 ) * 0.16;
+	float pRefl = smoothstep( 0.18, 0.62, shore );
+	outgoingLight += mix( uSkyTint, uSunCol, 0.75 ) * ( pBroad + pGlint ) * pRefl;
+	outgoingLight += mix( vec3( 0.14, 0.24, 0.36 ), uSkyTint, fres ) * ( fres * 0.28 ) * depth * pRefl;
 	}
 	#include <opaque_fragment>`,
           );
       };
-      m.customProgramCacheKey = () => 'puddle-water-v2';
+      m.customProgramCacheKey = () => 'puddle-water-v3';
       return m;
     }
     case 'lampRed':
