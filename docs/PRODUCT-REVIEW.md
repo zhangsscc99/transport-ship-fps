@@ -59,3 +59,37 @@ fill 0.85 + camFill 后该区域从 luma≈5 升到可见灰阶，连通块 5896
 
 **截图**：`e2e/shots/dark-land-spawn.png`、`dark-land-down.png`、`dark-land-downleft.png`、
 `dark-port-*.png`、`gun-crop.png`（3× 放大的枪体，可见导轨高光、机匣中间调、手套亮一档、前臂斜出右下角）。
+
+## 2026-11-21 轮次（F215：修「空局」——bot 渗透推进 + 队友报点）
+
+### 上一轮遗留的最高优先缺陷已实证并修掉
+
+上一轮记录「玩家站 A 点不动 60s，hp 恒 200、killsB=0，5 个 bot 距离 29–41m 不变」。
+根因：bot 只在固定 `PATROL_WAYPOINTS` 以 1.4 m/s 绕圈，`VISION_RANGE=40` 而两队出生区相距 >40m，
+`ENGAGE_MAX_DIST=16` 又要求贴身才开火 → 双方各自在自家半场走，整局零交火。
+
+### 改后线上实测（3028 部署构建 `index-CDd1EGNC.js`，竖屏 390×844，NORMAL，5 bot，玩家全程不动）
+
+| 仿真时刻 | 最近敌人距离 | ENGAGE 数 | 累计开火 | 状态分布 |
+|---|---|---|---|---|
+| 开局 (t0) | 27.3 m | 0 | 0 | 3×IDLE / 2×PATROL |
+| +16 s | 8.5 m | 1 | 2 | 3×PATROL(advancing) / 1×CHASE / 1×ENGAGE |
+| +25 s | 8.0 m | 4 | 23 | 4×ENGAGE / 1×PATROL(advancing) |
+
+玩家视角 HUD 血量 200 → 92（被 bot 打中 9 次），即「站着不动也不会被冷落」；
+单测侧 NORMAL 10 seed：20 s 内最小距离 7.98–22.93 m，首次 LOS 7.5–22.3 s，首枪 13.7–24.1 s，
+击杀静止玩家 25.4–36.2 s。
+
+### 本轮人工审视新发现（下一轮候选，按优先级）
+
+1. **敌人脚部悬空 ~8–12 cm**：`e2e/shots/ai-engage-portrait.jpg` 里 8 m 的潜伏者靴底与甲板之间有可见缝隙
+   （估 5–7% 身高），且没有接触阴影。推断 enemy root 的 Y 偏移/GLB 原点问题 → 建议给士兵 GLB 加脚底对齐修正，
+   并补一个「脚底贴地」断言（bot 站立时 `feetY` 与甲板高差 < 2 cm）。
+2. **枪口火光在静帧里完全看不到**：`ai-engage-portrait.jpg` 时刻 23 发已打出去，敌人枪口无火光/无烟。
+   需确认是「900 ms 间隔恰好落在两发之间」还是 VFX 只对玩家武器生效；若是后者，敌人开火要有 1 帧 muzzle flash。
+3. **竖屏右下按钮被枪模压住**（上轮 #3 仍在）：FIRE 按钮左缘被枪管+手套覆盖，SWAP/RELOAD 文字贴枪身，
+   触控热区未受损但观感廉价 → 建议竖屏把视模型右移 3–4%，或按钮盘面向右收 6 px。
+4. **公网源站仍未指向本机**（上轮部署面发现，复验仍成立）：`https://openfolio.uk/transport/` 的 index.html
+   仍引用旧 bundle `index-D6lu3ojB.js`（655 KB），本机 dist 已是 `index-CDd1EGNC.js`；本机两个 transport 目录、
+   pm2、nginx 均无 D6lu3ojB → 对外节点在别处（rev-tunnel/HK）。**每轮上线用户在跑旧版本**，需运维定位源站。
+
