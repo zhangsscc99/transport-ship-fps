@@ -23,10 +23,12 @@ test('walk speed is 4.2 m/s and moves forward', () => {
   assert.ok(p.position.z < -1.5, `z ${p.position.z}`);
 });
 
-test('run is 6.0, crouch is 1.9 and sets the flag', () => {
+test('speed scales linearly with stick magnitude; crouch is 1.9 and sets the flag', () => {
   const p = new Player({ x: 0, y: 0, z: 0 });
-  step(p, input({ moveZ: 1, run: true }), 0.3);
-  assert.ok(Math.abs(p.velocity.z - -MOVE.runSpeed) < 1e-6);
+  step(p, input({ moveZ: 0.5 }), 0.3);
+  assert.ok(Math.abs(Math.hypot(p.velocity.x, p.velocity.z) - MOVE.walkSpeed * 0.5) < 1e-6);
+  step(p, input({ moveZ: 1.0 }), 0.3);
+  assert.ok(Math.abs(Math.hypot(p.velocity.x, p.velocity.z) - MOVE.walkSpeed) < 1e-6);
   step(p, input({ moveZ: 1, crouch: true }), 0.3);
   assert.ok(Math.abs(Math.hypot(p.velocity.x, p.velocity.z) - MOVE.crouchSpeed) < 1e-6);
   assert.equal(p.crouch, true);
@@ -83,10 +85,10 @@ test('pitch clamps to ±85°', () => {
 test('cannot leave map bounds (slides along the edge)', () => {
   const p = new Player({ x: 31.8, y: 0, z: 0 });
   const world = { isInside: isInsideBounds };
-  step(p, input({ moveX: 1, run: true }), 0.5, world); // strafe toward +x edge
+  step(p, input({ moveX: 1 }), 0.5, world); // strafe toward +x edge
   assert.ok(p.position.x <= MAP.bounds.w / 2, `x ${p.position.x}`);
   const p2 = new Player({ x: 0, y: 0, z: -19.8 });
-  step(p2, input({ moveZ: 1, run: true }), 0.5, world); // forward -z edge
+  step(p2, input({ moveZ: 1 }), 0.5, world); // forward -z edge
   assert.ok(p2.position.z >= -MAP.bounds.d / 2, `z ${p2.position.z}`);
 });
 

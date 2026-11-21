@@ -145,7 +145,6 @@ var CollisionWorld = class {
 // src/game/player.ts
 var MOVE = {
   walkSpeed: 4.2,
-  runSpeed: 6,
   crouchSpeed: 1.9,
   jumpSpeed: 4.8,
   gravity: -18,
@@ -157,7 +156,6 @@ function emptyInput() {
   return {
     moveX: 0,
     moveZ: 0,
-    run: false,
     crouch: false,
     jump: false,
     yawDelta: 0,
@@ -203,7 +201,7 @@ var Player = class {
     } else {
       this.crouch = input2.crouch;
     }
-    const speed = this.crouch ? MOVE.crouchSpeed : input2.run ? MOVE.runSpeed : MOVE.walkSpeed;
+    const speed = this.crouch ? MOVE.crouchSpeed : MOVE.walkSpeed;
     const fwd = this.forward();
     const right = { x: -fwd.z, z: fwd.x };
     let wx = fwd.x * input2.moveZ + right.x * input2.moveX;
@@ -368,24 +366,24 @@ function step(p, inp, seconds) {
   const n = Math.round(seconds / DT);
   for (let i = 0; i < n; i++) p.update(DT, inp, WQ);
 }
-test("head-on sprint into a container stops at its face and stays stable", () => {
+test("head-on move into a container stops at its face and stays stable", () => {
   const p = new Player({ x: -6, y: 0, z: 0 });
-  step(p, input({ moveZ: 1, run: true }), 1.2);
+  step(p, input({ moveZ: 1 }), 1.2);
   const face = -2.75 + PLAYER_RADIUS;
   assert.ok(Math.abs(p.position.z - face) < 0.02, `z ${p.position.z}`);
   assert.equal(p.velocity.z, 0);
-  for (let i = 0; i < 60; i++) p.update(DT, input({ moveZ: 1, run: true }), WQ);
+  for (let i = 0; i < 60; i++) p.update(DT, input({ moveZ: 1 }), WQ);
   assert.ok(Math.abs(p.position.z - face) < 0.02, `drifted to ${p.position.z}`);
 });
 test("diagonal pressure slides along the wall (strafe keeps moving)", () => {
   const p = new Player({ x: -5, y: 0, z: -1.5 });
-  step(p, input({ moveZ: 1, moveX: -1, run: true }), 0.5);
+  step(p, input({ moveZ: 1, moveX: -1 }), 0.7);
   assert.ok(Math.abs(p.position.z - (-2.75 + PLAYER_RADIUS)) < 0.05, `z ${p.position.z}`);
   assert.ok(p.position.x < -6.5, `slid to x ${p.position.x}`);
 });
 test("walks up tower stairs via auto-step (no jump needed)", () => {
   const p = new Player({ x: -16, y: 0, z: 14 });
-  step(p, input({ moveX: -1, run: true }), 4);
+  step(p, input({ moveX: -1 }), 4);
   assert.ok(p.position.y > 2.9, `y ${p.position.y}`);
   assert.ok(p.position.x < -22.5, `x ${p.position.x}`);
   assert.ok(p.onGround);
@@ -404,7 +402,7 @@ test("jumping under a pipe roof bumps the head and lands back", () => {
 });
 test("leaving the ship bounds drowns", () => {
   const p = new Player({ x: 31, y: 0, z: 19 });
-  step(p, input({ moveX: 1, run: true }), 1);
+  step(p, input({ moveX: 1 }), 1);
   assert.equal(p.drowned, true);
 });
 test("sinking below waterY drowns (direct move call)", () => {
@@ -467,7 +465,7 @@ test("falls and lands on top of a container", () => {
 });
 test("a 0.55m cover is too tall for auto-step \u2014 it blocks", () => {
   const p = new Player({ x: -2, y: 0, z: 3 });
-  step(p, input({ moveZ: 1, run: true }), 1);
+  step(p, input({ moveZ: 1 }), 1);
   assert.ok(p.position.z >= 1.6 + PLAYER_RADIUS - 0.02, `z ${p.position.z}`);
   assert.ok(p.position.z < 2.05, `overshot to ${p.position.z}`);
   assert.equal(p.position.y, 0);

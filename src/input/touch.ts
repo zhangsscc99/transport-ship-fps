@@ -1,6 +1,6 @@
 // Touch control layer (F108 / HUD v2):
-//   - Left thumb natural zone: virtual joystick (r=56px dashed ring + solid nub,
-//     deadzone 8px) + SPRINT 44px icon button snug to joystick upper-right.
+//   - Left thumb natural zone: virtual joystick ONLY (r=56px dashed ring + solid
+//     nub, deadzone 8px). No sprint button.
 //   - Right thumb arc zone: ALL action keys (FIRE 76px circle at right/bottom 24px,
 //     RELOAD 52px upper-left of FIRE, SWAP 52px above RELOAD, JUMP 52px directly
 //     above FIRE, CROUCH 48px above JUMP).
@@ -18,6 +18,8 @@ import { buildHudButton, HUD_ICONS } from '../render/hud';
 const STICK_R = 56;
 const STICK_DZ = 8;
 
+type TouchBtnId = 'fire' | 'reload' | 'swap' | 'jump' | 'crouch';
+
 interface BtnAnchor {
   size: number;
   side: 'left' | 'right';
@@ -27,7 +29,7 @@ interface BtnAnchor {
 
 interface LayoutSpec {
   stick: { left: number; bottom: number };
-  btns: Record<'fire' | 'reload' | 'swap' | 'jump' | 'crouch' | 'run', BtnAnchor>;
+  btns: Record<TouchBtnId, BtnAnchor>;
 }
 
 /** Portrait 390×844 anchors: right cluster sits in the lower-right thumb arc,
@@ -40,7 +42,6 @@ const PORTRAIT_LAYOUT: LayoutSpec = {
     swap: { size: 52, side: 'right', x: 96, bottom: 102 },
     jump: { size: 52, side: 'right', x: 36, bottom: 108 },
     crouch: { size: 48, side: 'right', x: 38, bottom: 168 },
-    run: { size: 44, side: 'left', x: 112, bottom: 174 },
   },
 };
 
@@ -54,7 +55,6 @@ const LANDSCAPE_LAYOUT: LayoutSpec = {
     swap: { size: 48, side: 'right', x: 84, bottom: 88 },
     jump: { size: 48, side: 'right', x: 26, bottom: 94 },
     crouch: { size: 44, side: 'right', x: 28, bottom: 150 },
-    run: { size: 44, side: 'left', x: 112, bottom: 164 },
   },
 };
 
@@ -85,14 +85,13 @@ export class TouchControls implements InputSource {
   private lookAcc = { x: 0, y: 0 };
   private fireIds = new Set<number>();
   private flags = { fire: false, reload: false, swap: false, jump: false };
-  /** toggles — mobile default runs (SPEC: 手机默认按住「跑」) */
-  private toggles = { run: true, crouch: false };
+  private toggles = { crouch: false };
   private disposers: (() => void)[] = [];
   private stickBase: HTMLDivElement | null = null;
   private stickNub: HTMLDivElement | null = null;
   private stickIdle: HTMLDivElement | null = null;
   private fireBtn: HTMLDivElement | null = null;
-  private btnEls: Partial<Record<'fire' | 'reload' | 'swap' | 'jump' | 'crouch' | 'run', HTMLDivElement>> = {};
+  private btnEls: Partial<Record<TouchBtnId, HTMLDivElement>> = {};
 
   constructor(parent: HTMLElement = document.body) {
     this.enabled = isTouchDevice();
@@ -152,7 +151,7 @@ export class TouchControls implements InputSource {
     );
     document.body.append(this.stickBase, this.stickNub);
 
-    // HUD v2 buttons: FIRE/RELOAD/SWAP/JUMP/CROUCH on right thumb arc, SPRINT snug to joystick.
+    // HUD v2 buttons: FIRE/RELOAD/SWAP/JUMP/CROUCH on right thumb arc; left side is joystick only.
     this.fireBtn = buildHudButton({
       id: 'fire',
       label: 'FIRE',
@@ -164,7 +163,7 @@ export class TouchControls implements InputSource {
     });
     const btns: {
       el: HTMLDivElement;
-      id: 'fire' | 'reload' | 'swap' | 'jump' | 'crouch' | 'run';
+      id: TouchBtnId;
       act: 'hold' | 'edge' | 'toggle';
     }[] = [
       { el: this.fireBtn, act: 'hold', id: 'fire' },
@@ -212,22 +211,10 @@ export class TouchControls implements InputSource {
         act: 'toggle',
         id: 'crouch',
       },
-      {
-        el: buildHudButton({
-          id: 'run',
-          label: 'SPRINT',
-          iconSvg: HUD_ICONS.run(17),
-          posCss: '',
-          size: PORTRAIT_LAYOUT.btns.run.size,
-        }),
-        act: 'toggle',
-        id: 'run',
-      },
     ];
     for (const b of btns) {
       this.btnEls[b.id] = b.el;
       this.root.appendChild(b.el);
-      if (b.id === 'run') this.markToggle(b.el, this.toggles.run);
       this.on(b.el, 'pointerdown', (e) => {
         e.preventDefault();
         e.stopPropagation();
@@ -243,9 +230,8 @@ export class TouchControls implements InputSource {
         } else if (b.act === 'edge') {
           this.flags[b.id as 'reload' | 'swap' | 'jump'] = true;
         } else {
-          const k = b.id as 'run' | 'crouch';
-          this.toggles[k] = !this.toggles[k];
-          this.markToggle(b.el, this.toggles[k]);
+          this.toggles.crouch = !this.toggles.crouch;
+          this.markToggle(b.el, this.toggles.crouch);
         }
       });
     }
@@ -383,7 +369,6 @@ export class TouchControls implements InputSource {
     s.moveZ = -this.stickVec.y; // stick up = forward
     s.yawDelta = -this.lookAcc.x * TOUCH_LOOK_SENSITIVITY;
     s.pitchDelta = -this.lookAcc.y * TOUCH_LOOK_SENSITIVITY;
-    s.run = this.toggles.run;
     s.crouch = this.toggles.crouch;
     s.fire = this.flags.fire;
     s.jump = this.flags.jump;

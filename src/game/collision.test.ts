@@ -17,21 +17,21 @@ function step(p: Player, inp: InputState, seconds: number): void {
   for (let i = 0; i < n; i++) p.update(DT, inp, WQ);
 }
 
-test('head-on sprint into a container stops at its face and stays stable', () => {
+test('head-on move into a container stops at its face and stays stable', () => {
   // container (-6,0,-4) spans z∈[-5.25,-2.75], x∈[-9,-3]
   const p = new Player({ x: -6, y: 0, z: 0 });
-  step(p, input({ moveZ: 1, run: true }), 1.2);
+  step(p, input({ moveZ: 1 }), 1.2);
   const face = -2.75 + PLAYER_RADIUS;
   assert.ok(Math.abs(p.position.z - face) < 0.02, `z ${p.position.z}`);
   assert.equal(p.velocity.z, 0);
   // keep pressing for 60 more frames — must not creep or jitter through
-  for (let i = 0; i < 60; i++) p.update(DT, input({ moveZ: 1, run: true }), WQ);
+  for (let i = 0; i < 60; i++) p.update(DT, input({ moveZ: 1 }), WQ);
   assert.ok(Math.abs(p.position.z - face) < 0.02, `drifted to ${p.position.z}`);
 });
 
 test('diagonal pressure slides along the wall (strafe keeps moving)', () => {
   const p = new Player({ x: -5, y: 0, z: -1.5 });
-  step(p, input({ moveZ: 1, moveX: -1, run: true }), 0.5);
+  step(p, input({ moveZ: 1, moveX: -1 }), 0.7);
   assert.ok(Math.abs(p.position.z - (-2.75 + PLAYER_RADIUS)) < 0.05, `z ${p.position.z}`);
   assert.ok(p.position.x < -6.5, `slid to x ${p.position.x}`);
 });
@@ -39,7 +39,7 @@ test('diagonal pressure slides along the wall (strafe keeps moving)', () => {
 test('walks up tower stairs via auto-step (no jump needed)', () => {
   // tower(-26,14) staircase ascends -x from x≈-18.1 to the 3.3m platform
   const p = new Player({ x: -16, y: 0, z: 14 });
-  step(p, input({ moveX: -1, run: true }), 4);
+  step(p, input({ moveX: -1 }), 4);
   assert.ok(p.position.y > 2.9, `y ${p.position.y}`);
   assert.ok(p.position.x < -22.5, `x ${p.position.x}`);
   assert.ok(p.onGround);
@@ -61,7 +61,7 @@ test('jumping under a pipe roof bumps the head and lands back', () => {
 
 test('leaving the ship bounds drowns', () => {
   const p = new Player({ x: 31, y: 0, z: 19 }); // clear of the east pipe (z∈[-17,15])
-  step(p, input({ moveX: 1, run: true }), 1.0);
+  step(p, input({ moveX: 1 }), 1.0);
   assert.equal(p.drowned, true);
 });
 
@@ -133,7 +133,7 @@ test('falls and lands on top of a container', () => {
 test('a 0.55m cover is too tall for auto-step — it blocks', () => {
   // low cover (-2,0,1): top 0.55 > STEP_HEIGHT 0.35 — jump-only terrain
   const p = new Player({ x: -2, y: 0, z: 3 });
-  step(p, input({ moveZ: 1, run: true }), 1.0);
+  step(p, input({ moveZ: 1 }), 1.0);
   assert.ok(p.position.z >= 1.6 + PLAYER_RADIUS - 0.02, `z ${p.position.z}`);
   assert.ok(p.position.z < 2.05, `overshot to ${p.position.z}`);
   assert.equal(p.position.y, 0);

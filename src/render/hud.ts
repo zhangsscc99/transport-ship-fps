@@ -79,14 +79,6 @@ export const HUD_ICONS = {
         `<line x1="6.5" y1="19.5" x2="17.5" y2="19.5"/>`,
       size,
     ),
-  run: (size = 17) =>
-    svgWrap(
-      `<circle cx="15" cy="4.5" r="1.8"/>` +
-        `<path d="M8.5 10l3.2-1.8 3.3 1.4 2.8-1.4"/>` +
-        `<path d="M12.2 8.8l-1.7 5.2 3.8 2-1.3 4.2"/>` +
-        `<path d="M10.5 14l-3.5 2.5-1.5 2.7"/>`,
-      size,
-    ),
   soundOn: (size = 17) =>
     svgWrap(
       `<polygon points="4 9.5 8.5 9.5 13 5.5 13 18.5 8.5 14.5 4 14.5"/>` +

@@ -1,12 +1,11 @@
 // First-person player state & movement — pure logic, no three.js / DOM.
-// Spec numbers from docs/SPEC.md §移动: walk 4.2 / run 6.0 / crouch 1.9,
-// jump initial velocity 4.8, gravity -18.
+// Base walk speed 4.2 / crouch 1.9, jump initial velocity 4.8, gravity -18.
+// Movement speed scales linearly with joystick magnitude (full tilt = base speed).
 
 import { PLAYER_RADIUS } from './collision';
 
 export const MOVE = {
   walkSpeed: 4.2,
-  runSpeed: 6.0,
   crouchSpeed: 1.9,
   jumpSpeed: 4.8,
   gravity: -18,
@@ -25,7 +24,6 @@ export interface Vec3 {
 export interface InputState {
   moveX: number; // strafe, +1 = right
   moveZ: number; // +1 = forward
-  run: boolean;
   crouch: boolean;
   jump: boolean; // edge-triggered, consumed on use
   yawDelta: number; // radians to add to yaw this frame
@@ -39,7 +37,6 @@ export function emptyInput(): InputState {
   return {
     moveX: 0,
     moveZ: 0,
-    run: false,
     crouch: false,
     jump: false,
     yawDelta: 0,
@@ -119,7 +116,7 @@ export class Player {
     } else {
       this.crouch = input.crouch;
     }
-    const speed = this.crouch ? MOVE.crouchSpeed : input.run ? MOVE.runSpeed : MOVE.walkSpeed;
+    const speed = this.crouch ? MOVE.crouchSpeed : MOVE.walkSpeed;
 
     const fwd = this.forward();
     const right = { x: -fwd.z, z: fwd.x };

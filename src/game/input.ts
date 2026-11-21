@@ -1,6 +1,6 @@
 // Input layer: produces a unified InputState consumed by Player.update.
-// Keyboard WASD / Shift(run) / Ctrl+C(crouch) / Space(jump) / R(reload) /
-// Q(swap) + pointer-lock mouselook on desktop; touch controls live in
+// Keyboard WASD / Ctrl+C(crouch) / Space(jump) / R(reload) / Q(swap) +
+// pointer-lock mouselook on desktop; touch controls live in
 // src/input/touch.ts (F108) and feed the same InputState. No three.js;
 // DOM access lives only inside the source classes, so module level
 // stays pure.
@@ -84,7 +84,6 @@ export class KeyboardMouseInput implements InputSource {
     if (k.has('KeyS') || k.has('ArrowDown')) s.moveZ -= 1;
     if (k.has('KeyD') || k.has('ArrowRight')) s.moveX += 1;
     if (k.has('KeyA') || k.has('ArrowLeft')) s.moveX -= 1;
-    s.run = k.has('ShiftLeft') || k.has('ShiftRight');
     s.crouch = k.has('ControlLeft') || k.has('ControlRight') || k.has('KeyC');
     s.jump = this.jumpQueued;
     s.reload = this.reloadQueued;
@@ -113,7 +112,6 @@ export function mergeInputs(a: InputState, b: InputState): InputState {
   return {
     moveX: a.moveX + b.moveX,
     moveZ: a.moveZ + b.moveZ,
-    run: a.run || b.run,
     crouch: a.crouch || b.crouch,
     jump: a.jump || b.jump,
     reload: a.reload || b.reload,
