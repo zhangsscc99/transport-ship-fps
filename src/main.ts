@@ -36,6 +36,7 @@ import { createMatch } from './game/match';
 import { EnemyManager, type Faction } from './game/ai';
 import { parseDifficulty, type DifficultyId } from './game/difficulty';
 import { EnemyRenderer } from './render/enemies';
+import { EnemyTagOverlay, type EnemyTagTelemetry } from './render/enemyTags';
 import { Menu } from './render/menu';
 import { PALETTE } from './render/palette';
 import { createSfx } from './audio/sfx';
@@ -99,6 +100,7 @@ declare global {
       z: number;
       tris: number;
     }[];
+    __enemyTags: EnemyTagTelemetry[];
     __test: {
       hurt(dmg: number): void;
       teleport(x: number, z: number, yawDeg: number, pitchDeg: number, y?: number): void;
@@ -190,6 +192,7 @@ let lastHurtSimMs = -1e9;
 let desatActive = false;
 const enemyMgr = new EnemyManager('normal');
 const enemyRenderer = new EnemyRenderer(engine.scene);
+const enemyTags = new EnemyTagOverlay(document.body);
 
 const DEATH_FALL_MS = 600;
 let playerDeathSimAt = -1;
@@ -254,6 +257,7 @@ const startRound = (settings: { difficulty: DifficultyId; muted: boolean; musicE
     w.resetSpin();
   }
   enemyRenderer.clearAll();
+  enemyTags.clearAll();
   enemyMgr.reset(simNowMs, player.position);
 };
 
@@ -276,6 +280,7 @@ const menu = new Menu(document.body, {
     hud.setDeathVeil(0);
     enemyMgr.clear();
     enemyRenderer.clearAll();
+    enemyTags.clearAll();
     const [rx, ry, rz] = spawnPoint('A', 0);
     player.position.x = rx;
     player.position.y = ry;
@@ -646,6 +651,14 @@ engine.onFrame = (dt) => {
     }
   }
   enemyRenderer.sync(enemyMgr.bots, dt, simNowMs, view.camera.position);
+  enemyTags.update(
+    enemyMgr.bots,
+    enemyRenderer,
+    view.camera,
+    MAP.boxes,
+    simNowMs,
+    match.phase === 'playing' || match.phase === 'countdown',
+  );
 
   weaponView.group.visible = playerEnt.alive;
   weaponView.update(dt, view.bob, w.reloadSnapshot(simNowMs), vfxDbg, {
@@ -798,6 +811,7 @@ window.__vfx = vfxDbg;
 window.__hands = weaponView.handsTelemetry;
 const enemiesDbg: Window['__enemies'] = [];
 window.__enemies = enemiesDbg;
+window.__enemyTags = enemyTags.telemetry;
 window.__test = {
   hurt: (dmg: number) => hurtPlayer(dmg),
   // e2e-only camera placement: drop the player at (x,z[,y]) facing yaw/pitch
@@ -826,6 +840,7 @@ window.__test = {
   clearEnemies: () => {
     enemyMgr.clear();
     enemyRenderer.clearAll();
+    enemyTags.clearAll();
   },
   setDifficulty: (diff: DifficultyId) => {
     currentDifficulty = diff;
