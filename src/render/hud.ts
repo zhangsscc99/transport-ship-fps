@@ -216,6 +216,7 @@ export class Hud {
 
   private hurtEl: HTMLDivElement;
   private lowHpEl: HTMLDivElement;
+  private deathVeilEl: HTMLDivElement;
   private fallFadeEl: HTMLDivElement;
   private arcEl: HTMLDivElement;
   private killEl: HTMLDivElement;
@@ -498,6 +499,12 @@ export class Hud {
     this.hurtEl.dataset.fx = 'hurt';
     this.lowHpEl = div(`position:absolute;inset:0;background:${HURT_BG};opacity:0;pointer-events:none;`, this.root);
     this.lowHpEl.dataset.fx = 'lowhp';
+    this.deathVeilEl = div(
+      `position:absolute;inset:0;background:radial-gradient(ellipse 90% 80% at 50% 50%, rgba(45,6,10,0.28) 20%, rgba(16,4,8,0.88) 100%);` +
+        `opacity:0;display:none;pointer-events:none;z-index:18;`,
+      this.root,
+    );
+    this.deathVeilEl.dataset.fx = 'death-veil';
     this.fallFadeEl = div(
       `position:absolute;inset:0;background:radial-gradient(ellipse 85% 75% at 50% 50%, rgba(4,8,12,0.92) 32%, #000000 100%);` +
         `opacity:0;display:none;pointer-events:none;z-index:25;`,
@@ -598,6 +605,20 @@ export class Hud {
     }
     this.swapBlurEl.style.display = 'block';
     this.swapBlurEl.style.opacity = `${Math.min(1, amount).toFixed(2)}`;
+  }
+
+  /** Red-dark cinematic vignette [0..1] during 0.6s player death collapse. */
+  setDeathVeil(amount: number): void {
+    const a = Math.max(0, Math.min(1, amount));
+    if (a <= 0.005) {
+      if (this.deathVeilEl.style.display !== 'none') {
+        this.deathVeilEl.style.display = 'none';
+        this.deathVeilEl.style.opacity = '0';
+      }
+      return;
+    }
+    this.deathVeilEl.style.display = 'block';
+    this.deathVeilEl.style.opacity = a.toFixed(3);
   }
 
   setFallFade(amount: number): void {

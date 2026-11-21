@@ -49,6 +49,13 @@ function createMatch(opts = {}) {
       winner = null;
       timeLeft = duration;
     },
+    resetToMenu() {
+      phase = "menu";
+      killsA = 0;
+      killsB = 0;
+      winner = null;
+      timeLeft = duration;
+    },
     tick(now) {
       lastNow = now;
       if (phase === "countdown" && now - countdownStart >= countdownLen) {

@@ -21,7 +21,7 @@ import { KeyboardMouseInput, mergeInputs } from './game/input';
 import { TouchControls } from './input/touch';
 import { WeaponRack } from './game/weapons';
 import { createEntity } from './game/entities';
-import { traceHit, falloffFactor, applyDamage, updateRespawn, HEADSHOT_MULT, type Ray } from './game/damage';
+import { traceHit, falloffFactor, applyDamage, HEADSHOT_MULT, type Ray } from './game/damage';
 import { createMatch } from './game/match';
 import { EnemyManager, type Faction } from './game/ai';
 import { parseDifficulty, type DifficultyId } from './game/difficulty';
@@ -44,6 +44,10 @@ declare global {
       spinLevel: number;
       reloading: boolean;
       dead: boolean;
+      difficulty: DifficultyId;
+      kills: number;
+      survivalMs: number;
+      deathPanelVisible: boolean;
       yaw: number;
       pitch: number;
       firing: boolean;
@@ -157,48 +161,96 @@ let simNowMs = 0;
 const playerEnt = createEntity('player', player.position, 100, PLAYER_RADIUS, MOVE.eyeHeight);
 const enemyMgr = new EnemyManager('normal');
 const enemyRenderer = new EnemyRenderer(engine.scene);
-let spawnIdx = 1;
+
+const DEATH_FALL_MS = 600;
+let playerDeathSimAt = -1;
+let deathPanelShown = false;
+let roundStartSimAt = 0;
+let roundKills = 0;
+let currentDifficulty: DifficultyId = 'normal';
 
 const match = createMatch();
+const startRound = (settings: { difficulty: DifficultyId; muted: boolean; musicEnabled: boolean }) => {
+  currentDifficulty = parseDifficulty(settings.difficulty);
+  enemyMgr.setDifficulty(currentDifficulty);
+  sfx.setMuted(settings.muted);
+  hud.setMuted(settings.muted);
+  match.resetToMenu();
+  match.start(performance.now());
+  menu.hide();
+  menu.hideDeath();
+  // fresh round: revive and re-arm the player at spawn
+  const [rx, ry, rz] = spawnPoint('A', 0);
+  playerEnt.alive = true;
+  playerEnt.hp = playerEnt.maxHp;
+  playerEnt.deadUntil = 0;
+  playerEnt.invincibleUntil = 0;
+  playerDeathSimAt = -1;
+  deathPanelShown = false;
+  roundStartSimAt = simNowMs;
+  roundKills = 0;
+  player.position.x = rx;
+  player.position.y = ry;
+  player.position.z = rz;
+  player.velocity.x = 0;
+  player.velocity.y = 0;
+  player.velocity.z = 0;
+  player.drowned = false;
+  player.hitAirWall = false;
+  player.yaw = 0;
+  player.pitch = 0;
+  lastSafePos.x = rx;
+  lastSafePos.y = ry;
+  lastSafePos.z = rz;
+  fallRespawnPhase = 'none';
+  fallRespawnStartAt = 0;
+  hud.setFallFade(0);
+  hud.setDeathVeil(0);
+  view.snap(player);
+  rack.index = 0;
+  rack.resetSwap();
+  weaponView.setWeapon(rack.current.spec.id);
+  for (const w of rack.list) {
+    w.ammo = w.spec.mag;
+    w.cancelReload();
+    w.resetSpin();
+  }
+  enemyMgr.reset(simNowMs, player.position);
+};
+
 const menu = new Menu(document.body, {
-  onStart: (settings) => {
-    enemyMgr.setDifficulty(parseDifficulty(settings.difficulty));
-    match.start(performance.now());
-    menu.hide();
-    // fresh round: revive and re-arm the player at spawn
-    const [rx, ry, rz] = spawnPoint('A', 0);
+  onStart: startRound,
+  onRetry: startRound,
+  onReturnMenu: () => {
+    match.resetToMenu();
     playerEnt.alive = true;
     playerEnt.hp = playerEnt.maxHp;
-    playerEnt.deadUntil = 0;
-    playerEnt.invincibleUntil = 0;
+    playerDeathSimAt = -1;
+    deathPanelShown = false;
+    hud.setDeathVeil(0);
+    enemyMgr.clear();
+    enemyRenderer.sync(enemyMgr.bots, 0, simNowMs, view.camera.position);
+    const [rx, ry, rz] = spawnPoint('A', 0);
     player.position.x = rx;
     player.position.y = ry;
     player.position.z = rz;
-    player.velocity.x = 0;
-    player.velocity.y = 0;
-    player.velocity.z = 0;
-    player.drowned = false;
-    player.hitAirWall = false;
     player.yaw = 0;
     player.pitch = 0;
-    lastSafePos.x = rx;
-    lastSafePos.y = ry;
-    lastSafePos.z = rz;
-    fallRespawnPhase = 'none';
-    fallRespawnStartAt = 0;
-    hud.setFallFade(0);
     view.snap(player);
-    rack.index = 0;
-    rack.resetSwap();
-    weaponView.setWeapon(rack.current.spec.id);
-    for (const w of rack.list) {
-      w.ammo = w.spec.mag;
-      w.cancelReload();
-      w.resetSpin();
-    }
-    enemyMgr.reset(simNowMs, player.position);
+  },
+  onSettingsChange: (s) => {
+    currentDifficulty = parseDifficulty(s.difficulty);
+    enemyMgr.setDifficulty(currentDifficulty);
+    sfx.setMuted(s.muted);
+    hud.setMuted(s.muted);
   },
 });
+currentDifficulty = menu.settings.difficulty;
+enemyMgr.setDifficulty(currentDifficulty);
+hud.onMuteToggle = (m) => {
+  sfx.setMuted(m);
+  menu.syncMuted(m);
+};
 menu.show();
 
 const scratchMuzzle = new THREE.Vector3();
@@ -229,9 +281,14 @@ function aimDir(): Vec3 {
 function hurtPlayer(dmg: number, angleRad?: number): void {
   const now = performance.now();
   if (!playerEnt.alive || now < playerEnt.invincibleUntil) return;
-  applyDamage(playerEnt, dmg, now);
+  const killed = applyDamage(playerEnt, dmg, now);
   hud.hitFrom(angleRad ?? Math.random() * Math.PI * 2, now);
   sfx.play('hurt');
+  if (killed) {
+    playerDeathSimAt = simNowMs;
+    deathPanelShown = false;
+    document.exitPointerLock?.();
+  }
 }
 
 engine.camera = view.camera;
@@ -338,21 +395,18 @@ engine.onFrame = (dt) => {
       }
     }
   }
-  if (acting && !playerEnt.alive) {
-    const [rx, ry, rz] = spawnPoint('A', spawnIdx);
-    if (updateRespawn(playerEnt, now, { x: rx, y: ry, z: rz })) {
-      spawnIdx++;
-      player.velocity.x = 0;
-      player.velocity.y = 0;
-      player.velocity.z = 0;
-      player.drowned = false;
-      player.yaw = 0;
-      player.pitch = 0;
-      view.snap(player);
-      for (const rw of rack.list) {
-        rw.ammo = rw.spec.mag;
-        rw.cancelReload();
-      }
+  // Player death sequence: 0.6s fall-down camera → settlement panel (kills / survival / difficulty)
+  let deathFallProgress = 0;
+  if (!playerEnt.alive && playerDeathSimAt >= 0) {
+    deathFallProgress = Math.min(1, Math.max(0, (simNowMs - playerDeathSimAt) / DEATH_FALL_MS));
+    hud.setDeathVeil(deathFallProgress * 0.78);
+    if (deathFallProgress >= 1 && !deathPanelShown) {
+      deathPanelShown = true;
+      menu.showDeath({
+        kills: roundKills,
+        survivalMs: Math.max(0, playerDeathSimAt - roundStartSimAt),
+        difficulty: currentDifficulty,
+      });
     }
   }
 
@@ -382,6 +436,7 @@ engine.onFrame = (dt) => {
     reloading: w.reloading,
     reloadPitchDip: weaponView.reloadPitchDip,
     gatlingFireShake: gatlingActivelyFiring ? 1 : 0,
+    deathFallProgress,
   });
   lights.update(now * 0.001, view.camera.position);
   updateWater(now * 0.001);
@@ -434,6 +489,7 @@ engine.onFrame = (dt) => {
             const killed = applyDamage(hit.entity, dmg, simNowMs);
             enemyMgr.onBotDamaged(hit.entity, player.position, simNowMs);
             if (killed) {
+              roundKills++;
               match.registerKill('A', now);
               sfx.play('kill');
               hud.notifyKill(now);
@@ -504,7 +560,7 @@ engine.onFrame = (dt) => {
     spreadPx: Math.tan(w.spreadAt(simNowMs)) * focalPx,
     fps: window.__fps,
     dead: !playerEnt.alive,
-    respawnIn: (playerEnt.deadUntil - now) / 1000,
+    respawnIn: 0,
   });
 
   const ri = engine.renderer.info;
@@ -525,6 +581,15 @@ engine.onFrame = (dt) => {
   dbg.spinLevel = w.spinLevel;
   dbg.reloading = w.reloading;
   dbg.dead = !playerEnt.alive;
+  dbg.difficulty = currentDifficulty;
+  dbg.kills = roundKills;
+  dbg.survivalMs =
+    playerDeathSimAt >= 0
+      ? Math.max(0, playerDeathSimAt - roundStartSimAt)
+      : acting
+        ? Math.max(0, simNowMs - roundStartSimAt)
+        : 0;
+  dbg.deathPanelVisible = deathPanelShown;
   dbg.yaw = player.yaw;
   dbg.pitch = player.pitch;
   dbg.firing = inp.fire;
@@ -579,6 +644,10 @@ const dbg = {
   spinLevel: 0,
   reloading: false,
   dead: false,
+  difficulty: currentDifficulty,
+  kills: 0,
+  survivalMs: 0,
+  deathPanelVisible: false,
   yaw: 0,
   pitch: 0,
   firing: false,
@@ -642,6 +711,8 @@ window.__test = {
     enemyRenderer.sync(enemyMgr.bots, 0, simNowMs, view.camera.position);
   },
   setDifficulty: (diff: DifficultyId) => {
+    currentDifficulty = diff;
+    menu.setDifficulty(diff);
     enemyMgr.setDifficulty(diff);
   },
   damageEnemy: (id: string, dmg: number) => {

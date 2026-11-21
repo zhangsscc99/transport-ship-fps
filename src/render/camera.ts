@@ -6,7 +6,7 @@
 
 import * as THREE from 'three';
 import type { Player } from '../game/player';
-import { clamp01, damp, easeOutQuad } from './tween';
+import { clamp01, damp, easeInCubic, easeOutQuad, lerp } from './tween';
 
 export interface CameraMotionState {
   reloading: boolean;
@@ -14,6 +14,8 @@ export interface CameraMotionState {
   reloadPitchDip?: number;
   /** gatling continuous fire micro-vibration intensity [0..1] (±0.15° @ 8Hz) */
   gatlingFireShake?: number;
+  /** player death fall-down camera progress [0..1] over 0.6s */
+  deathFallProgress?: number;
 }
 
 export class PlayerCamera {
@@ -153,15 +155,21 @@ export class PlayerCamera {
     const vibYaw = vibAmp * Math.cos(this.shakeClock * vibOmega * 1.13 + 0.7);
     const vibRoll = vibAmp * 0.55 * Math.sin(this.shakeClock * vibOmega * 0.87 + 1.4);
 
+    // 0.6s death collapse camera: drops smoothly to deck level (0.24m) and rolls sideways
+    const deathU = easeInCubic(clamp01(motion?.deathFallProgress ?? 0));
+    const camY = deathU > 0.001 ? lerp(this.eyeY + bobY, p.y + 0.24, deathU) : this.eyeY + bobY;
+    const deathPitch = deathU * ((11 * Math.PI) / 180);
+    const deathRoll = deathU * ((58 * Math.PI) / 180);
+
     const finalPitch = Math.max(
       -(87 * Math.PI) / 180,
       Math.min(
         (87 * Math.PI) / 180,
-        player.pitch + this.reloadDipSmooth + this.recoilPitch + wallPitch + vibPitch,
+        player.pitch + this.reloadDipSmooth + this.recoilPitch + wallPitch + vibPitch + deathPitch,
       ),
     );
-    this.camera.position.set(p.x, this.eyeY + bobY, p.z);
-    this.camera.rotation.set(finalPitch, player.yaw + this.recoilYaw + vibYaw, roll + vibRoll);
+    this.camera.position.set(p.x, camY, p.z);
+    this.camera.rotation.set(finalPitch, player.yaw + this.recoilYaw + vibYaw, roll + vibRoll + deathRoll);
   }
 
   /** Snap to the player (used on spawn/respawn, no lerp). */

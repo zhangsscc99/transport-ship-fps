@@ -28,6 +28,8 @@ export interface Match {
   readonly countdownLeftMs: number;
   /** menu → countdown; from 'over' it resets the counters and runs countdown again */
   start(now: number): void;
+  /** return to main menu from any phase */
+  resetToMenu(): void;
   /** drive phase transitions; safe to call every frame at any now */
   tick(now: number): Phase;
   /** record a kill for team 'A'|'B'; returns false unless phase is 'playing' */
@@ -83,6 +85,14 @@ export function createMatch(opts: MatchOptions = {}): Match {
       phase = 'countdown';
       countdownStart = now;
       lastNow = now;
+      killsA = 0;
+      killsB = 0;
+      winner = null;
+      timeLeft = duration;
+    },
+
+    resetToMenu(): void {
+      phase = 'menu';
       killsA = 0;
       killsB = 0;
       winner = null;
