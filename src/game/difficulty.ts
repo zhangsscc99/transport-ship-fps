@@ -25,6 +25,8 @@ export interface DifficultySpec {
   flankPairs: boolean;
   /** Replacement spawn delay (ms) after a bot dies */
   respawnDelayMs: number;
+  /** No-contact duration (ms) in IDLE/PATROL before bot advances toward target */
+  advanceAfterMs: number;
 }
 
 export const DIFFICULTIES: readonly DifficultySpec[] = [
@@ -41,6 +43,7 @@ export const DIFFICULTIES: readonly DifficultySpec[] = [
     canTakeCover: false,
     flankPairs: false,
     respawnDelayMs: 3600,
+    advanceAfterMs: 18000,
   },
   {
     id: 'normal',
@@ -55,6 +58,7 @@ export const DIFFICULTIES: readonly DifficultySpec[] = [
     canTakeCover: true,
     flankPairs: false,
     respawnDelayMs: 3000,
+    advanceAfterMs: 14000,
   },
   {
     id: 'hard',
@@ -69,6 +73,7 @@ export const DIFFICULTIES: readonly DifficultySpec[] = [
     canTakeCover: true,
     flankPairs: true,
     respawnDelayMs: 1800,
+    advanceAfterMs: 10000,
   },
 ] as const;
 
