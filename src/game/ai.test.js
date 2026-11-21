@@ -60,7 +60,7 @@ var DIFFICULTIES = [
     enemyDmg: 8,
     hitRate: 0.25,
     reactionMs: 900,
-    moveSpeed: 2,
+    moveSpeed: 2.4,
     totalEnemies: 3,
     maxSimultaneous: 3,
     canTakeCover: false,
@@ -74,7 +74,7 @@ var DIFFICULTIES = [
     enemyDmg: 12,
     hitRate: 0.4,
     reactionMs: 600,
-    moveSpeed: 2.6,
+    moveSpeed: 3,
     totalEnemies: 5,
     maxSimultaneous: 5,
     canTakeCover: true,
@@ -88,7 +88,7 @@ var DIFFICULTIES = [
     enemyDmg: 16,
     hitRate: 0.55,
     reactionMs: 350,
-    moveSpeed: 3.1,
+    moveSpeed: 3.4,
     totalEnemies: 7,
     maxSimultaneous: 5,
     canTakeCover: true,
@@ -107,19 +107,27 @@ function getDifficultySpec(id) {
 
 // src/game/ai.ts
 var BOT_RADIUS = 0.38;
-var BOT_HEIGHT = 1.75;
+var BOT_HEIGHT = 1.8;
 var BOT_EYE_Y = 1.56;
 var BOT_MAG = 30;
-var BOT_RELOAD_MS = 1600;
+var BOT_RELOAD_MS = 2200;
+var PATROL_SPEED = 1.4;
+var COVER_SPEED = 1.2;
+var ALERT_HOLD_MS = 600;
+var ENGAGE_FIRE_INTERVAL_MS = 900;
+var FIRE_ANIM_MS = 350;
+var FIRE_HIT_DELAY_MS = 180;
+var HIT_ANIM_MS = 250;
+var BOT_TURN_RATE = 8;
+var MIN_PLAYER_SPAWN_DIST = 15;
+var MIN_BOT_SEPARATION = 1.5;
 var VISION_FOV_DEG = 100;
 var VISION_COS_HALF = Math.cos(VISION_FOV_DEG * 0.5 * Math.PI / 180);
 var VISION_RANGE = 40;
 var HEAR_SHOT_RANGE = 60;
 var HEAR_STEP_RANGE = 12;
 var ENGAGE_MIN_DIST = 8;
-var ENGAGE_MAX_DIST = 14;
-var BURST_ROUNDS = 3;
-var BURST_SHOT_GAP_MS = 135;
+var ENGAGE_MAX_DIST = 16;
 var PATROL_WAYPOINTS = [
   { x: -16, z: -15.5 },
   // 0: NW deck
@@ -235,6 +243,14 @@ var ENEMY_SPAWNS = [
   { x: 18, z: -7.5 },
   { x: 0, z: -15.5 }
 ];
+var FALLBACK_SPAWNS = [
+  { x: -21, z: 0 },
+  { x: 21, z: 0 },
+  { x: -18, z: 7.5 },
+  { x: 19, z: 7.5 },
+  { x: -16, z: 15.5 },
+  { x: 14, z: 15.5 }
+];
 function hasLineOfSight(from, to, boxes) {
   const dx = to.x - from.x;
   const dy = to.y - from.y;
@@ -274,6 +290,8 @@ var EnemyManager = class {
   rng;
   nextBotSeq = 1;
   factionBalance = 0;
+  /** Remembered player spawn origin so initial/replacement spawns stay >= 15m away. */
+  playerSpawnOrigin = { x: -8, z: 17 };
   constructor(diffId = "normal", rng = Math.random) {
     this.difficulty = getDifficultySpec(diffId);
     this.rng = rng;
@@ -281,11 +299,12 @@ var EnemyManager = class {
   setDifficulty(diffId) {
     this.difficulty = getDifficultySpec(diffId);
   }
-  /** Reset and spawn a fresh wave matching the active difficulty (cap <= 5 simultaneous). */
+  /** Reset and spawn a fresh wave matching active difficulty (EASY 3 / NORMAL 5 / HARD 7 pool, <=5 live). */
   reset(nowMs, playerPos) {
     this.bots.length = 0;
     this.entities.length = 0;
     this.factionBalance = 0;
+    this.playerSpawnOrigin = { x: playerPos.x, z: playerPos.z };
     const count = Math.min(5, this.difficulty.maxSimultaneous);
     for (let i = 0; i < count; i++) {
       this.spawnIntoSlot(i, nowMs, playerPos);
@@ -315,16 +334,18 @@ var EnemyManager = class {
       shotsFired: 0,
       reloadingUntil: 0,
       waypointIdx: this.nearestWaypoint(x, z),
-      stateUntil: nowMs + 800,
+      stateUntil: nowMs + 1600,
       sightAcquiredAt: -1,
       firstShotAt: -1,
       firstSightAt: -1,
       hasLos: false,
       lastSeenPos: null,
       lastSeenAt: 0,
-      burstRemaining: 0,
-      nextBurstShotAt: 0,
-      nextBurstStartAt: 0,
+      fireAnimStartAt: -1e4,
+      fireAnimEndAt: -1e4,
+      fireHitAt: -1e4,
+      fireHitPending: false,
+      nextFireCycleAt: nowMs,
       flankSign: slot % 2 === 0 ? 1 : -1,
       strafeSwitchAt: nowMs + 1600,
       coverTarget: null,
@@ -332,7 +353,7 @@ var EnemyManager = class {
       lastHitAt: -1e4,
       diedAt: -1e4,
       replaceAt: -1,
-      anim: "breathe",
+      anim: "idle_rifle",
       walkPhase: this.rng() * Math.PI * 2
     };
     this.bots.push(bot);
@@ -360,26 +381,58 @@ var EnemyManager = class {
     }
     return best;
   }
-  /** Pick an enemy spawn point clear of player & other active bots. */
+  /**
+   * Pick an enemy spawn point strictly >= 15m from playerPos (and player spawn
+   * when possible) and >= 1.5m away from all live enemies.
+   */
   pickSpawn(playerPos, slotIndex) {
-    let best = ENEMY_SPAWNS[slotIndex % ENEMY_SPAWNS.length];
-    let bestScore = -Infinity;
-    for (let i = 0; i < ENEMY_SPAWNS.length; i++) {
-      const sp = ENEMY_SPAWNS[(i + slotIndex) % ENEMY_SPAWNS.length];
-      const dPlayer = Math.hypot(sp.x - playerPos.x, sp.z - playerPos.z);
-      let minBotD = 12;
+    const allCandidates = [...ENEMY_SPAWNS, ...FALLBACK_SPAWNS];
+    const minBotDistAt = (sp) => {
+      let minD = 99;
       for (const b of this.bots) {
         if (!b.entity.alive) continue;
         const db = Math.hypot(sp.x - b.entity.pos.x, sp.z - b.entity.pos.z);
-        if (db < minBotD) minBotD = db;
+        if (db < minD) minD = db;
       }
-      const score = Math.min(dPlayer, 35) + minBotD * 2.2 + this.rng() * 3;
-      if (score > bestScore) {
-        bestScore = score;
-        best = sp;
+      return minD;
+    };
+    const pickFrom = (list, requireSpawnDist) => {
+      let best = null;
+      let bestScore = -Infinity;
+      for (let i = 0; i < list.length; i++) {
+        const sp = list[(i + slotIndex) % list.length];
+        const dPlayer = Math.hypot(sp.x - playerPos.x, sp.z - playerPos.z);
+        if (dPlayer < MIN_PLAYER_SPAWN_DIST) continue;
+        if (requireSpawnDist) {
+          const dOrigin = Math.hypot(sp.x - this.playerSpawnOrigin.x, sp.z - this.playerSpawnOrigin.z);
+          if (dOrigin < MIN_PLAYER_SPAWN_DIST) continue;
+        }
+        const minBotD = minBotDistAt(sp);
+        if (minBotD < MIN_BOT_SEPARATION + 0.5) continue;
+        const score = Math.min(dPlayer, 36) + Math.min(minBotD, 14) * 2.5 + this.rng() * 3;
+        if (score > bestScore) {
+          bestScore = score;
+          best = sp;
+        }
+      }
+      return best;
+    };
+    const p1 = pickFrom(ENEMY_SPAWNS, true);
+    if (p1) return p1;
+    const p2 = pickFrom(allCandidates, true);
+    if (p2) return p2;
+    const p3 = pickFrom(allCandidates, false);
+    if (p3) return p3;
+    let fallback = ENEMY_SPAWNS[slotIndex % ENEMY_SPAWNS.length];
+    let bestD = -Infinity;
+    for (const sp of allCandidates) {
+      const d = Math.hypot(sp.x - playerPos.x, sp.z - playerPos.z) + minBotDistAt(sp) * 2;
+      if (d > bestD) {
+        bestD = d;
+        fallback = sp;
       }
     }
-    return best;
+    return fallback;
   }
   spawnIntoSlot(slotIndex, nowMs, playerPos) {
     const sp = this.pickSpawn(playerPos, slotIndex);
@@ -406,9 +459,11 @@ var EnemyManager = class {
       hasLos: false,
       lastSeenPos: null,
       lastSeenAt: 0,
-      burstRemaining: 0,
-      nextBurstShotAt: 0,
-      nextBurstStartAt: nowMs + 400,
+      fireAnimStartAt: -1e4,
+      fireAnimEndAt: -1e4,
+      fireHitAt: -1e4,
+      fireHitPending: false,
+      nextFireCycleAt: nowMs + 200,
       flankSign: slotIndex % 2 === 0 ? 1 : -1,
       strafeSwitchAt: nowMs + 1400 + this.rng() * 1200,
       coverTarget: null,
@@ -416,7 +471,7 @@ var EnemyManager = class {
       lastHitAt: -1e4,
       diedAt: -1e4,
       replaceAt: -1,
-      anim: "walk",
+      anim: "walk_rifle",
       walkPhase: this.rng() * Math.PI * 2
     };
     if (slotIndex < this.bots.length) {
@@ -428,7 +483,12 @@ var EnemyManager = class {
     }
     return bot;
   }
-  /** Notify bot that it was hit by the player (triggers flinch, death transition & alert). */
+  /** Alert hold before entering ENGAGE: 0.6s on NORMAL; aligns EASY/HARD first-shot delay with 0.18s fire windup. */
+  alertSightDelayMs() {
+    if (this.difficulty.id === "normal") return ALERT_HOLD_MS;
+    return Math.max(150, this.difficulty.reactionMs - FIRE_HIT_DELAY_MS);
+  }
+  /** Notify bot that it was hit by the player (triggers 0.25s hit clip without interrupting movement, death, or alert). */
   onBotDamaged(entity, attackerPos, nowMs) {
     const bot = this.bots.find((b) => b.entity === entity);
     if (!bot) return null;
@@ -437,44 +497,43 @@ var EnemyManager = class {
       bot.state = "DEAD";
       bot.diedAt = nowMs;
       bot.replaceAt = nowMs + this.difficulty.respawnDelayMs;
-      bot.burstRemaining = 0;
+      bot.fireHitPending = false;
       bot.speed = 0;
-      bot.anim = "dead";
+      bot.anim = "die";
       return bot;
     }
     bot.lastSeenPos = { x: attackerPos.x, y: attackerPos.y, z: attackerPos.z };
     bot.lastSeenAt = nowMs;
     if (bot.state === "IDLE" || bot.state === "PATROL") {
       bot.state = "ALERT";
-      bot.stateUntil = nowMs + this.difficulty.reactionMs;
+      bot.stateUntil = nowMs + ALERT_HOLD_MS;
     }
-    if (this.difficulty.canTakeCover && entity.hp < entity.maxHp * 0.3 && bot.state !== "COVER") {
+    if (this.difficulty.canTakeCover && entity.hp < entity.maxHp * 0.3 && bot.state !== "COVER" && bot.state !== "RELOAD") {
       bot.state = "COVER";
       bot.coverTarget = null;
+      bot.fireHitPending = false;
       bot.stateUntil = nowMs + 2800;
     }
     return bot;
   }
-  /** Advance all AI bots one simulation step; returns shots fired this frame. */
+  /** Advance all AI bots one simulation step; returns shots fired at the 0.18s fire_rifle trigger. */
   update(ctx) {
     const shots = [];
     const { dt, nowMs, playerPos, playerEye, playerAlive, boxes, collider } = ctx;
     const diff = this.difficulty;
+    const alertSightMs = this.alertSightDelayMs();
     for (let i = 0; i < this.bots.length; i++) {
       const bot = this.bots[i];
       const ent = bot.entity;
       if (!ent.alive || bot.state === "DEAD") {
         bot.state = "DEAD";
         bot.speed = 0;
-        bot.anim = "dead";
+        bot.fireHitPending = false;
+        bot.anim = "die";
         if (bot.replaceAt > 0 && nowMs >= bot.replaceAt) {
           this.spawnIntoSlot(bot.slotIndex, nowMs, playerPos);
         }
         continue;
-      }
-      if (bot.reloadingUntil > 0 && nowMs >= bot.reloadingUntil) {
-        bot.ammo = bot.mag;
-        bot.reloadingUntil = 0;
       }
       const botEye = { x: ent.pos.x, y: ent.pos.y + BOT_EYE_Y, z: ent.pos.z };
       const toPx = playerPos.x - ent.pos.x;
@@ -489,7 +548,7 @@ var EnemyManager = class {
           const fwdZ = -Math.cos(bot.yaw);
           const dot = dist > 1e-4 ? (toPx * fwdX + toPz * fwdZ) / dist : 1;
           const inCone = dot >= VISION_COS_HALF || dist < 3.5;
-          const alreadyAware = bot.state === "ALERT" || bot.state === "CHASE" || bot.state === "ENGAGE";
+          const alreadyAware = bot.state === "ALERT" || bot.state === "CHASE" || bot.state === "ENGAGE" || bot.state === "RELOAD";
           if (inCone || alreadyAware) canSee = true;
         }
       }
@@ -503,28 +562,29 @@ var EnemyManager = class {
         bot.lastSeenAt = nowMs;
       } else {
         bot.sightAcquiredAt = -1;
-        bot.burstRemaining = 0;
+        bot.fireHitPending = false;
       }
       if ((heardShot || heardStep) && !bot.hasLos) {
         bot.lastSeenPos = { x: playerPos.x, y: playerPos.y, z: playerPos.z };
         bot.lastSeenAt = nowMs;
         if (bot.state === "IDLE" || bot.state === "PATROL") {
           bot.state = "ALERT";
-          bot.stateUntil = nowMs + Math.max(diff.reactionMs, 650);
+          bot.stateUntil = nowMs + ALERT_HOLD_MS;
         }
       }
-      if (diff.canTakeCover && ent.hp < ent.maxHp * 0.3 && bot.state !== "COVER" && bot.state !== "IDLE" && bot.state !== "PATROL") {
+      if (diff.canTakeCover && ent.hp < ent.maxHp * 0.3 && bot.state !== "COVER" && bot.state !== "RELOAD" && bot.state !== "IDLE" && bot.state !== "PATROL") {
         bot.state = "COVER";
         bot.coverTarget = this.pickCoverSpot(ent.pos, playerEye, boxes);
+        bot.fireHitPending = false;
         bot.stateUntil = nowMs + 2600;
       }
       let moveTargetX = null;
       let moveTargetZ = null;
       let desiredSpeed = 0;
       let lookTargetYaw = bot.yaw;
-      if (!playerAlive && bot.state !== "IDLE" && bot.state !== "PATROL") {
+      if (!playerAlive && bot.state !== "IDLE" && bot.state !== "PATROL" && bot.state !== "RELOAD") {
         bot.state = "PATROL";
-        bot.burstRemaining = 0;
+        bot.fireHitPending = false;
         bot.sightAcquiredAt = -1;
       }
       switch (bot.state) {
@@ -532,7 +592,7 @@ var EnemyManager = class {
           desiredSpeed = 0;
           if (bot.hasLos) {
             bot.state = "ALERT";
-            bot.stateUntil = nowMs + diff.reactionMs;
+            bot.stateUntil = nowMs + alertSightMs;
           } else if (nowMs >= bot.stateUntil) {
             bot.state = "PATROL";
             bot.waypointIdx = this.pickNextWaypoint(bot.waypointIdx);
@@ -542,19 +602,19 @@ var EnemyManager = class {
         case "PATROL": {
           if (bot.hasLos) {
             bot.state = "ALERT";
-            bot.stateUntil = nowMs + diff.reactionMs;
+            bot.stateUntil = nowMs + alertSightMs;
             break;
           }
           const wp = PATROL_WAYPOINTS[bot.waypointIdx] ?? PATROL_WAYPOINTS[0];
           const wd = Math.hypot(wp.x - ent.pos.x, wp.z - ent.pos.z);
           if (wd < 1.1) {
             bot.state = "IDLE";
-            bot.stateUntil = nowMs + 600 + this.rng() * 900;
+            bot.stateUntil = nowMs + 700 + this.rng() * 900;
             desiredSpeed = 0;
           } else {
             moveTargetX = wp.x;
             moveTargetZ = wp.z;
-            desiredSpeed = diff.moveSpeed * 0.72;
+            desiredSpeed = PATROL_SPEED;
             lookTargetYaw = yawFromDir(wp.x - ent.pos.x, wp.z - ent.pos.z);
           }
           break;
@@ -566,8 +626,9 @@ var EnemyManager = class {
             lookTargetYaw = yawFromDir(target.x - ent.pos.x, target.z - ent.pos.z);
           }
           if (bot.hasLos) {
-            if (nowMs - bot.sightAcquiredAt >= diff.reactionMs) {
+            if (nowMs - bot.sightAcquiredAt >= alertSightMs) {
               bot.state = dist <= ENGAGE_MAX_DIST + 4 ? "ENGAGE" : "CHASE";
+              bot.nextFireCycleAt = Math.min(bot.nextFireCycleAt, nowMs);
             }
           } else if (nowMs >= bot.stateUntil) {
             if (bot.lastSeenPos && nowMs - bot.lastSeenAt < 6500) {
@@ -579,8 +640,9 @@ var EnemyManager = class {
           break;
         }
         case "CHASE": {
-          if (bot.hasLos && dist <= ENGAGE_MAX_DIST && nowMs - bot.sightAcquiredAt >= diff.reactionMs) {
+          if (bot.hasLos && dist <= ENGAGE_MAX_DIST && nowMs - bot.sightAcquiredAt >= alertSightMs) {
             bot.state = "ENGAGE";
+            bot.nextFireCycleAt = Math.min(bot.nextFireCycleAt, nowMs);
             break;
           }
           const goal = bot.hasLos ? playerPos : bot.lastSeenPos;
@@ -609,81 +671,101 @@ var EnemyManager = class {
           }
           break;
         }
+        case "RELOAD": {
+          desiredSpeed = 0;
+          bot.fireHitPending = false;
+          const target = bot.hasLos ? playerPos : bot.lastSeenPos;
+          if (target) {
+            lookTargetYaw = yawFromDir(target.x - ent.pos.x, target.z - ent.pos.z);
+          }
+          if (nowMs >= bot.reloadingUntil) {
+            bot.ammo = bot.mag;
+            bot.reloadingUntil = 0;
+            bot.state = bot.hasLos ? "ENGAGE" : bot.lastSeenPos ? "CHASE" : "PATROL";
+            bot.nextFireCycleAt = nowMs + 150;
+          }
+          break;
+        }
         case "ENGAGE": {
           if (!bot.hasLos) {
-            bot.burstRemaining = 0;
+            bot.fireHitPending = false;
             bot.state = "CHASE";
+            break;
+          }
+          if (bot.ammo <= 0 && !bot.fireHitPending) {
+            bot.state = "RELOAD";
+            bot.reloadingUntil = nowMs + BOT_RELOAD_MS;
             break;
           }
           lookTargetYaw = yawFromDir(toPx, toPz);
           if (nowMs >= bot.strafeSwitchAt) {
             bot.flankSign = bot.flankSign === 1 ? -1 : 1;
-            bot.strafeSwitchAt = nowMs + 1300 + this.rng() * 1100;
+            bot.strafeSwitchAt = nowMs + 1600 + this.rng() * 1e3;
           }
-          const ux = dist > 1e-4 ? toPx / dist : 0;
-          const uz = dist > 1e-4 ? toPz / dist : -1;
-          const rx = -uz * bot.flankSign;
-          const rz = ux * bot.flankSign;
-          let mx = rx * 0.75;
-          let mz = rz * 0.75;
-          if (dist > ENGAGE_MAX_DIST) {
-            mx += ux * 0.85;
-            mz += uz * 0.85;
-          } else if (dist < ENGAGE_MIN_DIST) {
-            mx -= ux * 0.7;
-            mz -= uz * 0.7;
-          }
-          moveTargetX = ent.pos.x + mx * 3;
-          moveTargetZ = ent.pos.z + mz * 3;
-          desiredSpeed = diff.moveSpeed * 0.62;
-          const reactionMet = bot.sightAcquiredAt >= 0 && nowMs - bot.sightAcquiredAt >= diff.reactionMs;
-          const canShoot = bot.hasLos && reactionMet && bot.reloadingUntil === 0 && hasLineOfSight(botEye, playerEye, boxes);
-          if (canShoot) {
-            if (bot.ammo <= 0) {
-              bot.reloadingUntil = nowMs + BOT_RELOAD_MS;
-              bot.burstRemaining = 0;
-            } else if (bot.burstRemaining === 0 && nowMs >= bot.nextBurstStartAt) {
-              bot.burstRemaining = Math.min(BURST_ROUNDS, bot.ammo);
-              bot.nextBurstShotAt = nowMs;
+          const inFireAnim = nowMs >= bot.fireAnimStartAt && nowMs < bot.fireAnimEndAt;
+          if (!inFireAnim) {
+            const ux = dist > 1e-4 ? toPx / dist : 0;
+            const uz = dist > 1e-4 ? toPz / dist : -1;
+            const rx = -uz * bot.flankSign;
+            const rz = ux * bot.flankSign;
+            let mx = rx * 0.45;
+            let mz = rz * 0.45;
+            if (dist > ENGAGE_MAX_DIST) {
+              mx += ux * 0.85;
+              mz += uz * 0.85;
+            } else if (dist < ENGAGE_MIN_DIST) {
+              mx -= ux * 0.7;
+              mz -= uz * 0.7;
             }
-            if (bot.burstRemaining > 0 && nowMs >= bot.nextBurstShotAt) {
-              if (hasLineOfSight(botEye, playerEye, boxes)) {
-                bot.ammo--;
-                bot.shotsFired++;
-                bot.burstRemaining--;
-                bot.lastFireAt = nowMs;
-                if (bot.firstShotAt < 0) bot.firstShotAt = nowMs;
-                bot.nextBurstShotAt = nowMs + BURST_SHOT_GAP_MS;
-                if (bot.burstRemaining === 0) {
-                  bot.nextBurstStartAt = nowMs + 850 + this.rng() * 550;
-                }
-                const pHit = diff.hitRate * enemyHitAttenuation(dist);
-                const hit = this.rng() < pHit;
-                const fwdX = -Math.sin(bot.yaw);
-                const fwdZ = -Math.cos(bot.yaw);
-                const muzzle = {
-                  x: ent.pos.x + fwdX * 0.55 + -fwdZ * 0.14,
-                  y: ent.pos.y + 1.38,
-                  z: ent.pos.z + fwdZ * 0.55 + fwdX * 0.14
-                };
-                const missSide = (this.rng() < 0.5 ? 1 : -1) * (0.45 + this.rng() * 0.55);
-                const missUp = (this.rng() - 0.35) * 0.5;
-                const target = hit ? { x: playerEye.x, y: playerEye.y - 0.25, z: playerEye.z } : {
-                  x: playerEye.x + -fwdZ * missSide,
-                  y: Math.max(0.25, playerEye.y - 0.15 + missUp),
-                  z: playerEye.z + fwdX * missSide
-                };
-                shots.push({
-                  botId: bot.id,
-                  faction: bot.faction,
-                  origin: muzzle,
-                  target,
-                  hit,
-                  damage: hit ? diff.enemyDmg : 0,
-                  dist
-                });
-              } else {
-                bot.burstRemaining = 0;
+            moveTargetX = ent.pos.x + mx * 2.5;
+            moveTargetZ = ent.pos.z + mz * 2.5;
+            desiredSpeed = 0.85;
+          } else {
+            desiredSpeed = 0;
+          }
+          const reactionMet = bot.sightAcquiredAt >= 0 && nowMs - bot.sightAcquiredAt >= alertSightMs;
+          if (reactionMet && bot.ammo > 0 && !bot.fireHitPending && nowMs >= bot.nextFireCycleAt && hasLineOfSight(botEye, playerEye, boxes)) {
+            bot.fireAnimStartAt = nowMs;
+            bot.fireAnimEndAt = nowMs + FIRE_ANIM_MS;
+            bot.fireHitAt = nowMs + FIRE_HIT_DELAY_MS;
+            bot.fireHitPending = true;
+            bot.nextFireCycleAt = nowMs + ENGAGE_FIRE_INTERVAL_MS;
+          }
+          if (bot.fireHitPending && nowMs >= bot.fireHitAt) {
+            bot.fireHitPending = false;
+            if (bot.ammo > 0 && hasLineOfSight(botEye, playerEye, boxes)) {
+              bot.ammo--;
+              bot.shotsFired++;
+              bot.lastFireAt = nowMs;
+              if (bot.firstShotAt < 0) bot.firstShotAt = nowMs;
+              const pHit = diff.hitRate * enemyHitAttenuation(dist);
+              const hit = this.rng() < pHit;
+              const fwdX = -Math.sin(bot.yaw);
+              const fwdZ = -Math.cos(bot.yaw);
+              const muzzle = {
+                x: ent.pos.x + fwdX * 0.58 + -fwdZ * 0.14,
+                y: ent.pos.y + 1.38,
+                z: ent.pos.z + fwdZ * 0.58 + fwdX * 0.14
+              };
+              const missSide = (this.rng() < 0.5 ? 1 : -1) * (0.45 + this.rng() * 0.55);
+              const missUp = (this.rng() - 0.35) * 0.5;
+              const target = hit ? { x: playerEye.x, y: playerEye.y - 0.25, z: playerEye.z } : {
+                x: playerEye.x + -fwdZ * missSide,
+                y: Math.max(0.25, playerEye.y - 0.15 + missUp),
+                z: playerEye.z + fwdX * missSide
+              };
+              shots.push({
+                botId: bot.id,
+                faction: bot.faction,
+                origin: muzzle,
+                target,
+                hit,
+                damage: hit ? diff.enemyDmg : 0,
+                dist
+              });
+              if (bot.ammo <= 0) {
+                bot.state = "RELOAD";
+                bot.reloadingUntil = nowMs + BOT_RELOAD_MS;
               }
             }
           }
@@ -695,28 +777,40 @@ var EnemyManager = class {
           }
           const c = bot.coverTarget;
           const dc = Math.hypot(c.x - ent.pos.x, c.z - ent.pos.z);
-          if (dc > 0.9) {
+          if (nowMs >= bot.strafeSwitchAt) {
+            bot.flankSign = bot.flankSign === 1 ? -1 : 1;
+            bot.strafeSwitchAt = nowMs + 1100 + this.rng() * 800;
+          }
+          if (dc > 0.85) {
             moveTargetX = c.x;
             moveTargetZ = c.z;
-            desiredSpeed = diff.moveSpeed * 1.08;
-            lookTargetYaw = yawFromDir(c.x - ent.pos.x, c.z - ent.pos.z);
+            desiredSpeed = COVER_SPEED;
           } else {
-            desiredSpeed = 0;
-            if (bot.lastSeenPos) {
-              lookTargetYaw = yawFromDir(bot.lastSeenPos.x - ent.pos.x, bot.lastSeenPos.z - ent.pos.z);
-            }
-            if (bot.ammo < bot.mag && bot.reloadingUntil === 0) {
-              bot.reloadingUntil = nowMs + BOT_RELOAD_MS;
-            }
+            const ref = bot.lastSeenPos ?? playerPos;
+            const rdx = ref.x - ent.pos.x;
+            const rdz = ref.z - ent.pos.z;
+            const rlen = Math.hypot(rdx, rdz) || 1;
+            const lx = -rdz / rlen * bot.flankSign;
+            const lz = rdx / rlen * bot.flankSign;
+            moveTargetX = ent.pos.x + lx * 2;
+            moveTargetZ = ent.pos.z + lz * 2;
+            desiredSpeed = COVER_SPEED;
           }
-          if (nowMs >= bot.stateUntil) {
+          const lookRef = bot.hasLos ? playerPos : bot.lastSeenPos;
+          if (lookRef) {
+            lookTargetYaw = yawFromDir(lookRef.x - ent.pos.x, lookRef.z - ent.pos.z);
+          }
+          if (bot.ammo <= 0) {
+            bot.state = "RELOAD";
+            bot.reloadingUntil = nowMs + BOT_RELOAD_MS;
+          } else if (nowMs >= bot.stateUntil) {
             bot.coverTarget = null;
             bot.state = bot.hasLos ? "ENGAGE" : "CHASE";
           }
           break;
         }
       }
-      bot.yaw = turnToward(bot.yaw, lookTargetYaw, 7.5 * dt);
+      bot.yaw = turnToward(bot.yaw, lookTargetYaw, BOT_TURN_RATE * dt);
       let vx = 0;
       let vz = 0;
       if (moveTargetX !== null && moveTargetZ !== null && desiredSpeed > 0.01) {
@@ -752,8 +846,8 @@ var EnemyManager = class {
           const sx = ent.pos.x - other.entity.pos.x;
           const sz = ent.pos.z - other.entity.pos.z;
           const sd = Math.hypot(sx, sz);
-          if (sd > 0.01 && sd < 1.4) {
-            const push = (1.4 - sd) * 0.9;
+          if (sd > 1e-3 && sd < 2) {
+            const push = (2 - sd) / 2 * 1.6;
             dirX += sx / sd * push;
             dirZ += sz / sd * push;
           }
@@ -779,19 +873,85 @@ var EnemyManager = class {
       if (bot.state === "PATROL" && desiredSpeed > 0.5 && bot.speed < 0.25) {
         bot.waypointIdx = this.pickNextWaypoint(bot.waypointIdx);
       }
-      if (nowMs - bot.lastHitAt < 220) {
+      if (nowMs - bot.lastHitAt >= 0 && nowMs - bot.lastHitAt < HIT_ANIM_MS) {
         bot.anim = "hit";
-      } else if (nowMs - bot.lastFireAt < 130) {
-        bot.anim = "fire";
-      } else if (bot.speed > 0.35) {
-        bot.anim = "walk";
-      } else if (bot.state === "ALERT" || bot.state === "ENGAGE" || bot.state === "COVER") {
-        bot.anim = "aim";
       } else {
-        bot.anim = "breathe";
+        switch (bot.state) {
+          case "IDLE":
+            bot.anim = "idle_rifle";
+            break;
+          case "PATROL":
+            bot.anim = "walk_rifle";
+            break;
+          case "ALERT":
+            bot.anim = "aim_rifle";
+            break;
+          case "CHASE":
+            bot.anim = "run_rifle";
+            break;
+          case "ENGAGE":
+            bot.anim = nowMs >= bot.fireAnimStartAt && nowMs < bot.fireAnimEndAt ? "fire_rifle" : "aim_rifle";
+            break;
+          case "RELOAD":
+            bot.anim = "reload_rifle";
+            break;
+          case "COVER":
+            bot.anim = "crouch_rifle";
+            break;
+        }
       }
     }
+    this.enforceMinSeparation(collider, dt);
     return shots;
+  }
+  enforceMinSeparation(collider, dt) {
+    const stepDt = Math.max(dt, 1 / 60);
+    for (let pass = 0; pass < 2; pass++) {
+      for (let i = 0; i < this.bots.length; i++) {
+        const a = this.bots[i];
+        if (!a.entity.alive) continue;
+        for (let j = i + 1; j < this.bots.length; j++) {
+          const b = this.bots[j];
+          if (!b.entity.alive) continue;
+          let dx = a.entity.pos.x - b.entity.pos.x;
+          let dz = a.entity.pos.z - b.entity.pos.z;
+          let d = Math.hypot(dx, dz);
+          if (d >= MIN_BOT_SEPARATION) continue;
+          if (d < 1e-4) {
+            const ang = (i * 1.7 + j * 2.3) % (Math.PI * 2);
+            dx = Math.cos(ang);
+            dz = Math.sin(ang);
+            d = 1;
+          }
+          const nx = dx / d;
+          const nz = dz / d;
+          const overlap = (MIN_BOT_SEPARATION - d) * 0.52;
+          const pushSpeed = overlap / stepDt;
+          const ma = collider.move(
+            a.entity.pos,
+            { x: nx * pushSpeed, y: -4, z: nz * pushSpeed },
+            a.entity.radius,
+            a.entity.height,
+            stepDt,
+            true
+          );
+          a.entity.pos.x = ma.pos.x;
+          a.entity.pos.y = Math.max(0, ma.pos.y);
+          a.entity.pos.z = ma.pos.z;
+          const mb = collider.move(
+            b.entity.pos,
+            { x: -nx * pushSpeed, y: -4, z: -nz * pushSpeed },
+            b.entity.radius,
+            b.entity.height,
+            stepDt,
+            true
+          );
+          b.entity.pos.x = mb.pos.x;
+          b.entity.pos.y = Math.max(0, mb.pos.y);
+          b.entity.pos.z = mb.pos.z;
+        }
+      }
+    }
   }
   rayBlocked(origin, dx, dz, maxDist, boxes) {
     const dir = { x: dx, y: 0, z: dz };
@@ -1238,22 +1398,60 @@ test("difficulty specs match EASY / NORMAL / HARD table and cap simultaneous ene
   const e = getDifficultySpec("easy");
   const n = getDifficultySpec("normal");
   const h = getDifficultySpec("hard");
-  assert.deepEqual([e.enemyDmg, e.hitRate, e.reactionMs, e.moveSpeed, e.totalEnemies, e.canTakeCover], [8, 0.25, 900, 2, 3, false]);
-  assert.deepEqual([n.enemyDmg, n.hitRate, n.reactionMs, n.moveSpeed, n.totalEnemies, n.canTakeCover], [12, 0.4, 600, 2.6, 5, true]);
-  assert.deepEqual([h.enemyDmg, h.hitRate, h.reactionMs, h.moveSpeed, h.totalEnemies, h.flankPairs], [16, 0.55, 350, 3.1, 7, true]);
+  assert.deepEqual([e.enemyDmg, e.hitRate, e.reactionMs, e.moveSpeed, e.totalEnemies, e.canTakeCover], [8, 0.25, 900, 2.4, 3, false]);
+  assert.deepEqual([n.enemyDmg, n.hitRate, n.reactionMs, n.moveSpeed, n.totalEnemies, n.canTakeCover], [12, 0.4, 600, 3, 5, true]);
+  assert.deepEqual([h.enemyDmg, h.hitRate, h.reactionMs, h.moveSpeed, h.totalEnemies, h.flankPairs], [16, 0.55, 350, 3.4, 7, true]);
   const mgr = new EnemyManager("hard", () => 0.4);
-  mgr.reset(0, { x: 0, y: 0, z: 17 });
+  mgr.reset(0, { x: -8, y: 0, z: 17 });
   assert.equal(mgr.bots.length, 5, "HARD caps simultaneous live enemies at 5");
 });
-test("reaction delay: EASY first shot > 700ms (900ms); HARD first shot < 500ms (350ms)", () => {
+test("spawns never land within 15m of player spawn and bots stay >= 1.5m apart", () => {
+  const playerSpawn = { x: -8, y: 0, z: 17 };
+  const mgr = new EnemyManager("normal", () => 0.35);
+  mgr.reset(0, playerSpawn);
+  assert.equal(mgr.bots.length, 5);
+  for (const b2 of mgr.bots) {
+    const dp = Math.hypot(b2.entity.pos.x - playerSpawn.x, b2.entity.pos.z - playerSpawn.z);
+    assert.ok(dp >= MIN_PLAYER_SPAWN_DIST, `bot spawned ${dp.toFixed(2)}m < 15m from player`);
+  }
+  for (let i = 0; i < mgr.bots.length; i++) {
+    for (let j = i + 1; j < mgr.bots.length; j++) {
+      const d = Math.hypot(
+        mgr.bots[i].entity.pos.x - mgr.bots[j].entity.pos.x,
+        mgr.bots[i].entity.pos.z - mgr.bots[j].entity.pos.z
+      );
+      assert.ok(d >= MIN_BOT_SEPARATION - 1e-4, `bots ${i}&${j} too close: ${d.toFixed(2)}m`);
+    }
+  }
+  mgr.clear();
+  const a = mgr.spawnManual(0, -10, 0, "bl", 0);
+  const b = mgr.spawnManual(0.2, -10, 0, "gr", 0);
+  for (let t = 50; t <= 300; t += 50) {
+    mgr.update({
+      dt: 0.05,
+      nowMs: t,
+      playerPos: playerSpawn,
+      playerEye: { x: playerSpawn.x, y: 1.7, z: playerSpawn.z },
+      playerAlive: false,
+      playerFired: false,
+      playerSpeed: 0,
+      playerOnGround: true,
+      boxes: MAP.boxes,
+      collider: world
+    });
+  }
+  const sep = Math.hypot(a.entity.pos.x - b.entity.pos.x, a.entity.pos.z - b.entity.pos.z);
+  assert.ok(sep >= MIN_BOT_SEPARATION - 0.02, `pairwise separation failed: ${sep.toFixed(3)}m`);
+});
+test("reaction delay & 0.18s fire_rifle hit trigger: EASY > 700ms; HARD < 500ms", () => {
   const runFirstFireDelay = (diff) => {
     const mgr = new EnemyManager(diff, () => 0.1);
     const playerPos = { x: 0, y: 0, z: 0 };
     const playerEye = { x: 0, y: 1.7, z: 0 };
     const bot = mgr.spawnManual(0, -10, yawFromDir(0, 10), "bl", 0);
-    for (let t = 50; t <= 2e3; t += 50) {
+    for (let t = 20; t <= 2e3; t += 20) {
       const shots = mgr.update({
-        dt: 0.05,
+        dt: 0.02,
         nowMs: t,
         playerPos,
         playerEye,
@@ -1265,15 +1463,80 @@ test("reaction delay: EASY first shot > 700ms (900ms); HARD first shot < 500ms (
         collider: world
       });
       if (shots.length > 0) {
-        return bot.firstShotAt - bot.firstSightAt;
+        return {
+          delay: bot.firstShotAt - bot.firstSightAt,
+          hitOffset: t - bot.fireAnimStartAt
+        };
       }
     }
-    return -1;
+    return { delay: -1, hitOffset: -1 };
   };
-  const easyDelay = runFirstFireDelay("easy");
-  const hardDelay = runFirstFireDelay("hard");
-  assert.ok(easyDelay >= 850 && easyDelay <= 1100, `EASY delay ${easyDelay}ms expected ~900ms (>700ms)`);
-  assert.ok(hardDelay >= 300 && hardDelay <= 450, `HARD delay ${hardDelay}ms expected ~350ms (<500ms)`);
+  const easy = runFirstFireDelay("easy");
+  const hard = runFirstFireDelay("hard");
+  assert.ok(easy.delay >= 850 && easy.delay <= 1100, `EASY delay ${easy.delay}ms expected ~900ms`);
+  assert.ok(hard.delay >= 300 && hard.delay <= 450, `HARD delay ${hard.delay}ms expected ~350ms`);
+  assert.ok(easy.hitOffset >= FIRE_HIT_DELAY_MS && easy.hitOffset <= FIRE_HIT_DELAY_MS + 40, `hit offset ${easy.hitOffset}ms expected ~180ms`);
+  assert.ok(hard.hitOffset >= FIRE_HIT_DELAY_MS && hard.hitOffset <= FIRE_HIT_DELAY_MS + 40, `hit offset ${hard.hitOffset}ms expected ~180ms`);
+});
+test("strict glTF clip state machine: IDLE->idle_rifle, PATROL->walk_rifle (1.4m/s), ENGAGE->aim_rifle/fire_rifle, RELOAD->reload_rifle (2.2s), COVER->crouch_rifle (1.2m/s)", () => {
+  const mgr = new EnemyManager("normal", () => 0.2);
+  const bot = mgr.spawnManual(0, -15.5, 0, "bl", 0);
+  assert.equal(bot.state, "IDLE");
+  assert.equal(bot.anim, "idle_rifle");
+  let sawPatrol = false;
+  for (let t = 50; t <= 2200; t += 50) {
+    mgr.update({
+      dt: 0.05,
+      nowMs: t,
+      playerPos: { x: 0, y: 0, z: 17 },
+      playerEye: { x: 0, y: 1.7, z: 17 },
+      playerAlive: false,
+      playerFired: false,
+      playerSpeed: 0,
+      playerOnGround: true,
+      boxes: MAP.boxes,
+      collider: world
+    });
+    if (bot.state === "PATROL" && bot.speed > 0.5) {
+      sawPatrol = true;
+      assert.equal(bot.anim, "walk_rifle");
+      assert.ok(Math.abs(bot.speed - PATROL_SPEED) < 0.2, `patrol speed ${bot.speed} != ${PATROL_SPEED}`);
+      break;
+    }
+  }
+  assert.equal(sawPatrol, true, "bot never entered PATROL");
+  mgr.clear();
+  const rbot = mgr.spawnManual(0, -10, yawFromDir(0, 10), "gr", 0);
+  rbot.ammo = 1;
+  let sawFireClip = false;
+  let sawReloadClip = false;
+  let shotsDuringReload = 0;
+  for (let t = 20; t <= 3600; t += 20) {
+    const wasReloading = rbot.state === "RELOAD";
+    const shots = mgr.update({
+      dt: 0.02,
+      nowMs: t,
+      playerPos: { x: 0, y: 0, z: 0 },
+      playerEye: { x: 0, y: 1.7, z: 0 },
+      playerAlive: true,
+      playerFired: false,
+      playerSpeed: 0,
+      playerOnGround: true,
+      boxes: MAP.boxes,
+      collider: world
+    });
+    if (rbot.anim === "fire_rifle") sawFireClip = true;
+    if (rbot.state === "RELOAD") {
+      sawReloadClip = true;
+      assert.equal(rbot.anim, "reload_rifle");
+    }
+    if (wasReloading) shotsDuringReload += shots.length;
+  }
+  assert.equal(sawFireClip, true, "never played fire_rifle in ENGAGE");
+  assert.equal(sawReloadClip, true, "never entered RELOAD when ammo hit 0");
+  assert.equal(shotsDuringReload, 0, "bot fired during RELOAD!");
+  assert.equal(BOT_RELOAD_MS, 2200);
+  assert.equal(COVER_SPEED, 1.2);
 });
 test("enemies NEVER shoot through walls: 3s behind container consumes 0 ammo", () => {
   const mgr = new EnemyManager("hard", () => 0.1);
@@ -1296,7 +1559,6 @@ test("enemies NEVER shoot through walls: 3s behind container consumes 0 ammo", (
       playerEye,
       playerAlive: true,
       playerFired: true,
-      // even when alerted by gunfire!
       playerSpeed: 0,
       playerOnGround: true,
       boxes: MAP.boxes,
@@ -1307,7 +1569,7 @@ test("enemies NEVER shoot through walls: 3s behind container consumes 0 ammo", (
   assert.equal(totalShots, 0, "occluded bot fired through cover!");
   assert.equal(bot.ammo, bot.mag, "occluded bot consumed ammo");
 });
-test("wounded bot (<30% HP) enters COVER on NORMAL, stays aggressive on EASY", () => {
+test("wounded bot (<30% HP) enters COVER (crouch_rifle) on NORMAL, stays aggressive on EASY", () => {
   const mgrNorm = new EnemyManager("normal", () => 0.3);
   const bNorm = mgrNorm.spawnManual(0, -10, yawFromDir(0, 10), "bl", 0);
   applyDamage(bNorm.entity, 75, 100);
@@ -1319,20 +1581,20 @@ test("wounded bot (<30% HP) enters COVER on NORMAL, stays aggressive on EASY", (
   mgrEasy.onBotDamaged(bEasy.entity, { x: 0, y: 0, z: 0 }, 100);
   assert.notEqual(bEasy.state, "COVER");
 });
-test("killed bot collapses to DEAD and replenishes a replacement after respawnDelayMs", () => {
+test("killed bot collapses to DEAD (die) and replenishes a replacement after respawnDelayMs", () => {
   const mgr = new EnemyManager("hard", () => 0.5);
-  mgr.reset(0, { x: 0, y: 0, z: 17 });
+  mgr.reset(0, { x: -8, y: 0, z: 17 });
   const victim = mgr.bots[0];
   const oldId = victim.id;
   applyDamage(victim.entity, 200, 100);
-  mgr.onBotDamaged(victim.entity, { x: 0, y: 0, z: 17 }, 100);
+  mgr.onBotDamaged(victim.entity, { x: -8, y: 0, z: 17 }, 100);
   assert.equal(victim.state, "DEAD");
-  assert.equal(victim.anim, "dead");
+  assert.equal(victim.anim, "die");
   mgr.update({
     dt: 0.05,
     nowMs: 100 + mgr.difficulty.respawnDelayMs + 50,
-    playerPos: { x: 0, y: 0, z: 17 },
-    playerEye: { x: 0, y: 1.7, z: 17 },
+    playerPos: { x: -8, y: 0, z: 17 },
+    playerEye: { x: -8, y: 1.7, z: 17 },
     playerAlive: true,
     playerFired: false,
     playerSpeed: 0,

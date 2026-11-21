@@ -1,122 +1,61 @@
-// CF-style low-poly humanoid AI enemy renderer:
-//   - 潜伏者 (BL - Black List): black-red tactical uniform + balaclava mask + glowing RED eye lamp
-//   - 保卫者 (GR - Global Risk): blue-white tactical uniform + ballistic helmet + glowing BLUE eye lamp
-//   - Strict geometry budget: <= 2500 triangles per enemy (~1100 tris actual!)
-//   - Ultra-low draw calls: 1 vertex-colored SkinnedMesh (12 bones) + 1 glowing visor SkinnedMesh
-//     + 1 muzzle flash sprite (visible only during firing) = 2–3 draw calls per enemy!
-//   - 6 articulated animations: breathe, walk, aim, fire, hit, dead (collapse to deck).
+// Rigged Humanoid AI Enemy Renderer (CC0 Low-poly Squad Kit — toolbenchdev.com):
+//   - Loads public/models/soldier.glb (3368 tris, 22 bones, 53 clips) &
+//     public/models/weapon_rifle.glb (300 tris) ONCE via GLTFLoader,
+//     reused per enemy via SkeletonUtils.clone().
+//   - Rifle attached directly to bone Socket_Hand_R at (0,0,0), rotation (0,0,0).
+//   - Faction dyeing:
+//       潜伏者 (bl): TeamColour -> #b3221f, other materials darkened x0.55 + RED emissive eye orb on Head
+//       保卫者 (gr): TeamColour -> #2f6fb0, other materials brightened x1.05 + BLUE emissive eye orb on Head
+//   - Per-enemy AnimationMixer driving strict 9-clip FSM with 0.18s crossFadeTo transitions:
+//       idle_rifle / walk_rifle / run_rifle / aim_rifle / fire_rifle / reload_rifle / crouch_rifle / hit / die
+//   - Model facing smoothly interpolated via model.rotation.y at 8 rad/s.
+//   - Death: die clip plays to completion, holds last frame for 2.5s, then fades out cleanly.
 
 import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { PALETTE } from './palette';
-import type { EnemyBot, Faction } from '../game/ai';
-import { clamp01, damp, easeInCubic, easeOutCubic } from './tween';
+import { BOT_TURN_RATE, type EnemyBot, type EnemyClip, type Faction } from '../game/ai';
 
-// Bone indices (12 bones per humanoid)
-const B_HIPS = 0;
-const B_TORSO = 1;
-const B_HEAD = 2;
-const B_ARM_L = 3;
-const B_FOREARM_L = 4;
-const B_ARM_R = 5;
-const B_FOREARM_R = 6;
-const B_LEG_L = 7;
-const B_SHIN_L = 8;
-const B_LEG_R = 9;
-const B_SHIN_R = 10;
-const B_GUN = 11;
+export const SOLDIER_MODEL_SOURCE = 'public/models/soldier.glb';
+export const RIFLE_MODEL_SOURCE = 'public/models/weapon_rifle.glb';
 
-interface SkinnedPart {
-  geo: THREE.BufferGeometry;
-  color: string;
-  bone: number;
+const CROSSFADE_SEC = 0.18;
+const FIRE_CLIP_TARGET_SEC = 0.35;
+const RELOAD_CLIP_TARGET_SEC = 2.2;
+const HIT_CLIP_TARGET_SEC = 0.25;
+const CORPSE_HOLD_SEC = 2.5;
+const CORPSE_FADE_SEC = 0.6;
+
+const REQUIRED_CLIPS: readonly EnemyClip[] = [
+  'idle_rifle',
+  'walk_rifle',
+  'run_rifle',
+  'aim_rifle',
+  'fire_rifle',
+  'reload_rifle',
+  'crouch_rifle',
+  'hit',
+  'die',
+];
+
+interface LoadedSoldierAssets {
+  soldierScene: THREE.Group;
+  clips: Map<EnemyClip, THREE.AnimationClip>;
+  rifleParts: { geo: THREE.BufferGeometry; mat: THREE.MeshStandardMaterial }[];
+  soldierTris: number;
+  rifleTris: number;
+  dieDurationSec: number;
 }
 
-const tmpCol = new THREE.Color();
+let cachedAssets: LoadedSoldierAssets | null = null;
+let assetsPromise: Promise<LoadedSoldierAssets> | null = null;
+let sharedFlashTex: THREE.CanvasTexture | null = null;
+let sharedEyeGeo: THREE.SphereGeometry | null = null;
 
-function prepColoredSkinned(part: SkinnedPart): THREE.BufferGeometry {
-  const g = part.geo.index ? part.geo.toNonIndexed() : part.geo;
-  const pos = g.getAttribute('position') as THREE.BufferAttribute;
-  const n = pos.count;
-  const colors = new Float32Array(n * 3);
-  const sIdx = new Uint16Array(n * 4);
-  const sW = new Float32Array(n * 4);
-  tmpCol.set(part.color);
-  for (let i = 0; i < n; i++) {
-    colors[i * 3] = tmpCol.r;
-    colors[i * 3 + 1] = tmpCol.g;
-    colors[i * 3 + 2] = tmpCol.b;
-    sIdx[i * 4] = part.bone;
-    sW[i * 4] = 1;
-  }
-  g.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
-  g.setAttribute('skinIndex', new THREE.Uint16BufferAttribute(sIdx, 4));
-  g.setAttribute('skinWeight', new THREE.Float32BufferAttribute(sW, 4));
-  if (!g.getAttribute('normal')) g.computeVertexNormals();
-  // Remove UV so mergeGeometries never mismatches attributes
-  if (g.getAttribute('uv')) g.deleteAttribute('uv');
-  return g;
-}
-
-function addBox(
-  list: SkinnedPart[],
-  bone: number,
-  color: string,
-  w: number,
-  h: number,
-  d: number,
-  x: number,
-  y: number,
-  z: number,
-  rx = 0,
-  ry = 0,
-  rz = 0,
-): void {
-  const g = new THREE.BoxGeometry(w, h, d);
-  if (rx) g.rotateX(rx);
-  if (ry) g.rotateY(ry);
-  if (rz) g.rotateZ(rz);
-  g.translate(x, y, z);
-  list.push({ geo: g, color, bone });
-}
-
-function addCyl(
-  list: SkinnedPart[],
-  bone: number,
-  color: string,
-  rTop: number,
-  rBot: number,
-  h: number,
-  x: number,
-  y: number,
-  z: number,
-  seg = 8,
-  rx = 0,
-  rz = 0,
-): void {
-  const g = new THREE.CylinderGeometry(rTop, rBot, h, seg);
-  if (rx) g.rotateX(rx);
-  if (rz) g.rotateZ(rz);
-  g.translate(x, y, z);
-  list.push({ geo: g, color, bone });
-}
-
-function addSphere(
-  list: SkinnedPart[],
-  bone: number,
-  color: string,
-  r: number,
-  x: number,
-  y: number,
-  z: number,
-  sx = 1,
-  sy = 1,
-  sz = 1,
-): void {
-  const g = new THREE.SphereGeometry(r, 8, 6);
-  g.scale(sx, sy, sz);
-  g.translate(x, y, z);
-  list.push({ geo: g, color, bone });
+function countGeoTris(g: THREE.BufferGeometry): number {
+  return Math.round(g.index ? g.index.count / 3 : g.getAttribute('position').count / 3);
 }
 
 function makeEnemyFlashTex(): THREE.CanvasTexture {
@@ -137,189 +76,237 @@ function makeEnemyFlashTex(): THREE.CanvasTexture {
   return tex;
 }
 
-let sharedFlashTex: THREE.CanvasTexture | null = null;
-const sharedVisorMats: Partial<Record<Faction, THREE.MeshBasicMaterial>> = {};
+/** Merge static rifle child meshes by material (13 meshes -> 3 meshes) to keep draw calls lean. */
+function buildMergedRifleParts(
+  rifleScene: THREE.Group,
+): { parts: { geo: THREE.BufferGeometry; mat: THREE.MeshStandardMaterial }[]; tris: number } {
+  rifleScene.updateMatrixWorld(true);
+  const byMat = new Map<
+    string,
+    { mat: THREE.MeshStandardMaterial; geos: THREE.BufferGeometry[] }
+  >();
+  let totalTris = 0;
 
-function getVisorMat(faction: Faction): THREE.MeshBasicMaterial {
-  let m = sharedVisorMats[faction];
-  if (!m) {
-    m = new THREE.MeshBasicMaterial({
-      color: faction === 'bl' ? PALETTE.blEye : PALETTE.grEye,
-    });
-    sharedVisorMats[faction] = m;
+  rifleScene.traverse((obj) => {
+    const mesh = obj as THREE.Mesh;
+    if (!mesh.isMesh || !mesh.geometry) return;
+    const rawMat = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
+    const std = (rawMat as THREE.MeshStandardMaterial) ?? new THREE.MeshStandardMaterial();
+    const key = std.name || std.uuid;
+    const g = mesh.geometry.clone();
+    g.applyMatrix4(mesh.matrixWorld);
+    const nonIdx = g.index ? g.toNonIndexed() : g;
+    // Strip inconsistent optional attributes so mergeGeometries always succeeds
+    for (const attrName of Object.keys(nonIdx.attributes)) {
+      if (attrName !== 'position' && attrName !== 'normal') {
+        nonIdx.deleteAttribute(attrName);
+      }
+    }
+    if (!nonIdx.getAttribute('normal')) nonIdx.computeVertexNormals();
+    totalTris += countGeoTris(nonIdx);
+    let bucket = byMat.get(key);
+    if (!bucket) {
+      bucket = { mat: std, geos: [] };
+      byMat.set(key, bucket);
+    }
+    bucket.geos.push(nonIdx);
+  });
+
+  const parts: { geo: THREE.BufferGeometry; mat: THREE.MeshStandardMaterial }[] = [];
+  for (const { mat, geos } of byMat.values()) {
+    const merged = geos.length === 1 ? geos[0] : mergeGeometries(geos, false);
+    if (merged) {
+      parts.push({ geo: merged, mat });
+    }
   }
-  return m;
+  return { parts, tris: totalTris };
+}
+
+function resolveModelBase(): string {
+  const env = (import.meta as unknown as { env?: { BASE_URL?: string } }).env;
+  return env?.BASE_URL ?? '/transport/';
+}
+
+export function preloadEnemyModels(): Promise<LoadedSoldierAssets> {
+  if (cachedAssets) return Promise.resolve(cachedAssets);
+  if (assetsPromise) return assetsPromise;
+
+  const loader = new GLTFLoader();
+  const base = resolveModelBase();
+  assetsPromise = Promise.all([
+    loader.loadAsync(`${base}models/soldier.glb`),
+    loader.loadAsync(`${base}models/weapon_rifle.glb`),
+  ]).then(([soldierGltf, rifleGltf]) => {
+    let soldierTris = 0;
+    soldierGltf.scene.traverse((obj) => {
+      const m = obj as THREE.Mesh;
+      if (m.isMesh && m.geometry) {
+        soldierTris += countGeoTris(m.geometry);
+      }
+    });
+
+    const clips = new Map<EnemyClip, THREE.AnimationClip>();
+    for (const name of REQUIRED_CLIPS) {
+      const found = soldierGltf.animations.find((a) => a.name === name);
+      if (found) clips.set(name, found);
+    }
+
+    const rifle = buildMergedRifleParts(rifleGltf.scene);
+    const dieClip = clips.get('die');
+    cachedAssets = {
+      soldierScene: soldierGltf.scene,
+      clips,
+      rifleParts: rifle.parts,
+      soldierTris,
+      rifleTris: rifle.tris,
+      dieDurationSec: dieClip ? dieClip.duration : 2.333,
+    };
+    return cachedAssets;
+  });
+  return assetsPromise;
+}
+
+function wrapPi(a: number): number {
+  let r = a % (2 * Math.PI);
+  if (r <= -Math.PI) r += 2 * Math.PI;
+  else if (r > Math.PI) r -= 2 * Math.PI;
+  return r;
+}
+
+function turnAngleToward(current: number, target: number, maxStep: number): number {
+  const diff = wrapPi(target - current);
+  if (Math.abs(diff) <= maxStep) return wrapPi(target);
+  return wrapPi(current + Math.sign(diff) * maxStep);
 }
 
 export class EnemyRig {
   readonly root = new THREE.Group();
   readonly faction: Faction;
-  readonly triangleCount: number;
 
-  private readonly bones: THREE.Bone[];
-  private readonly bodyMat: THREE.MeshStandardMaterial;
-  private readonly muzzleMesh: THREE.Mesh;
-  private readonly muzzleMat: THREE.MeshBasicMaterial;
-  private readonly hpWrap: THREE.Group;
-  private readonly hpFillMesh: THREE.Mesh;
-  private readonly hpMat: THREE.MeshBasicMaterial;
+  private model: THREE.Object3D | null = null;
+  private mixer: THREE.AnimationMixer | null = null;
+  private actions = new Map<EnemyClip, THREE.AnimationAction>();
+  private activeClip: EnemyClip | null = null;
+  private activeAction: THREE.AnimationAction | null = null;
+  private lastFireAnimStartAt = -10000;
+  private lastHitAt = -10000;
 
+  private headBone: THREE.Object3D | null = null;
+  private muzzleAnchor: THREE.Object3D | null = null;
+  private muzzleMesh: THREE.Mesh | null = null;
+  private muzzleMat: THREE.MeshBasicMaterial | null = null;
+  private bodyMaterials: THREE.MeshStandardMaterial[] = [];
+  private eyeMat: THREE.MeshStandardMaterial | null = null;
   private hitFlash = 0;
-  private deadProgress = 0;
-  private aimBlend = 0;
+
+  private modelYaw = 0;
+  private yawInitialized = false;
+  private loaded = false;
+  private triCount = 0;
+  private dieDurationSec = 2.333;
+  private deadElapsedSec = 0;
+  private deadStarted = false;
+  private fadePrepared = false;
+  private disposed = false;
+
+  /** Clips played by this enemy instance (diagnostic telemetry for e2e). */
+  readonly clipsPlayed = new Set<EnemyClip>();
 
   constructor(faction: Faction) {
     this.faction = faction;
     this.root.name = `enemy-rig-${faction}`;
+    if (cachedAssets) {
+      this.hydrate(cachedAssets);
+    }
+  }
 
-    const isBL = faction === 'bl';
-    const suit = isBL ? PALETTE.blSuit : PALETTE.grSuit;
-    const armor = isBL ? PALETTE.blRed : PALETTE.grWhite;
-    const headgear = isBL ? PALETTE.blMask : PALETTE.grHelmet;
-    const gear = isBL ? PALETTE.gunDark : PALETTE.steelFrame;
+  get triangleCount(): number {
+    return this.triCount;
+  }
+
+  get isLoaded(): boolean {
+    return this.loaded;
+  }
+
+  get currentClip(): EnemyClip {
+    return this.activeClip ?? 'idle_rifle';
+  }
+
+  get isFinishedCorpse(): boolean {
+    return this.disposed;
+  }
+
+  /** Build the cloned soldier, faction materials, rifle on Socket_Hand_R, eye orb on Head, and AnimationMixer. */
+  hydrate(assets: LoadedSoldierAssets): void {
+    if (this.loaded) return;
+    const isBL = this.faction === 'bl';
     const eyeCol = isBL ? PALETTE.blEye : PALETTE.grEye;
 
-    // --- 12-bone humanoid skeleton (feet on y=0, total height ~1.75m, facing -Z) ---
-    const hips = new THREE.Bone();
-    hips.position.set(0, 0.94, 0);
+    // Clone rigged humanoid via SkeletonUtils.clone() (never re-parses GLB)
+    const cloned = SkeletonUtils.clone(assets.soldierScene);
+    cloned.name = `soldier-${this.faction}`;
+    this.model = cloned;
+    this.dieDurationSec = assets.dieDurationSec;
 
-    const torso = new THREE.Bone();
-    torso.position.set(0, 0.08, 0);
-    hips.add(torso);
+    // Faction dyeing:
+    //   潜伏者 (bl): TeamColour -> #b3221f, other materials darkened to 0.55 brightness
+    //   保卫者 (gr): TeamColour -> #2f6fb0, other materials brightened to 1.05 brightness
+    const seenMats = new Map<THREE.Material, THREE.MeshStandardMaterial>();
+    const dyeMaterial = (orig: THREE.Material): THREE.MeshStandardMaterial => {
+      const existing = seenMats.get(orig);
+      if (existing) return existing;
+      const mat = (orig as THREE.MeshStandardMaterial).clone();
+      if (mat.name === 'TeamColour') {
+        mat.color.set(isBL ? PALETTE.blTeam : PALETTE.grTeam);
+      } else {
+        const mult = isBL ? 0.55 : 1.05;
+        mat.color.r = Math.min(1, mat.color.r * mult);
+        mat.color.g = Math.min(1, mat.color.g * mult);
+        mat.color.b = Math.min(1, mat.color.b * mult);
+      }
+      mat.envMapIntensity = 0.85;
+      mat.emissive.set('#000000');
+      mat.emissiveIntensity = 0;
+      seenMats.set(orig, mat);
+      this.bodyMaterials.push(mat);
+      return mat;
+    };
 
-    const head = new THREE.Bone();
-    head.position.set(0, 0.48, 0);
-    torso.add(head);
-
-    const armL = new THREE.Bone();
-    armL.position.set(-0.23, 0.39, 0);
-    torso.add(armL);
-    const forearmL = new THREE.Bone();
-    forearmL.position.set(0, -0.27, 0);
-    armL.add(forearmL);
-
-    const armR = new THREE.Bone();
-    armR.position.set(0.23, 0.39, 0);
-    torso.add(armR);
-    const forearmR = new THREE.Bone();
-    forearmR.position.set(0, -0.27, 0);
-    armR.add(forearmR);
-
-    const gun = new THREE.Bone();
-    gun.position.set(0, -0.24, -0.06);
-    forearmR.add(gun);
-
-    const legL = new THREE.Bone();
-    legL.position.set(-0.11, -0.04, 0);
-    hips.add(legL);
-    const shinL = new THREE.Bone();
-    shinL.position.set(0, -0.44, 0);
-    legL.add(shinL);
-
-    const legR = new THREE.Bone();
-    legR.position.set(0.11, -0.04, 0);
-    hips.add(legR);
-    const shinR = new THREE.Bone();
-    shinR.position.set(0, -0.44, 0);
-    legR.add(shinR);
-
-    this.bones = [hips, torso, head, armL, forearmL, armR, forearmR, legL, shinL, legR, shinR, gun];
-    this.root.add(hips);
-    this.root.updateMatrixWorld(true);
-    const skeleton = new THREE.Skeleton(this.bones);
-
-    // --- Build vertex-colored low-poly CF tactical humanoid in bind pose (feet y=0) ---
-    const parts: SkinnedPart[] = [];
-
-    // Pelvis / tactical belt & utility pouches
-    addBox(parts, B_HIPS, suit, 0.32, 0.16, 0.21, 0, 0.94, 0);
-    addBox(parts, B_HIPS, gear, 0.35, 0.06, 0.23, 0, 1.00, 0);
-    addBox(parts, B_HIPS, armor, 0.08, 0.09, 0.05, -0.14, 0.98, -0.11); // waist pouch
-    addBox(parts, B_HIPS, armor, 0.08, 0.09, 0.05, 0.14, 0.98, -0.11);
-
-    // Torso + iconic CF ballistic chest armor (BL black+crimson rig / GR navy+white vest!)
-    addBox(parts, B_TORSO, suit, 0.36, 0.44, 0.22, 0, 1.24, 0);
-    addBox(parts, B_TORSO, armor, 0.32, 0.34, 0.26, 0, 1.27, 0); // bold faction chest plate!
-    addBox(parts, B_TORSO, gear, 0.26, 0.10, 0.28, 0, 1.15, -0.01); // mag pouches on chest
-    addBox(parts, B_TORSO, armor, 0.12, 0.06, 0.25, -0.16, 1.44, 0); // shoulder straps
-    addBox(parts, B_TORSO, armor, 0.12, 0.06, 0.25, 0.16, 1.44, 0);
-    // Neck collar
-    addCyl(parts, B_TORSO, headgear, 0.068, 0.075, 0.08, 0, 1.49, 0, 8);
-
-    // Head: BL = sleek black balaclava mask + crimson headband / GR = tactical blue helmet + white side rails
-    addSphere(parts, B_HEAD, headgear, 0.118, 0, 1.62, 0, 0.94, 1.08, 1.0);
-    if (isBL) {
-      // 潜伏者: tactical black face mask + crimson bandana/head-stripe + respirator cheek filter
-      addBox(parts, B_HEAD, armor, 0.225, 0.042, 0.225, 0, 1.67, 0); // bold red head band
-      addBox(parts, B_HEAD, gear, 0.13, 0.075, 0.06, 0, 1.56, -0.105); // mouth mask guard
-    } else {
-      // 保卫者: tactical helmet dome + visor brim + white helmet flash + ear headsets
-      addSphere(parts, B_HEAD, headgear, 0.136, 0, 1.655, 0.006, 1.02, 0.88, 1.06);
-      addBox(parts, B_HEAD, armor, 0.23, 0.036, 0.22, 0, 1.69, 0.01); // white helmet stripe
-      addBox(parts, B_HEAD, gear, 0.18, 0.028, 0.06, 0, 1.67, -0.115); // helmet front brim
-      addBox(parts, B_HEAD, armor, 0.04, 0.07, 0.07, -0.13, 1.61, 0); // tactical comms ear cup
-      addBox(parts, B_HEAD, armor, 0.04, 0.07, 0.07, 0.13, 1.61, 0);
-    }
-
-    // Arms + Faction shoulder pauldrons & elbow pads + tactical gloves
-    for (const [side, bUp, bLo] of [
-      [-1, B_ARM_L, B_FOREARM_L],
-      [1, B_ARM_R, B_FOREARM_R],
-    ] as const) {
-      const ax = side * 0.23;
-      addBox(parts, bUp, armor, 0.125, 0.13, 0.135, ax, 1.38, 0); // bold faction shoulder pad
-      addCyl(parts, bUp, suit, 0.056, 0.050, 0.26, ax, 1.26, 0, 7);
-      addCyl(parts, bLo, suit, 0.048, 0.042, 0.24, ax, 1.02, 0, 7);
-      addBox(parts, bLo, gear, 0.075, 0.085, 0.075, ax, 0.88, 0); // gloved hand
-    }
-
-    // Legs + Faction knee pads + heavy combat boots
-    for (const [side, bTh, bSh] of [
-      [-1, B_LEG_L, B_SHIN_L],
-      [1, B_LEG_R, B_SHIN_R],
-    ] as const) {
-      const lx = side * 0.11;
-      addCyl(parts, bTh, suit, 0.082, 0.068, 0.42, lx, 0.69, 0, 8);
-      addBox(parts, bSh, armor, 0.105, 0.095, 0.065, lx, 0.47, -0.055); // faction knee guard
-      addCyl(parts, bSh, suit, 0.064, 0.054, 0.36, lx, 0.29, 0, 8);
-      addBox(parts, bSh, PALETTE.bootDark, 0.105, 0.11, 0.21, lx, 0.055, -0.035); // combat boot
-    }
-
-    // Carried Assault Rifle bound to B_GUN (extends forward along -Z from right hand)
-    addBox(parts, B_GUN, PALETTE.gun[1], 0.045, 0.075, 0.32, 0.23, 0.90, -0.22); // receiver
-    addBox(parts, B_GUN, PALETTE.gun[0], 0.040, 0.062, 0.22, 0.23, 0.89, 0.04); // stock
-    addBox(parts, B_GUN, PALETTE.gunDark, 0.032, 0.14, 0.055, 0.23, 0.80, -0.24, 0.18, 0, 0); // curved mag
-    addCyl(parts, B_GUN, PALETTE.gun[2], 0.014, 0.014, 0.32, 0.23, 0.91, -0.50, 6, Math.PI / 2); // barrel
-
-    const mergedBody = mergeGeometries(parts.map(prepColoredSkinned), false)!;
-    this.bodyMat = new THREE.MeshStandardMaterial({
-      vertexColors: true,
-      roughness: 0.72,
-      metalness: 0.16,
-      envMapIntensity: 0.95,
-      emissive: new THREE.Color('#000000'),
-      emissiveIntensity: 0,
+    cloned.traverse((obj) => {
+      const mesh = obj as THREE.Mesh;
+      if (!mesh.isMesh) return;
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      mesh.frustumCulled = false;
+      if (Array.isArray(mesh.material)) {
+        mesh.material = mesh.material.map(dyeMaterial);
+      } else if (mesh.material) {
+        mesh.material = dyeMaterial(mesh.material);
+      }
     });
-    const bodyMesh = new THREE.SkinnedMesh(mergedBody, this.bodyMat);
-    bodyMesh.castShadow = true;
-    bodyMesh.receiveShadow = true;
-    bodyMesh.frustumCulled = false;
-    bodyMesh.bind(skeleton);
-    this.root.add(bodyMesh);
 
-    // --- Glowing Eye Lamp / Visor SkinnedMesh (bound to B_HEAD — 1 draw call!) ---
-    const visorParts: SkinnedPart[] = [];
-    // Dual tactical glowing eye-goggle lenses + bridge bar (bright RED for BL / BLUE for GR!)
-    addBox(visorParts, B_HEAD, eyeCol, 0.068, 0.032, 0.032, -0.044, 1.635, -0.108);
-    addBox(visorParts, B_HEAD, eyeCol, 0.068, 0.032, 0.032, 0.044, 1.635, -0.108);
-    addBox(visorParts, B_HEAD, eyeCol, 0.040, 0.016, 0.025, 0, 1.635, -0.108);
-    const visorGeo = mergeGeometries(visorParts.map(prepColoredSkinned), false)!;
-    const visorMesh = new THREE.SkinnedMesh(visorGeo, getVisorMat(faction));
-    visorMesh.frustumCulled = false;
-    visorMesh.bind(skeleton);
-    this.root.add(visorMesh);
+    // Attach weapon_rifle.glb onto Socket_Hand_R at position (0,0,0), rotation (0,0,0)
+    const handSocket = cloned.getObjectByName('Socket_Hand_R') ?? cloned.getObjectByName('Hand_R');
+    const rifleGroup = new THREE.Group();
+    rifleGroup.name = 'enemy-rifle';
+    rifleGroup.position.set(0, 0, 0);
+    rifleGroup.rotation.set(0, 0, 0);
+    for (const part of assets.rifleParts) {
+      const rMat = part.mat.clone();
+      rMat.envMapIntensity = 0.9;
+      this.bodyMaterials.push(rMat);
+      const rMesh = new THREE.Mesh(part.geo, rMat);
+      rMesh.castShadow = false;
+      rMesh.receiveShadow = true;
+      rMesh.frustumCulled = false;
+      rifleGroup.add(rMesh);
+    }
 
-    // --- Enemy Muzzle Flash Quad (attached to gun bone, visible only during shot!) ---
+    // Muzzle anchor & muzzle flash quad at brake tip (+0.64, 0, -0.062) in weapon_rifle local space
+    this.muzzleAnchor = new THREE.Object3D();
+    this.muzzleAnchor.position.set(0.64, 0, -0.062);
+    rifleGroup.add(this.muzzleAnchor);
+
     if (!sharedFlashTex) sharedFlashTex = makeEnemyFlashTex();
     this.muzzleMat = new THREE.MeshBasicMaterial({
       map: sharedFlashTex,
@@ -329,179 +316,285 @@ export class EnemyRig {
       depthWrite: false,
       side: THREE.DoubleSide,
     });
-    const flashGeo = new THREE.PlaneGeometry(0.42, 0.42);
-    this.muzzleMesh = new THREE.Mesh(flashGeo, this.muzzleMat);
-    this.muzzleMesh.position.set(0, 0.02, -0.62);
+    this.muzzleMesh = new THREE.Mesh(new THREE.PlaneGeometry(0.42, 0.42), this.muzzleMat);
+    this.muzzleMesh.position.set(0.66, 0, -0.062);
+    this.muzzleMesh.rotation.y = Math.PI / 2;
     this.muzzleMesh.visible = false;
     this.muzzleMesh.frustumCulled = false;
-    gun.add(this.muzzleMesh);
+    rifleGroup.add(this.muzzleMesh);
 
-    // --- Compact floating HP indicator (only shown when damaged, 0 clutter at full HP) ---
-    this.hpWrap = new THREE.Group();
-    this.hpWrap.position.set(0, 1.96, 0);
-    this.hpWrap.visible = false;
-    const bgMesh = new THREE.Mesh(
-      new THREE.PlaneGeometry(0.56, 0.055),
-      new THREE.MeshBasicMaterial({ color: '#0b0e13', transparent: true, opacity: 0.72, side: THREE.DoubleSide }),
-    );
-    this.hpMat = new THREE.MeshBasicMaterial({ color: eyeCol, side: THREE.DoubleSide });
-    this.hpFillMesh = new THREE.Mesh(new THREE.PlaneGeometry(0.52, 0.032), this.hpMat);
-    this.hpFillMesh.position.z = 0.002;
-    this.hpWrap.add(bgMesh, this.hpFillMesh);
-    this.root.add(this.hpWrap);
+    if (handSocket) {
+      handSocket.add(rifleGroup);
+    } else {
+      cloned.add(rifleGroup);
+    }
 
-    const triOf = (g: THREE.BufferGeometry) =>
-      g.index ? g.index.count / 3 : g.getAttribute('position').count / 3;
-    this.triangleCount = Math.round(triOf(mergedBody) + triOf(visorGeo) + 2);
+    // Glowing emissive eye lamp orb mounted on Head bone (red for BL, blue for GR)
+    this.headBone = cloned.getObjectByName('Head') ?? null;
+    if (!sharedEyeGeo) sharedEyeGeo = new THREE.SphereGeometry(0.038, 10, 8);
+    this.eyeMat = new THREE.MeshStandardMaterial({
+      color: eyeCol,
+      emissive: eyeCol,
+      emissiveIntensity: 2.4,
+      roughness: 0.2,
+      metalness: 0.1,
+    });
+    const eyeOrb = new THREE.Mesh(sharedEyeGeo, this.eyeMat);
+    eyeOrb.name = `eye-lamp-${this.faction}`;
+    // Head world y=1.55; visor front sits at local (0, +0.112, +0.128) along +Z face direction
+    eyeOrb.position.set(0, 0.112, 0.128);
+    eyeOrb.castShadow = false;
+    eyeOrb.frustumCulled = false;
+    if (this.headBone) {
+      this.headBone.add(eyeOrb);
+    } else {
+      eyeOrb.position.set(0, 1.662, 0.128);
+      cloned.add(eyeOrb);
+    }
+
+    this.root.add(cloned);
+
+    // Independent AnimationMixer + all 9 state-machine actions
+    this.mixer = new THREE.AnimationMixer(cloned);
+    for (const [clipName, clip] of assets.clips) {
+      const action = this.mixer.clipAction(clip);
+      if (clipName === 'fire_rifle') {
+        action.setLoop(THREE.LoopOnce, 1);
+        action.clampWhenFinished = true;
+        action.timeScale = clip.duration / FIRE_CLIP_TARGET_SEC;
+      } else if (clipName === 'reload_rifle') {
+        action.setLoop(THREE.LoopOnce, 1);
+        action.clampWhenFinished = true;
+        action.timeScale = clip.duration / RELOAD_CLIP_TARGET_SEC;
+      } else if (clipName === 'hit') {
+        action.setLoop(THREE.LoopOnce, 1);
+        action.clampWhenFinished = true;
+        action.timeScale = clip.duration / HIT_CLIP_TARGET_SEC;
+      } else if (clipName === 'die') {
+        action.setLoop(THREE.LoopOnce, 1);
+        action.clampWhenFinished = true;
+        action.timeScale = 1.0;
+      } else {
+        action.setLoop(THREE.LoopRepeat, Infinity);
+        action.timeScale = 1.0;
+      }
+      this.actions.set(clipName, action);
+    }
+
+    this.triCount = assets.soldierTris + assets.rifleTris + countGeoTris(sharedEyeGeo);
+    this.loaded = true;
   }
 
-  /** Drive all 6 animations (breathe, walk, aim, fire, hit, dead) smoothly from bot state. */
-  sync(bot: EnemyBot, dt: number, nowMs: number, cameraPos: THREE.Vector3): void {
-    const p = bot.entity.pos;
-    this.root.position.set(p.x, p.y, p.z);
-    this.root.rotation.set(0, bot.yaw, 0);
+  /** Smoothly crossFadeTo target clip over 0.18s (never instant cut). */
+  private transitionTo(clip: EnemyClip, forceRestart = false): void {
+    if (!this.mixer) return;
+    const next = this.actions.get(clip);
+    if (!next) return;
 
-    const hips = this.bones[B_HIPS];
-    const torso = this.bones[B_TORSO];
-    const head = this.bones[B_HEAD];
-    const armL = this.bones[B_ARM_L];
-    const forearmL = this.bones[B_FOREARM_L];
-    const armR = this.bones[B_ARM_R];
-    const forearmR = this.bones[B_FOREARM_R];
-    const legL = this.bones[B_LEG_L];
-    const shinL = this.bones[B_SHIN_L];
-    const legR = this.bones[B_LEG_R];
-    const shinR = this.bones[B_SHIN_R];
-    const gun = this.bones[B_GUN];
+    if (this.activeClip === clip && !forceRestart) return;
 
-    const tSec = nowMs * 0.001;
+    const prev = this.activeAction;
+    this.activeClip = clip;
+    this.activeAction = next;
+    this.clipsPlayed.add(clip);
 
-    // --- 6. DEAD: smooth 0.6s collapse onto deck ---
-    if (bot.state === 'DEAD' || !bot.entity.alive) {
-      this.deadProgress = Math.min(1, this.deadProgress + dt / 0.58);
-      const u = easeInCubic(this.deadProgress);
-      hips.position.set(0, 0.94 - u * 0.78, u * 0.36);
-      hips.rotation.set(u * 1.48, 0, u * 0.24 * bot.flankSign);
-      torso.rotation.set(u * 0.15, 0, 0);
-      head.rotation.set(-u * 0.25, u * 0.35 * bot.flankSign, 0);
-      armL.rotation.set(0.3 * u, 0, -0.75 * u);
-      forearmL.rotation.set(0.35 * u, 0, 0);
-      armR.rotation.set(0.45 * u, 0, 0.68 * u);
-      forearmR.rotation.set(0.25 * u, 0, 0);
-      legL.rotation.set(-0.22 * u, 0, -0.18 * u);
-      shinL.rotation.set(-0.35 * u, 0, 0);
-      legR.rotation.set(-0.12 * u, 0, 0.22 * u);
-      shinR.rotation.set(-0.20 * u, 0, 0);
-      gun.rotation.set(0, 0, 0.4 * u);
-      this.muzzleMesh.visible = false;
-      this.hpWrap.visible = false;
-      this.bodyMat.emissiveIntensity = 0;
+    if (!prev) {
+      next.enabled = true;
+      next.reset();
+      next.setEffectiveWeight(1);
+      next.play();
       return;
     }
 
-    this.deadProgress = 0;
-
-    // --- 1. BREATHE (always underlying idle life) ---
-    const breathe = Math.sin(tSec * 2.4 + bot.slotIndex * 1.7);
-
-    // --- 2. WALK (stride cycle scaled by actual movement speed) ---
-    const moveFactor = clamp01(bot.speed / 2.2);
-    const stride = Math.sin(bot.walkPhase);
-    const strideOpp = Math.sin(bot.walkPhase + Math.PI);
-
-    // --- 3. AIM (combat stance blend when ALERT / ENGAGE / CHASE / COVER) ---
-    const wantsAim =
-      bot.state === 'ALERT' || bot.state === 'ENGAGE' || bot.state === 'COVER' || bot.hasLos;
-    this.aimBlend = damp(this.aimBlend, wantsAim ? 1 : 0, 10, dt);
-
-    // --- 4. FIRE (muzzle flash + rifle recoil kick) ---
-    const sinceFire = nowMs - bot.lastFireAt;
-    const fireKick = sinceFire >= 0 && sinceFire < 110 ? easeOutCubic(1 - sinceFire / 110) : 0;
-    const flashOn = sinceFire >= 0 && sinceFire < 68;
-    this.muzzleMesh.visible = flashOn;
-    if (flashOn) {
-      this.muzzleMat.opacity = 1 - sinceFire / 68;
-      this.muzzleMesh.rotation.z = (nowMs * 0.09) % (Math.PI * 2);
-      const sc = 0.85 + 0.35 * (1 - sinceFire / 68);
-      this.muzzleMesh.scale.set(sc, sc, 1);
+    if (prev === next) {
+      // Re-trigger same one-shot clip (e.g., consecutive hits) cleanly
+      next.enabled = true;
+      next.reset();
+      next.setEffectiveWeight(1);
+      next.play();
+      return;
     }
 
-    // --- 5. HIT (0.22s sharp flinch + brief rim highlight) ---
+    next.enabled = true;
+    next.reset();
+    next.setEffectiveWeight(1);
+    next.play();
+    prev.crossFadeTo(next, CROSSFADE_SEC, false);
+  }
+
+  /** Read actual world-space head top (0.25m above Head bone) so overhead tags track standing/crouch. */
+  getHeadTopWorld(out: THREE.Vector3): THREE.Vector3 {
+    if (this.headBone) {
+      this.headBone.getWorldPosition(out);
+      out.y += 0.25;
+      return out;
+    }
+    return out.set(this.root.position.x, this.root.position.y + 1.8, this.root.position.z);
+  }
+
+  /** Read actual rifle barrel tip world position for enemy bullet tracers. */
+  getMuzzleWorld(out: THREE.Vector3): boolean {
+    if (!this.muzzleAnchor || !this.loaded) return false;
+    this.muzzleAnchor.getWorldPosition(out);
+    return true;
+  }
+
+  /** Synchronize position, smooth model.rotation.y (8 rad/s), AnimationMixer, muzzle flash & death fade. */
+  sync(bot: EnemyBot, dt: number, nowMs: number): void {
+    const p = bot.entity.pos;
+    this.root.position.set(p.x, p.y, p.z);
+
+    if (!this.loaded) {
+      if (cachedAssets) this.hydrate(cachedAssets);
+      else return;
+    }
+
+    // soldier.glb faces +Z while ai.ts yaw=0 faces -Z -> target model.rotation.y = bot.yaw + PI
+    const targetModelYaw = wrapPi(bot.yaw + Math.PI);
+    if (!this.yawInitialized) {
+      this.modelYaw = targetModelYaw;
+      this.yawInitialized = true;
+    } else if (bot.state !== 'DEAD' && bot.entity.alive) {
+      this.modelYaw = turnAngleToward(this.modelYaw, targetModelYaw, BOT_TURN_RATE * dt);
+    }
+    if (this.model) {
+      this.model.rotation.y = this.modelYaw;
+    }
+
+    // --- DEAD state: play die to last frame, hold 2.5s, then fade out ---
+    if (bot.state === 'DEAD' || !bot.entity.alive) {
+      this.advanceDeath(dt);
+      return;
+    }
+
+    // Select clip strictly from AI state machine
+    const desiredClip: EnemyClip = bot.anim;
+    const isNewFire =
+      desiredClip === 'fire_rifle' && bot.fireAnimStartAt !== this.lastFireAnimStartAt;
+    const isNewHit = desiredClip === 'hit' && bot.lastHitAt !== this.lastHitAt;
+    if (isNewFire) this.lastFireAnimStartAt = bot.fireAnimStartAt;
+    if (isNewHit) this.lastHitAt = bot.lastHitAt;
+
+    this.transitionTo(desiredClip, isNewFire || isNewHit);
+
+    if (this.mixer) {
+      this.mixer.update(dt);
+    }
+
+    // Muzzle flash quad visible briefly at the 0.18s shot moment (bot.lastFireAt)
+    if (this.muzzleMesh && this.muzzleMat) {
+      const sinceFire = nowMs - bot.lastFireAt;
+      const flashOn = sinceFire >= 0 && sinceFire < 75;
+      this.muzzleMesh.visible = flashOn;
+      if (flashOn) {
+        this.muzzleMat.opacity = 1 - sinceFire / 75;
+        this.muzzleMesh.rotation.x = (nowMs * 0.11) % (Math.PI * 2);
+        const sc = 0.85 + 0.35 * (1 - sinceFire / 75);
+        this.muzzleMesh.scale.set(sc, sc, 1);
+      }
+    }
+
+    // Subtle red emissive hit highlight during 0.25s hit flinch
     const sinceHit = nowMs - bot.lastHitAt;
-    const hitFlinch = sinceHit >= 0 && sinceHit < 220 ? Math.sin((1 - sinceHit / 220) * Math.PI) : 0;
-    this.hitFlash = damp(this.hitFlash, hitFlinch, 24, dt);
-    this.bodyMat.emissive.set(PALETTE.accent);
-    this.bodyMat.emissiveIntensity = this.hitFlash * 0.55;
-
-    // Crouch slightly when taking cover
-    const coverDuck = bot.state === 'COVER' && bot.speed < 0.4 ? 0.24 : 0;
-    const bobY = Math.abs(stride) * 0.032 * moveFactor;
-
-    hips.position.set(0, 0.94 + bobY - coverDuck - this.aimBlend * 0.04, 0);
-    hips.rotation.set(
-      moveFactor * 0.07 + coverDuck * 0.35,
-      this.aimBlend * 0.22,
-      stride * 0.03 * moveFactor,
-    );
-
-    torso.rotation.set(
-      0.03 * breathe + moveFactor * 0.08 - hitFlinch * 0.34 + fireKick * 0.09,
-      -this.aimBlend * 0.16 + hitFlinch * 0.18 * bot.flankSign,
-      0,
-    );
-
-    head.rotation.set(
-      -0.02 * breathe - hitFlinch * 0.28,
-      this.aimBlend * 0.06 + Math.sin(tSec * 1.1 + bot.slotIndex) * 0.14 * (1 - this.aimBlend),
-      0,
-    );
-
-    // Legs & knees
-    const legAmp = 0.58 * moveFactor;
-    legL.rotation.set(stride * legAmp + this.aimBlend * 0.12 + coverDuck * 0.8, 0, -0.05 * this.aimBlend);
-    shinL.rotation.set(-Math.max(0, -stride) * 0.65 * moveFactor - coverDuck * 1.2, 0, 0);
-    legR.rotation.set(strideOpp * legAmp - this.aimBlend * 0.14 + coverDuck * 0.8, 0, 0.05 * this.aimBlend);
-    shinR.rotation.set(-Math.max(0, -strideOpp) * 0.65 * moveFactor - coverDuck * 1.2, 0, 0);
-
-    // Arms holding rifle (low ready while patrolling → leveled shoulder aim when engaging!)
-    const aimLift = 0.55 + this.aimBlend * 0.68;
-    const armRx = aimLift + fireKick * 0.20 - hitFlinch * 0.22 + breathe * 0.025;
-    const foreRx = 0.32 + this.aimBlend * 0.22;
-    armR.rotation.set(armRx, -0.14 * this.aimBlend, 0.06);
-    forearmR.rotation.set(foreRx, 0, 0);
-
-    armL.rotation.set(
-      aimLift * 0.92 + fireKick * 0.14 + stride * 0.12 * (1 - this.aimBlend),
-      0.42 + this.aimBlend * 0.24,
-      -0.14,
-    );
-    forearmL.rotation.set(0.55 + this.aimBlend * 0.22, 0.25, 0);
-
-    // Cancel parent armR + forearmR pitch so carried rifle aims horizontally forward (-Z) directly at player!
-    gun.rotation.set(-(armRx + foreRx) + fireKick * 0.16, 0.12 * this.aimBlend, 0);
-
-    // Floating HP bar only when wounded
-    const wounded = bot.entity.hp < bot.entity.maxHp && bot.entity.hp > 0;
-    this.hpWrap.visible = wounded;
-    if (wounded) {
-      const frac = Math.max(0.02, bot.entity.hp / bot.entity.maxHp);
-      this.hpFillMesh.scale.x = frac;
-      this.hpFillMesh.position.x = -(1 - frac) * 0.26;
-      this.hpWrap.lookAt(cameraPos);
+    const targetFlash = sinceHit >= 0 && sinceHit < 250 ? Math.sin((1 - sinceHit / 250) * Math.PI) : 0;
+    this.hitFlash += (targetFlash - this.hitFlash) * Math.min(1, 20 * dt);
+    for (const mat of this.bodyMaterials) {
+      if (this.hitFlash > 0.01) {
+        mat.emissive.set(PALETTE.accent);
+        mat.emissiveIntensity = this.hitFlash * 0.42;
+      } else if (mat.emissiveIntensity !== 0) {
+        mat.emissiveIntensity = 0;
+      }
     }
+  }
+
+  /** Advance die animation, 2.5s last-frame hold, and 0.6s fade-out (works both while in bots[] and as detached corpse). */
+  advanceDeath(dt: number): void {
+    if (!this.loaded) {
+      this.disposed = true;
+      return;
+    }
+    if (!this.deadStarted) {
+      this.deadStarted = true;
+      this.deadElapsedSec = 0;
+      this.transitionTo('die', false);
+      if (this.muzzleMesh) this.muzzleMesh.visible = false;
+      for (const mat of this.bodyMaterials) {
+        mat.emissiveIntensity = 0;
+      }
+    }
+
+    this.deadElapsedSec += dt;
+    if (this.mixer) {
+      this.mixer.update(dt);
+    }
+
+    const fadeStartSec = this.dieDurationSec + CORPSE_HOLD_SEC;
+    if (this.deadElapsedSec >= fadeStartSec) {
+      if (!this.fadePrepared) {
+        this.fadePrepared = true;
+        for (const mat of this.bodyMaterials) {
+          mat.transparent = true;
+          mat.depthWrite = false;
+          mat.needsUpdate = true;
+        }
+        if (this.eyeMat) {
+          this.eyeMat.transparent = true;
+          this.eyeMat.depthWrite = false;
+          this.eyeMat.needsUpdate = true;
+        }
+      }
+      const u = Math.min(1, (this.deadElapsedSec - fadeStartSec) / CORPSE_FADE_SEC);
+      const opacity = 1 - u;
+      for (const mat of this.bodyMaterials) {
+        mat.opacity = opacity;
+      }
+      if (this.eyeMat) {
+        this.eyeMat.opacity = opacity;
+        this.eyeMat.emissiveIntensity = 2.4 * opacity;
+      }
+      if (u >= 1) {
+        this.disposed = true;
+      }
+    }
+  }
+
+  dispose(): void {
+    this.mixer?.stopAllAction();
+    for (const mat of this.bodyMaterials) mat.dispose();
+    this.bodyMaterials.length = 0;
+    this.eyeMat?.dispose();
+    this.muzzleMat?.dispose();
+    this.muzzleMesh?.geometry.dispose();
   }
 }
 
 export class EnemyRenderer {
   private readonly scene: THREE.Scene;
   private rigs = new Map<string, EnemyRig>();
+  /** Corpses detached from active bot slots so die + 2.5s hold + fade-out always completes. */
+  private dyingCorpses: EnemyRig[] = [];
 
   constructor(scene: THREE.Scene) {
     this.scene = scene;
+    // Start preloading soldier.glb + weapon_rifle.glb immediately on page boot
+    void preloadEnemyModels().then((assets) => {
+      for (const rig of this.rigs.values()) {
+        if (!rig.isLoaded) rig.hydrate(assets);
+      }
+    });
   }
 
-  /** Synchronize rendered EnemyRigs with active EnemyBots (creates/removes rigs cleanly). */
-  sync(bots: readonly EnemyBot[], dt: number, nowMs: number, cameraPos: THREE.Vector3): void {
+  get isModelLoaded(): boolean {
+    return cachedAssets !== null;
+  }
+
+  get modelSource(): string {
+    return SOLDIER_MODEL_SOURCE;
+  }
+
+  /** Synchronize rendered EnemyRigs with active EnemyBots (creates rigs & preserves fading corpses). */
+  sync(bots: readonly EnemyBot[], dt: number, nowMs: number, _cameraPos?: THREE.Vector3): void {
     const aliveIds = new Set<string>();
     for (const bot of bots) {
       aliveIds.add(bot.id);
@@ -511,18 +604,71 @@ export class EnemyRenderer {
         this.rigs.set(bot.id, rig);
         this.scene.add(rig.root);
       }
-      rig.sync(bot, dt, nowMs, cameraPos);
+      rig.sync(bot, dt, nowMs);
     }
+
     for (const [id, rig] of this.rigs) {
       if (!aliveIds.has(id)) {
-        this.scene.remove(rig.root);
         this.rigs.delete(id);
+        if (rig.currentClip === 'die' && !rig.isFinishedCorpse) {
+          this.dyingCorpses.push(rig);
+        } else {
+          this.scene.remove(rig.root);
+          rig.dispose();
+        }
+      }
+    }
+
+    // Advance detached dying corpses through last-frame hold & fade-out
+    for (let i = this.dyingCorpses.length - 1; i >= 0; i--) {
+      const c = this.dyingCorpses[i];
+      c.advanceDeath(dt);
+      if (c.isFinishedCorpse) {
+        this.scene.remove(c.root);
+        c.dispose();
+        this.dyingCorpses.splice(i, 1);
       }
     }
   }
 
+  /** Immediately remove all live rigs and fading corpses (menu reset / e2e clearEnemies). */
+  clearAll(): void {
+    for (const rig of this.rigs.values()) {
+      this.scene.remove(rig.root);
+      rig.dispose();
+    }
+    this.rigs.clear();
+    for (const c of this.dyingCorpses) {
+      this.scene.remove(c.root);
+      c.dispose();
+    }
+    this.dyingCorpses.length = 0;
+  }
+
   getRigTris(botId: string): number {
     return this.rigs.get(botId)?.triangleCount ?? 0;
+  }
+
+  getActiveClip(botId: string): EnemyClip {
+    return this.rigs.get(botId)?.currentClip ?? 'idle_rifle';
+  }
+
+  getClipsPlayed(botId: string): EnemyClip[] {
+    const rig = this.rigs.get(botId);
+    return rig ? Array.from(rig.clipsPlayed) : [];
+  }
+
+  getHeadTopWorld(botId: string, out: THREE.Vector3): boolean {
+    const rig = this.rigs.get(botId);
+    if (!rig) return false;
+    rig.getHeadTopWorld(out);
+    return true;
+  }
+
+  getMuzzleWorld(botId: string, out: THREE.Vector3): boolean {
+    const rig = this.rigs.get(botId);
+    if (!rig) return false;
+    return rig.getMuzzleWorld(out);
   }
 
   getMaxBotTris(): number {

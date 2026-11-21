@@ -33,6 +33,8 @@ const MIME = {
   '.mp3': 'audio/mpeg',
   '.ogg': 'audio/ogg',
   '.wav': 'audio/wav',
+  '.glb': 'model/gltf-binary',
+  '.gltf': 'model/gltf+json',
 };
 
 function send(res, status, body, headers = {}) {
@@ -113,7 +115,7 @@ const server = http.createServer((req, res) => {
   if (pathname.startsWith(PREFIX + '/')) {
     return serveStatic(req, res, pathname.slice(PREFIX.length), true);
   }
-  if (pathname.startsWith('/audio/')) {
+  if (pathname.startsWith('/audio/') || pathname.startsWith('/models/')) {
     return serveStatic(req, res, pathname, false);
   }
   return send(res, 404, 'not found');

@@ -72,6 +72,10 @@ declare global {
       faction: Faction;
       state: string;
       anim: string;
+      clip: string;
+      clipsPlayed: string[];
+      modelSource: string;
+      modelLoaded: boolean;
       hp: number;
       ammo: number;
       shotsFired: number;
@@ -230,6 +234,7 @@ const startRound = (settings: { difficulty: DifficultyId; muted: boolean; musicE
     w.cancelReload();
     w.resetSpin();
   }
+  enemyRenderer.clearAll();
   enemyMgr.reset(simNowMs, player.position);
 };
 
@@ -246,7 +251,7 @@ const menu = new Menu(document.body, {
     deathPanelShown = false;
     hud.setDeathVeil(0);
     enemyMgr.clear();
-    enemyRenderer.sync(enemyMgr.bots, 0, simNowMs, view.camera.position);
+    enemyRenderer.clearAll();
     const [rx, ry, rz] = spawnPoint('A', 0);
     player.position.x = rx;
     player.position.y = ry;
@@ -585,9 +590,12 @@ engine.onFrame = (dt) => {
     const rightX = -fwd.z;
     const rightZ = fwd.x;
     for (const es of enemyShots) {
-      worldVfx.spawnTracer(es.origin, es.target);
-      const dx = es.origin.x - player.position.x;
-      const dz = es.origin.z - player.position.z;
+      const origin = enemyRenderer.getMuzzleWorld(es.botId, scratchMuzzle)
+        ? { x: scratchMuzzle.x, y: scratchMuzzle.y, z: scratchMuzzle.z }
+        : es.origin;
+      worldVfx.spawnTracer(origin, es.target);
+      const dx = origin.x - player.position.x;
+      const dz = origin.z - player.position.z;
       const dLen = Math.hypot(dx, dz) || 1;
       const stereoPan = Math.max(-1, Math.min(1, (dx * rightX + dz * rightZ) / dLen));
       sfx.play('shotEnemy', { distance: es.dist, maxRange: 60, pan: stereoPan, volume: 0.78 });
@@ -679,6 +687,10 @@ engine.onFrame = (dt) => {
       faction: b.faction,
       state: b.state,
       anim: b.anim,
+      clip: enemyRenderer.getActiveClip(b.id),
+      clipsPlayed: enemyRenderer.getClipsPlayed(b.id),
+      modelSource: enemyRenderer.modelSource,
+      modelLoaded: enemyRenderer.isModelLoaded,
       hp: b.entity.hp,
       ammo: b.ammo,
       shotsFired: b.shotsFired,
@@ -771,7 +783,7 @@ window.__test = {
   },
   clearEnemies: () => {
     enemyMgr.clear();
-    enemyRenderer.sync(enemyMgr.bots, 0, simNowMs, view.camera.position);
+    enemyRenderer.clearAll();
   },
   setDifficulty: (diff: DifficultyId) => {
     currentDifficulty = diff;
