@@ -65,7 +65,8 @@ var DIFFICULTIES = [
     maxSimultaneous: 3,
     canTakeCover: false,
     flankPairs: false,
-    respawnDelayMs: 3600
+    respawnDelayMs: 3600,
+    advanceAfterMs: 18e3
   },
   {
     id: "normal",
@@ -79,7 +80,8 @@ var DIFFICULTIES = [
     maxSimultaneous: 5,
     canTakeCover: true,
     flankPairs: false,
-    respawnDelayMs: 3e3
+    respawnDelayMs: 3e3,
+    advanceAfterMs: 14e3
   },
   {
     id: "hard",
@@ -93,7 +95,8 @@ var DIFFICULTIES = [
     maxSimultaneous: 5,
     canTakeCover: true,
     flankPairs: true,
-    respawnDelayMs: 1800
+    respawnDelayMs: 1800,
+    advanceAfterMs: 1e4
   }
 ];
 var DIFFICULTY_MAP = {
@@ -128,6 +131,8 @@ var HEAR_SHOT_RANGE = 60;
 var HEAR_STEP_RANGE = 12;
 var ENGAGE_MIN_DIST = 8;
 var ENGAGE_MAX_DIST = 16;
+var ADVANCE_ENGAGE_BONUS_DIST = 8;
+var TEAM_INTEL_TTL_MS = 3e3;
 var PATROL_WAYPOINTS = [
   { x: -16, z: -15.5 },
   // 0: NW deck
@@ -173,7 +178,7 @@ var WP_NEIGHBORS = [
   // 0
   [0, 2, 5, 6],
   // 1
-  [1, 3, 6],
+  [1, 3],
   // 2
   [2, 7],
   // 3
@@ -181,19 +186,19 @@ var WP_NEIGHBORS = [
   // 4
   [1, 4, 6, 9],
   // 5
-  [1, 2, 5, 10],
+  [1, 5, 10],
   // 6
   [3, 12],
   // 7
-  [4, 9, 13],
+  [4, 13],
   // 8
-  [5, 8, 10],
+  [5, 10],
   // 9
   [6, 9, 11, 14],
   // 10
-  [10, 12, 15],
+  [10, 15],
   // 11
-  [7, 11, 16],
+  [7, 16],
   // 12
   [8, 17],
   // 13
@@ -203,9 +208,9 @@ var WP_NEIGHBORS = [
   // 15
   [12, 15, 18],
   // 16
-  [13],
+  [13, 18],
   // 17
-  [15, 16]
+  [15, 16, 17]
   // 18
 ];
 var COVER_SPOTS = [
@@ -292,6 +297,15 @@ var EnemyManager = class {
   factionBalance = 0;
   /** Remembered player spawn origin so initial/replacement spawns stay >= 15m away. */
   playerSpawnOrigin = { x: -8, z: 17 };
+  hasPlayerSpawnOrigin = false;
+  /** Shared team callout intel written when any bot has LOS (TTL 3000ms). */
+  squadIntel = null;
+  /** Per-bot advance cooldown timestamp after arriving at destination without LOS. */
+  advanceCooldownUntil = /* @__PURE__ */ new Map();
+  /** Per-bot current advance destination waypoint index (used to detect target shifts). */
+  advanceGoalWp = /* @__PURE__ */ new Map();
+  /** Cumulative shots fired by all bots in the current round (read-only telemetry). */
+  totalShotsFired = 0;
   constructor(diffId = "normal", rng = Math.random) {
     this.difficulty = getDifficultySpec(diffId);
     this.rng = rng;
@@ -304,7 +318,12 @@ var EnemyManager = class {
     this.bots.length = 0;
     this.entities.length = 0;
     this.factionBalance = 0;
+    this.squadIntel = null;
+    this.advanceCooldownUntil.clear();
+    this.advanceGoalWp.clear();
+    this.totalShotsFired = 0;
     this.playerSpawnOrigin = { x: playerPos.x, z: playerPos.z };
+    this.hasPlayerSpawnOrigin = true;
     const count = Math.min(5, this.difficulty.maxSimultaneous);
     for (let i = 0; i < count; i++) {
       this.spawnIntoSlot(i, nowMs, playerPos);
@@ -314,6 +333,16 @@ var EnemyManager = class {
   clear() {
     this.bots.length = 0;
     this.entities.length = 0;
+    this.squadIntel = null;
+    this.advanceCooldownUntil.clear();
+    this.advanceGoalWp.clear();
+    this.totalShotsFired = 0;
+    this.hasPlayerSpawnOrigin = false;
+  }
+  /** Read-only snapshot of active squad callout intel (null if none or expired > 3000ms). */
+  getTeamIntel(nowMs) {
+    if (!this.squadIntel || nowMs - this.squadIntel.at > TEAM_INTEL_TTL_MS) return null;
+    return this.squadIntel;
   }
   /** Deterministic helper for e2e & unit tests: spawn a specific bot at (x, z, yaw). */
   spawnManual(x, z, yaw = 0, faction, nowMs = 0) {
@@ -341,6 +370,8 @@ var EnemyManager = class {
       hasLos: false,
       lastSeenPos: null,
       lastSeenAt: 0,
+      lastContactAt: nowMs,
+      advancing: false,
       fireAnimStartAt: -1e4,
       fireAnimEndAt: -1e4,
       fireHitAt: -1e4,
@@ -459,6 +490,8 @@ var EnemyManager = class {
       hasLos: false,
       lastSeenPos: null,
       lastSeenAt: 0,
+      lastContactAt: nowMs,
+      advancing: false,
       fireAnimStartAt: -1e4,
       fireAnimEndAt: -1e4,
       fireHitAt: -1e4,
@@ -495,6 +528,9 @@ var EnemyManager = class {
     bot.lastHitAt = nowMs;
     if (!entity.alive) {
       bot.state = "DEAD";
+      bot.advancing = false;
+      this.advanceGoalWp.delete(bot.id);
+      this.advanceCooldownUntil.delete(bot.id);
       bot.diedAt = nowMs;
       bot.replaceAt = nowMs + this.difficulty.respawnDelayMs;
       bot.fireHitPending = false;
@@ -504,6 +540,9 @@ var EnemyManager = class {
     }
     bot.lastSeenPos = { x: attackerPos.x, y: attackerPos.y, z: attackerPos.z };
     bot.lastSeenAt = nowMs;
+    bot.lastContactAt = nowMs;
+    bot.advancing = false;
+    this.advanceGoalWp.delete(bot.id);
     if (bot.state === "IDLE" || bot.state === "PATROL") {
       bot.state = "ALERT";
       bot.stateUntil = nowMs + ALERT_HOLD_MS;
@@ -522,19 +561,20 @@ var EnemyManager = class {
     const { dt, nowMs, playerPos, playerEye, playerAlive, boxes, collider } = ctx;
     const diff = this.difficulty;
     const alertSightMs = this.alertSightDelayMs();
+    if (!this.hasPlayerSpawnOrigin && playerAlive) {
+      this.playerSpawnOrigin = { x: playerPos.x, z: playerPos.z };
+      this.hasPlayerSpawnOrigin = true;
+    }
+    if (!playerAlive) {
+      this.squadIntel = null;
+    } else if (this.squadIntel && nowMs - this.squadIntel.at > TEAM_INTEL_TTL_MS) {
+      this.squadIntel = null;
+    }
+    const senses = new Array(this.bots.length).fill(null);
     for (let i = 0; i < this.bots.length; i++) {
       const bot = this.bots[i];
       const ent = bot.entity;
-      if (!ent.alive || bot.state === "DEAD") {
-        bot.state = "DEAD";
-        bot.speed = 0;
-        bot.fireHitPending = false;
-        bot.anim = "die";
-        if (bot.replaceAt > 0 && nowMs >= bot.replaceAt) {
-          this.spawnIntoSlot(bot.slotIndex, nowMs, playerPos);
-        }
-        continue;
-      }
+      if (!ent.alive || bot.state === "DEAD") continue;
       const botEye = { x: ent.pos.x, y: ent.pos.y + BOT_EYE_Y, z: ent.pos.z };
       const toPx = playerPos.x - ent.pos.x;
       const toPz = playerPos.z - ent.pos.z;
@@ -549,7 +589,8 @@ var EnemyManager = class {
           const dot = dist > 1e-4 ? (toPx * fwdX + toPz * fwdZ) / dist : 1;
           const inCone = dot >= VISION_COS_HALF || dist < 3.5;
           const alreadyAware = bot.state === "ALERT" || bot.state === "CHASE" || bot.state === "ENGAGE" || bot.state === "RELOAD";
-          if (inCone || alreadyAware) canSee = true;
+          const advanceContact = bot.advancing && dist <= ENGAGE_MAX_DIST + ADVANCE_ENGAGE_BONUS_DIST;
+          if (inCone || alreadyAware || advanceContact) canSee = true;
         }
       }
       const heardShot = playerAlive && ctx.playerFired && dist <= HEAR_SHOT_RANGE;
@@ -560,6 +601,8 @@ var EnemyManager = class {
         if (bot.firstSightAt < 0) bot.firstSightAt = nowMs;
         bot.lastSeenPos = { x: playerPos.x, y: playerPos.y, z: playerPos.z };
         bot.lastSeenAt = nowMs;
+        bot.lastContactAt = nowMs;
+        this.squadIntel = { pos: { x: playerPos.x, y: playerPos.y, z: playerPos.z }, at: nowMs };
       } else {
         bot.sightAcquiredAt = -1;
         bot.fireHitPending = false;
@@ -567,13 +610,39 @@ var EnemyManager = class {
       if ((heardShot || heardStep) && !bot.hasLos) {
         bot.lastSeenPos = { x: playerPos.x, y: playerPos.y, z: playerPos.z };
         bot.lastSeenAt = nowMs;
+        bot.lastContactAt = nowMs;
+        bot.advancing = false;
+        this.advanceGoalWp.delete(bot.id);
         if (bot.state === "IDLE" || bot.state === "PATROL") {
           bot.state = "ALERT";
           bot.stateUntil = nowMs + ALERT_HOLD_MS;
         }
       }
+      senses[i] = { botEye, toPx, toPz, dist, clearLos };
+    }
+    const intelActive = playerAlive && this.squadIntel !== null && nowMs - this.squadIntel.at <= TEAM_INTEL_TTL_MS;
+    for (let i = 0; i < this.bots.length; i++) {
+      const bot = this.bots[i];
+      const ent = bot.entity;
+      if (!ent.alive || bot.state === "DEAD") {
+        bot.state = "DEAD";
+        bot.advancing = false;
+        this.advanceGoalWp.delete(bot.id);
+        bot.speed = 0;
+        bot.fireHitPending = false;
+        bot.anim = "die";
+        if (bot.replaceAt > 0 && nowMs >= bot.replaceAt) {
+          this.advanceCooldownUntil.delete(bot.id);
+          this.spawnIntoSlot(bot.slotIndex, nowMs, playerPos);
+        }
+        continue;
+      }
+      const sense = senses[i];
+      const { botEye, toPx, toPz, dist, clearLos } = sense;
       if (diff.canTakeCover && ent.hp < ent.maxHp * 0.3 && bot.state !== "COVER" && bot.state !== "RELOAD" && bot.state !== "IDLE" && bot.state !== "PATROL") {
         bot.state = "COVER";
+        bot.advancing = false;
+        this.advanceGoalWp.delete(bot.id);
         bot.coverTarget = this.pickCoverSpot(ent.pos, playerEye, boxes);
         bot.fireHitPending = false;
         bot.stateUntil = nowMs + 2600;
@@ -582,17 +651,51 @@ var EnemyManager = class {
       let moveTargetZ = null;
       let desiredSpeed = 0;
       let lookTargetYaw = bot.yaw;
-      if (!playerAlive && bot.state !== "IDLE" && bot.state !== "PATROL" && bot.state !== "RELOAD") {
-        bot.state = "PATROL";
-        bot.fireHitPending = false;
-        bot.sightAcquiredAt = -1;
+      if (!playerAlive) {
+        if (bot.advancing) {
+          bot.advancing = false;
+          this.advanceGoalWp.delete(bot.id);
+          bot.state = "PATROL";
+        }
+        if (bot.state !== "IDLE" && bot.state !== "PATROL" && bot.state !== "RELOAD") {
+          bot.state = "PATROL";
+          bot.fireHitPending = false;
+          bot.sightAcquiredAt = -1;
+        }
+      }
+      if (playerAlive && !bot.hasLos && !bot.advancing && (bot.state === "IDLE" || bot.state === "PATROL")) {
+        const cooldownUntil = this.advanceCooldownUntil.get(bot.id) ?? 0;
+        const noContactTrigger = nowMs - bot.lastContactAt > diff.advanceAfterMs && nowMs >= cooldownUntil;
+        const intelTrigger = intelActive && this.squadIntel !== null && this.squadIntel.at > cooldownUntil - diff.advanceAfterMs;
+        if (noContactTrigger || intelTrigger) {
+          const targetPos = this.getAdvanceTargetPos(bot, nowMs, playerAlive);
+          const goalWp = this.nearestWaypoint(targetPos.x, targetPos.z);
+          const goalPt = PATROL_WAYPOINTS[goalWp];
+          const distToGoalWp = Math.hypot(goalPt.x - ent.pos.x, goalPt.z - ent.pos.z);
+          if (distToGoalWp >= 1.2) {
+            bot.advancing = true;
+            bot.state = "PATROL";
+            const curWp = this.nearestWaypoint(ent.pos.x, ent.pos.z);
+            bot.waypointIdx = this.pickAdvanceWaypoint(ent.pos, curWp, goalWp, boxes);
+            this.advanceGoalWp.set(bot.id, goalWp);
+          }
+        }
       }
       switch (bot.state) {
         case "IDLE": {
           desiredSpeed = 0;
           if (bot.hasLos) {
-            bot.state = "ALERT";
-            bot.stateUntil = nowMs + alertSightMs;
+            const wasAdvancing = bot.advancing;
+            bot.advancing = false;
+            this.advanceGoalWp.delete(bot.id);
+            if (wasAdvancing && dist <= ENGAGE_MAX_DIST + ADVANCE_ENGAGE_BONUS_DIST && clearLos) {
+              bot.state = "ENGAGE";
+              bot.nextFireCycleAt = Math.min(bot.nextFireCycleAt, nowMs);
+              lookTargetYaw = yawFromDir(toPx, toPz);
+            } else {
+              bot.state = "ALERT";
+              bot.stateUntil = nowMs + alertSightMs;
+            }
           } else if (nowMs >= bot.stateUntil) {
             bot.state = "PATROL";
             bot.waypointIdx = this.pickNextWaypoint(bot.waypointIdx);
@@ -601,8 +704,53 @@ var EnemyManager = class {
         }
         case "PATROL": {
           if (bot.hasLos) {
-            bot.state = "ALERT";
-            bot.stateUntil = nowMs + alertSightMs;
+            const wasAdvancing = bot.advancing;
+            bot.advancing = false;
+            this.advanceGoalWp.delete(bot.id);
+            if (wasAdvancing && dist <= ENGAGE_MAX_DIST + ADVANCE_ENGAGE_BONUS_DIST && clearLos) {
+              bot.state = "ENGAGE";
+              bot.nextFireCycleAt = Math.min(bot.nextFireCycleAt, nowMs);
+              lookTargetYaw = yawFromDir(toPx, toPz);
+            } else {
+              bot.state = "ALERT";
+              bot.stateUntil = nowMs + alertSightMs;
+            }
+            break;
+          }
+          if (bot.advancing) {
+            const targetPos = this.getAdvanceTargetPos(bot, nowMs, playerAlive);
+            const goalWp = this.nearestWaypoint(targetPos.x, targetPos.z);
+            const prevGoal = this.advanceGoalWp.get(bot.id);
+            if (prevGoal !== void 0 && prevGoal !== goalWp) {
+              const curWp = this.nearestWaypoint(ent.pos.x, ent.pos.z);
+              bot.waypointIdx = this.pickAdvanceWaypoint(ent.pos, curWp, goalWp, boxes);
+            }
+            this.advanceGoalWp.set(bot.id, goalWp);
+            let wp2 = PATROL_WAYPOINTS[bot.waypointIdx] ?? PATROL_WAYPOINTS[0];
+            const wd2 = Math.hypot(wp2.x - ent.pos.x, wp2.z - ent.pos.z);
+            if (wd2 < 1.1) {
+              if (bot.waypointIdx === goalWp) {
+                bot.advancing = false;
+                this.advanceGoalWp.delete(bot.id);
+                this.advanceCooldownUntil.set(bot.id, nowMs + diff.advanceAfterMs);
+                if (!intelActive) bot.lastSeenPos = null;
+                bot.state = "IDLE";
+                bot.stateUntil = nowMs + 700 + this.rng() * 900;
+                desiredSpeed = 0;
+              } else {
+                bot.waypointIdx = this.nextWaypointToward(bot.waypointIdx, goalWp);
+                wp2 = PATROL_WAYPOINTS[bot.waypointIdx] ?? PATROL_WAYPOINTS[0];
+                moveTargetX = wp2.x;
+                moveTargetZ = wp2.z;
+                desiredSpeed = diff.moveSpeed;
+                lookTargetYaw = yawFromDir(wp2.x - ent.pos.x, wp2.z - ent.pos.z);
+              }
+            } else {
+              moveTargetX = wp2.x;
+              moveTargetZ = wp2.z;
+              desiredSpeed = diff.moveSpeed;
+              lookTargetYaw = yawFromDir(wp2.x - ent.pos.x, wp2.z - ent.pos.z);
+            }
             break;
           }
           const wp = PATROL_WAYPOINTS[bot.waypointIdx] ?? PATROL_WAYPOINTS[0];
@@ -736,6 +884,7 @@ var EnemyManager = class {
             if (bot.ammo > 0 && hasLineOfSight(botEye, playerEye, boxes)) {
               bot.ammo--;
               bot.shotsFired++;
+              this.totalShotsFired++;
               bot.lastFireAt = nowMs;
               if (bot.firstShotAt < 0) bot.firstShotAt = nowMs;
               const pHit = diff.hitRate * enemyHitAttenuation(dist);
@@ -871,7 +1020,15 @@ var EnemyManager = class {
       bot.speed = dt > 1e-4 ? actualDisp / dt : 0;
       bot.walkPhase += bot.speed * dt * 3.1;
       if (bot.state === "PATROL" && desiredSpeed > 0.5 && bot.speed < 0.25) {
-        bot.waypointIdx = this.pickNextWaypoint(bot.waypointIdx);
+        if (bot.advancing) {
+          const goalWp = this.advanceGoalWp.get(bot.id);
+          if (goalWp !== void 0) {
+            const curWp = this.nearestWaypoint(ent.pos.x, ent.pos.z);
+            bot.waypointIdx = curWp !== bot.waypointIdx ? curWp : this.nextWaypointToward(curWp, goalWp);
+          }
+        } else {
+          bot.waypointIdx = this.pickNextWaypoint(bot.waypointIdx);
+        }
       }
       if (nowMs - bot.lastHitAt >= 0 && nowMs - bot.lastHitAt < HIT_ANIM_MS) {
         bot.anim = "hit";
@@ -881,7 +1038,7 @@ var EnemyManager = class {
             bot.anim = "idle_rifle";
             break;
           case "PATROL":
-            bot.anim = "walk_rifle";
+            bot.anim = bot.advancing ? "run_rifle" : "walk_rifle";
             break;
           case "ALERT":
             bot.anim = "aim_rifle";
@@ -965,6 +1122,64 @@ var EnemyManager = class {
     const nbs = WP_NEIGHBORS[currentIdx];
     if (!nbs || nbs.length === 0) return Math.floor(this.rng() * PATROL_WAYPOINTS.length);
     return nbs[Math.floor(this.rng() * nbs.length)];
+  }
+  /** Choose target world XZ for an advancing bot: active team intel -> own lastSeenPos -> player spawn area. */
+  getAdvanceTargetPos(bot, nowMs, playerAlive) {
+    const intel = playerAlive && this.squadIntel && nowMs - this.squadIntel.at <= TEAM_INTEL_TTL_MS ? this.squadIntel : null;
+    if (intel && (!bot.lastSeenPos || intel.at >= bot.lastSeenAt)) {
+      return { x: intel.pos.x, z: intel.pos.z };
+    }
+    if (bot.lastSeenPos) {
+      return { x: bot.lastSeenPos.x, z: bot.lastSeenPos.z };
+    }
+    return this.playerSpawnOrigin;
+  }
+  /** Shortest-path next hop from `fromIdx` toward `toIdx` along the connected WP_NEIGHBORS graph. */
+  nextWaypointToward(fromIdx, toIdx) {
+    if (fromIdx === toIdx) return toIdx;
+    const n = PATROL_WAYPOINTS.length;
+    const dist = new Float64Array(n).fill(Infinity);
+    const prev = new Int32Array(n).fill(-1);
+    const visited = new Uint8Array(n);
+    dist[fromIdx] = 0;
+    for (let step = 0; step < n; step++) {
+      let u = -1;
+      let best = Infinity;
+      for (let i = 0; i < n; i++) {
+        if (!visited[i] && dist[i] < best) {
+          best = dist[i];
+          u = i;
+        }
+      }
+      if (u < 0 || u === toIdx) break;
+      visited[u] = 1;
+      const pu = PATROL_WAYPOINTS[u];
+      for (const v of WP_NEIGHBORS[u]) {
+        if (visited[v]) continue;
+        const pv = PATROL_WAYPOINTS[v];
+        const nd = best + Math.hypot(pv.x - pu.x, pv.z - pu.z);
+        if (nd < dist[v]) {
+          dist[v] = nd;
+          prev[v] = u;
+        }
+      }
+    }
+    if (prev[toIdx] < 0) return toIdx;
+    let cur = toIdx;
+    while (prev[cur] >= 0 && prev[cur] !== fromIdx) {
+      cur = prev[cur];
+    }
+    return cur;
+  }
+  /** Pick immediate advance waypoint: skip backtracking to curWp when straight line to nextWp is obstacle-free. */
+  pickAdvanceWaypoint(pos, curWp, goalWp, boxes) {
+    const nextWp = this.nextWaypointToward(curWp, goalWp);
+    if (nextWp === curWp) return curWp;
+    const target = PATROL_WAYPOINTS[nextWp];
+    const from = { x: pos.x, y: 0.4, z: pos.z };
+    const to = { x: target.x, y: 0.4, z: target.z };
+    if (hasLineOfSight(from, to, boxes)) return nextWp;
+    return curWp;
   }
   pickCoverSpot(botPos, playerEye, boxes) {
     let best = COVER_SPOTS[0];
@@ -1605,4 +1820,243 @@ test("killed bot collapses to DEAD (die) and replenishes a replacement after res
   assert.notEqual(mgr.bots[0].id, oldId);
   assert.equal(mgr.bots[0].entity.alive, true);
   assert.equal(mgr.bots.length, 5);
+});
+function makeRng(seed = 1337) {
+  let s = seed >>> 0;
+  return () => {
+    s = Math.imul(1664525, s) + 1013904223 >>> 0;
+    return s / 4294967296;
+  };
+}
+test("difficulty advance thresholds match EASY 18s / NORMAL 14s / HARD 10s", () => {
+  assert.equal(getDifficultySpec("easy").advanceAfterMs, 18e3);
+  assert.equal(getDifficultySpec("normal").advanceAfterMs, 14e3);
+  assert.equal(getDifficultySpec("hard").advanceAfterMs, 1e4);
+});
+test("stationary player >30m with no LOS: bot advances to <25m within 20s and acquires LOS + fires within 45s", () => {
+  const playerPos = { x: -8, y: 0, z: 17 };
+  const playerEye = { x: playerPos.x, y: 1.7, z: playerPos.z };
+  const mgr = new EnemyManager("normal", makeRng(42));
+  mgr.reset(0, playerPos);
+  mgr.clear();
+  const starts = [
+    [-14, -15.5],
+    [-4, -15.5],
+    [6, -15.5],
+    [16, -15.5],
+    [0, -15.5]
+  ];
+  for (let i = 0; i < starts.length; i++) {
+    const [sx, sz] = starts[i];
+    const b = mgr.spawnManual(sx, sz, 0, i % 2 === 0 ? "bl" : "gr", 0);
+    const d0 = Math.hypot(sx - playerPos.x, sz - playerPos.z);
+    assert.ok(d0 > 30, `initial bot ${i} dist ${d0.toFixed(2)}m must be >30m`);
+    assert.equal(
+      hasLineOfSight({ x: sx, y: 1.56, z: sz }, playerEye, MAP.boxes),
+      false,
+      `initial bot ${i} must have no LOS`
+    );
+    assert.equal(b.lastContactAt, 0);
+    assert.equal(b.advancing, false);
+  }
+  let playerHp = 200;
+  let minDistWithin20s = Infinity;
+  let sawAdvanceAtMoveSpeed = false;
+  let advancingBotIdWithin20s = null;
+  let firstLosAtMs = -1;
+  let firstFireAtMs = -1;
+  let fireBotIds = /* @__PURE__ */ new Set();
+  for (let t = 50; t <= 45e3; t += 50) {
+    const shots = mgr.update({
+      dt: 0.05,
+      nowMs: t,
+      playerPos,
+      playerEye,
+      playerAlive: true,
+      playerFired: false,
+      playerSpeed: 0,
+      playerOnGround: true,
+      boxes: MAP.boxes,
+      collider: world
+    });
+    for (const s of shots) {
+      if (firstFireAtMs < 0) firstFireAtMs = t;
+      fireBotIds.add(s.botId);
+      if (s.hit) playerHp -= s.damage;
+    }
+    for (const b of mgr.bots) {
+      if (!b.entity.alive) continue;
+      const d = Math.hypot(b.entity.pos.x - playerPos.x, b.entity.pos.z - playerPos.z);
+      if (b.advancing && b.speed >= mgr.difficulty.moveSpeed - 0.35) {
+        sawAdvanceAtMoveSpeed = true;
+      }
+      if (t <= 2e4 && d < minDistWithin20s) {
+        minDistWithin20s = d;
+        if (d < 25) advancingBotIdWithin20s = b.id;
+      }
+      if (b.hasLos && firstLosAtMs < 0) firstLosAtMs = t;
+    }
+  }
+  assert.equal(sawAdvanceAtMoveSpeed, true, "advancing bot must move at diff.moveSpeed (not 1.4)");
+  assert.ok(
+    minDistWithin20s < 25,
+    `expected at least 1 bot <25m within 20s, got minDist=${minDistWithin20s.toFixed(2)}m`
+  );
+  assert.ok(advancingBotIdWithin20s !== null, "no bot closed below 25m within 20s");
+  assert.ok(firstLosAtMs > 0 && firstLosAtMs <= 45e3, `no bot acquired LOS within 45s (got ${firstLosAtMs}ms)`);
+  assert.ok(
+    firstFireAtMs > 0 && firstFireAtMs <= 45e3,
+    `no bot fired within 45s (got ${firstFireAtMs}ms)`
+  );
+  assert.ok(
+    mgr.totalShotsFired > 0 || playerHp < 200,
+    `expected shotsFired>0 or playerHp<200 (shots=${mgr.totalShotsFired}, hp=${playerHp})`
+  );
+  const closer = mgr.bots.find((b) => b.id === advancingBotIdWithin20s);
+  assert.ok(
+    closer && (closer.firstSightAt > 0 || fireBotIds.has(closer.id)),
+    "closing bot should acquire LOS / engage"
+  );
+});
+test("advancing bot with clearLos within ENGAGE_MAX_DIST+8 enters ENGAGE directly", () => {
+  const mgr = new EnemyManager("hard", makeRng(7));
+  const playerPos = { x: 0, y: 0, z: 17 };
+  const playerEye = { x: 0, y: 1.7, z: 17 };
+  const bot = mgr.spawnManual(0, -3, 0, "bl", 0);
+  assert.equal(hasLineOfSight({ x: 0, y: 1.56, z: -3 }, playerEye, MAP.boxes), true);
+  bot.advancing = true;
+  bot.state = "PATROL";
+  mgr.update({
+    dt: 0.05,
+    nowMs: 10100,
+    playerPos,
+    playerEye,
+    playerAlive: true,
+    playerFired: false,
+    playerSpeed: 0,
+    playerOnGround: true,
+    boxes: MAP.boxes,
+    collider: world
+  });
+  const dist = Math.hypot(bot.entity.pos.x - playerPos.x, bot.entity.pos.z - playerPos.z);
+  assert.ok(dist > ENGAGE_MAX_DIST && dist <= ENGAGE_MAX_DIST + 8, `expected 16<dist<=24, got ${dist.toFixed(2)}`);
+  assert.equal(bot.advancing, false, "advancing must clear upon acquiring LOS");
+  assert.equal(bot.hasLos, true, "advancing bot with clearLos <= ENGAGE_MAX_DIST+8 must acquire LOS");
+  assert.equal(bot.state, "ENGAGE", "advancing bot with clearLos <= 24m must enter ENGAGE directly");
+});
+test("teammate callout shares LOS position for 3000ms and redirects advancing teammate", () => {
+  const mgr = new EnemyManager("normal", makeRng(99));
+  mgr.clear();
+  const playerSpawn = { x: -8, y: 0, z: 17 };
+  const spottedPos = { x: 14, y: 0, z: 15.5 };
+  const spottedEye = { x: 14, y: 1.7, z: 15.5 };
+  const spotter = mgr.spawnManual(14, 7.5, yawFromDir(0, 1), "bl", 0);
+  const mate = mgr.spawnManual(6, -15.5, 0, "gr", 0);
+  mgr.update({
+    dt: 0.02,
+    nowMs: 20,
+    playerPos: playerSpawn,
+    playerEye: { x: playerSpawn.x, y: 1.7, z: playerSpawn.z },
+    playerAlive: true,
+    playerFired: false,
+    playerSpeed: 0,
+    playerOnGround: true,
+    boxes: MAP.boxes,
+    collider: world
+  });
+  assert.equal(spotter.hasLos, false);
+  assert.equal(mate.hasLos, false);
+  mgr.update({
+    dt: 0.05,
+    nowMs: 70,
+    playerPos: spottedPos,
+    playerEye: spottedEye,
+    playerAlive: true,
+    playerFired: false,
+    playerSpeed: 0,
+    playerOnGround: true,
+    boxes: MAP.boxes,
+    collider: world
+  });
+  assert.equal(spotter.hasLos, true, "spotter should have LOS to player");
+  assert.equal(mate.hasLos, false, "teammate at north deck should not have LOS");
+  const intel = mgr.getTeamIntel(70);
+  assert.ok(intel !== null, "team intel must be written when any bot gains LOS");
+  assert.equal(intel.pos.x, spottedPos.x);
+  assert.equal(intel.pos.z, spottedPos.z);
+  assert.equal(mate.advancing, true, "teammate must advance toward shared callout intel");
+  const startX = mate.entity.pos.x;
+  for (let t = 120; t <= 1520; t += 50) {
+    mgr.update({
+      dt: 0.05,
+      nowMs: t,
+      playerPos: spottedPos,
+      playerEye: spottedEye,
+      playerAlive: true,
+      playerFired: false,
+      playerSpeed: 0,
+      playerOnGround: true,
+      boxes: MAP.boxes,
+      collider: world
+    });
+  }
+  assert.ok(
+    mate.entity.pos.x > startX + 2,
+    `mate should advance east toward callout (14,15.5), x moved ${startX.toFixed(2)} -> ${mate.entity.pos.x.toFixed(2)}`
+  );
+  applyDamage(spotter.entity, 200, 1570);
+  mgr.onBotDamaged(spotter.entity, spottedPos, 1570);
+  assert.ok(mgr.getTeamIntel(1520 + TEAM_INTEL_TTL_MS) !== null, "intel still valid at exact 3000ms");
+  assert.equal(mgr.getTeamIntel(1520 + TEAM_INTEL_TTL_MS + 1), null, "intel must expire after 3000ms");
+});
+test("after player dies, bots exit advancing and return to PATROL", () => {
+  const playerPos = { x: -8, y: 0, z: 17 };
+  const playerEye = { x: -8, y: 1.7, z: 17 };
+  const mgr = new EnemyManager("hard", makeRng(21));
+  mgr.clear();
+  const bot = mgr.spawnManual(-14, -15.5, 0, "bl", 0);
+  for (let t = 50; t <= 11500; t += 50) {
+    mgr.update({
+      dt: 0.05,
+      nowMs: t,
+      playerPos,
+      playerEye,
+      playerAlive: true,
+      playerFired: false,
+      playerSpeed: 0,
+      playerOnGround: true,
+      boxes: MAP.boxes,
+      collider: world
+    });
+  }
+  assert.equal(bot.advancing, true, "bot should be advancing after 10s without contact on HARD");
+  mgr.update({
+    dt: 0.05,
+    nowMs: 11550,
+    playerPos,
+    playerEye,
+    playerAlive: false,
+    playerFired: false,
+    playerSpeed: 0,
+    playerOnGround: true,
+    boxes: MAP.boxes,
+    collider: world
+  });
+  assert.equal(bot.advancing, false, "bot must exit advancing when player dies");
+  assert.equal(bot.state, "PATROL", "bot must return to PATROL when player dies");
+  for (let t = 11600; t <= 26600; t += 100) {
+    mgr.update({
+      dt: 0.1,
+      nowMs: t,
+      playerPos,
+      playerEye,
+      playerAlive: false,
+      playerFired: false,
+      playerSpeed: 0,
+      playerOnGround: true,
+      boxes: MAP.boxes,
+      collider: world
+    });
+    assert.equal(bot.advancing, false, `bot re-entered advancing while player dead at t=${t}`);
+  }
 });

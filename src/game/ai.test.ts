@@ -13,6 +13,8 @@ import {
   FIRE_HIT_DELAY_MS,
   MIN_PLAYER_SPAWN_DIST,
   MIN_BOT_SEPARATION,
+  ENGAGE_MAX_DIST,
+  TEAM_INTEL_TTL_MS,
   hasLineOfSight,
   yawFromDir,
 } from './ai.ts';
@@ -274,4 +276,277 @@ test('killed bot collapses to DEAD (die) and replenishes a replacement after res
   assert.notEqual(mgr.bots[0].id, oldId);
   assert.equal(mgr.bots[0].entity.alive, true);
   assert.equal(mgr.bots.length, 5);
+});
+
+/** Deterministic LCG PRNG for reproducible AI simulations (no Math.random / wall-clock). */
+function makeRng(seed = 1337): () => number {
+  let s = seed >>> 0;
+  return () => {
+    s = (Math.imul(1664525, s) + 1013904223) >>> 0;
+    return s / 0x100000000;
+  };
+}
+
+test('difficulty advance thresholds match EASY 18s / NORMAL 14s / HARD 10s', () => {
+  assert.equal(getDifficultySpec('easy').advanceAfterMs, 18000);
+  assert.equal(getDifficultySpec('normal').advanceAfterMs, 14000);
+  assert.equal(getDifficultySpec('hard').advanceAfterMs, 10000);
+});
+
+test('stationary player >30m with no LOS: bot advances to <25m within 20s and acquires LOS + fires within 45s', () => {
+  const playerPos = { x: -8, y: 0, z: 17 };
+  const playerEye = { x: playerPos.x, y: 1.7, z: playerPos.z };
+  const mgr = new EnemyManager('normal', makeRng(42));
+  mgr.reset(0, playerPos);
+
+  // Place all 5 bots cleanly at >30m north-deck spawns with zero initial LOS
+  mgr.clear();
+  const starts: readonly [number, number][] = [
+    [-14, -15.5],
+    [-4, -15.5],
+    [6, -15.5],
+    [16, -15.5],
+    [0, -15.5],
+  ];
+  for (let i = 0; i < starts.length; i++) {
+    const [sx, sz] = starts[i];
+    const b = mgr.spawnManual(sx, sz, 0, i % 2 === 0 ? 'bl' : 'gr', 0);
+    const d0 = Math.hypot(sx - playerPos.x, sz - playerPos.z);
+    assert.ok(d0 > 30, `initial bot ${i} dist ${d0.toFixed(2)}m must be >30m`);
+    assert.equal(
+      hasLineOfSight({ x: sx, y: 1.56, z: sz }, playerEye, MAP.boxes),
+      false,
+      `initial bot ${i} must have no LOS`,
+    );
+    assert.equal(b.lastContactAt, 0);
+    assert.equal(b.advancing, false);
+  }
+
+  let playerHp = 200;
+  let minDistWithin20s = Infinity;
+  let sawAdvanceAtMoveSpeed = false;
+  let advancingBotIdWithin20s: string | null = null;
+  let firstLosAtMs = -1;
+  let firstFireAtMs = -1;
+  let fireBotIds = new Set<string>();
+
+  for (let t = 50; t <= 45000; t += 50) {
+    const shots = mgr.update({
+      dt: 0.05,
+      nowMs: t,
+      playerPos,
+      playerEye,
+      playerAlive: true,
+      playerFired: false,
+      playerSpeed: 0,
+      playerOnGround: true,
+      boxes: MAP.boxes,
+      collider: world,
+    });
+    for (const s of shots) {
+      if (firstFireAtMs < 0) firstFireAtMs = t;
+      fireBotIds.add(s.botId);
+      if (s.hit) playerHp -= s.damage;
+    }
+    for (const b of mgr.bots) {
+      if (!b.entity.alive) continue;
+      const d = Math.hypot(b.entity.pos.x - playerPos.x, b.entity.pos.z - playerPos.z);
+      if (b.advancing && b.speed >= mgr.difficulty.moveSpeed - 0.35) {
+        sawAdvanceAtMoveSpeed = true;
+      }
+      if (t <= 20000 && d < minDistWithin20s) {
+        minDistWithin20s = d;
+        if (d < 25) advancingBotIdWithin20s = b.id;
+      }
+      if (b.hasLos && firstLosAtMs < 0) firstLosAtMs = t;
+    }
+  }
+
+  assert.equal(sawAdvanceAtMoveSpeed, true, 'advancing bot must move at diff.moveSpeed (not 1.4)');
+  assert.ok(
+    minDistWithin20s < 25,
+    `expected at least 1 bot <25m within 20s, got minDist=${minDistWithin20s.toFixed(2)}m`,
+  );
+  assert.ok(advancingBotIdWithin20s !== null, 'no bot closed below 25m within 20s');
+  assert.ok(firstLosAtMs > 0 && firstLosAtMs <= 45000, `no bot acquired LOS within 45s (got ${firstLosAtMs}ms)`);
+  assert.ok(
+    firstFireAtMs > 0 && firstFireAtMs <= 45000,
+    `no bot fired within 45s (got ${firstFireAtMs}ms)`,
+  );
+  assert.ok(
+    mgr.totalShotsFired > 0 || playerHp < 200,
+    `expected shotsFired>0 or playerHp<200 (shots=${mgr.totalShotsFired}, hp=${playerHp})`,
+  );
+  // Confirm the bot that closed in within 20s also acquired LOS & fired
+  const closer = mgr.bots.find((b) => b.id === advancingBotIdWithin20s);
+  assert.ok(
+    closer && (closer.firstSightAt > 0 || fireBotIds.has(closer.id)),
+    'closing bot should acquire LOS / engage',
+  );
+});
+
+test('advancing bot with clearLos within ENGAGE_MAX_DIST+8 enters ENGAGE directly', () => {
+  const mgr = new EnemyManager('hard', makeRng(7));
+  // Player at (0, 17); bot at (0, -3) -> dist = 20m (> ENGAGE_MAX_DIST 16m, <= 24m), clear center corridor
+  const playerPos = { x: 0, y: 0, z: 17 };
+  const playerEye = { x: 0, y: 1.7, z: 17 };
+  const bot = mgr.spawnManual(0, -3, 0, 'bl', 0); // facing -Z (away from player), no initial vision cone
+  assert.equal(hasLineOfSight({ x: 0, y: 1.56, z: -3 }, playerEye, MAP.boxes), true);
+
+  // Force advancing past HARD 10000ms threshold at t=10100ms
+  bot.advancing = true;
+  bot.state = 'PATROL';
+  mgr.update({
+    dt: 0.05,
+    nowMs: 10100,
+    playerPos,
+    playerEye,
+    playerAlive: true,
+    playerFired: false,
+    playerSpeed: 0,
+    playerOnGround: true,
+    boxes: MAP.boxes,
+    collider: world,
+  });
+
+  const dist = Math.hypot(bot.entity.pos.x - playerPos.x, bot.entity.pos.z - playerPos.z);
+  assert.ok(dist > ENGAGE_MAX_DIST && dist <= ENGAGE_MAX_DIST + 8, `expected 16<dist<=24, got ${dist.toFixed(2)}`);
+  assert.equal(bot.advancing, false, 'advancing must clear upon acquiring LOS');
+  assert.equal(bot.hasLos, true, 'advancing bot with clearLos <= ENGAGE_MAX_DIST+8 must acquire LOS');
+  assert.equal(bot.state, 'ENGAGE', 'advancing bot with clearLos <= 24m must enter ENGAGE directly');
+});
+
+test('teammate callout shares LOS position for 3000ms and redirects advancing teammate', () => {
+  const mgr = new EnemyManager('normal', makeRng(99));
+  mgr.clear();
+
+  // Spotter on east lane (14, 7.5) facing due south (+Z) sees (14, 15.5) but not west spawn (-8, 17)
+  const playerSpawn = { x: -8, y: 0, z: 17 };
+  const spottedPos = { x: 14, y: 0, z: 15.5 };
+  const spottedEye = { x: 14, y: 1.7, z: 15.5 };
+  const spotter = mgr.spawnManual(14, 7.5, yawFromDir(0, 1), 'bl', 0);
+  const mate = mgr.spawnManual(6, -15.5, 0, 'gr', 0);
+
+  // Tick 1 with player at west spawn (-8, 17) — neither bot has LOS; locks playerSpawnOrigin = (-8, 17)
+  mgr.update({
+    dt: 0.02,
+    nowMs: 20,
+    playerPos: playerSpawn,
+    playerEye: { x: playerSpawn.x, y: 1.7, z: playerSpawn.z },
+    playerAlive: true,
+    playerFired: false,
+    playerSpeed: 0,
+    playerOnGround: true,
+    boxes: MAP.boxes,
+    collider: world,
+  });
+  assert.equal(spotter.hasLos, false);
+  assert.equal(mate.hasLos, false);
+
+  // Now player is on the east side (14, 15.5) where spotter has LOS -> writes 3000ms squad intel
+  mgr.update({
+    dt: 0.05,
+    nowMs: 70,
+    playerPos: spottedPos,
+    playerEye: spottedEye,
+    playerAlive: true,
+    playerFired: false,
+    playerSpeed: 0,
+    playerOnGround: true,
+    boxes: MAP.boxes,
+    collider: world,
+  });
+
+  assert.equal(spotter.hasLos, true, 'spotter should have LOS to player');
+  assert.equal(mate.hasLos, false, 'teammate at north deck should not have LOS');
+  const intel = mgr.getTeamIntel(70);
+  assert.ok(intel !== null, 'team intel must be written when any bot gains LOS');
+  assert.equal(intel.pos.x, spottedPos.x);
+  assert.equal(intel.pos.z, spottedPos.z);
+  assert.equal(mate.advancing, true, 'teammate must advance toward shared callout intel');
+
+  // Mate must advance EAST toward callout (14,15.5) rather than WEST toward playerSpawnOrigin (-8,17)
+  const startX = mate.entity.pos.x;
+  for (let t = 120; t <= 1520; t += 50) {
+    mgr.update({
+      dt: 0.05,
+      nowMs: t,
+      playerPos: spottedPos,
+      playerEye: spottedEye,
+      playerAlive: true,
+      playerFired: false,
+      playerSpeed: 0,
+      playerOnGround: true,
+      boxes: MAP.boxes,
+      collider: world,
+    });
+  }
+  assert.ok(
+    mate.entity.pos.x > startX + 2,
+    `mate should advance east toward callout (14,15.5), x moved ${startX.toFixed(2)} -> ${mate.entity.pos.x.toFixed(2)}`,
+  );
+
+  // Kill spotter so no one refreshes intel; after > TEAM_INTEL_TTL_MS (3000ms), intel expires
+  applyDamage(spotter.entity, 200, 1570);
+  mgr.onBotDamaged(spotter.entity, spottedPos, 1570);
+  assert.ok(mgr.getTeamIntel(1520 + TEAM_INTEL_TTL_MS) !== null, 'intel still valid at exact 3000ms');
+  assert.equal(mgr.getTeamIntel(1520 + TEAM_INTEL_TTL_MS + 1), null, 'intel must expire after 3000ms');
+});
+
+test('after player dies, bots exit advancing and return to PATROL', () => {
+  const playerPos = { x: -8, y: 0, z: 17 };
+  const playerEye = { x: -8, y: 1.7, z: 17 };
+  const mgr = new EnemyManager('hard', makeRng(21));
+  mgr.clear();
+  const bot = mgr.spawnManual(-14, -15.5, 0, 'bl', 0);
+
+  // Advance past HARD 10000ms threshold so bot enters advancing
+  for (let t = 50; t <= 11500; t += 50) {
+    mgr.update({
+      dt: 0.05,
+      nowMs: t,
+      playerPos,
+      playerEye,
+      playerAlive: true,
+      playerFired: false,
+      playerSpeed: 0,
+      playerOnGround: true,
+      boxes: MAP.boxes,
+      collider: world,
+    });
+  }
+  assert.equal(bot.advancing, true, 'bot should be advancing after 10s without contact on HARD');
+
+  // Player dies -> bot must NOT stay in advancing and must return to PATROL
+  mgr.update({
+    dt: 0.05,
+    nowMs: 11550,
+    playerPos,
+    playerEye,
+    playerAlive: false,
+    playerFired: false,
+    playerSpeed: 0,
+    playerOnGround: true,
+    boxes: MAP.boxes,
+    collider: world,
+  });
+  assert.equal(bot.advancing, false, 'bot must exit advancing when player dies');
+  assert.equal(bot.state, 'PATROL', 'bot must return to PATROL when player dies');
+
+  // Even after 15s more with dead player, bot never re-enters advancing
+  for (let t = 11600; t <= 26600; t += 100) {
+    mgr.update({
+      dt: 0.1,
+      nowMs: t,
+      playerPos,
+      playerEye,
+      playerAlive: false,
+      playerFired: false,
+      playerSpeed: 0,
+      playerOnGround: true,
+      boxes: MAP.boxes,
+      collider: world,
+    });
+    assert.equal(bot.advancing, false, `bot re-entered advancing while player dead at t=${t}`);
+  }
 });
