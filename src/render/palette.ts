@@ -33,6 +33,9 @@ export const PALETTE = {
   hpMid: '#d5d1ca',
   hpLow: '#ff4655', // 仅低血量/危险使用 Valorant 红
   uiPanel: 'rgba(8,12,18,0.55)',
+  uiBtnPanel: 'rgba(14,19,27,0.90)',
+  uiBtnBorder: 'rgba(236,232,225,0.48)',
+  uiBtnShadow: 'rgba(4,7,12,0.58)',
   uiBorder: 'rgba(255,255,255,0.18)',
   uiBorderActive: 'rgba(236,232,225,0.72)',
   uiText: '#ece8e1',

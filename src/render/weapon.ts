@@ -708,6 +708,60 @@ export interface HandsTelemetry {
   reloadStage: number;
 }
 
+export interface ViewmodelScreenRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  scale: number;
+}
+
+const BOX_FACES: readonly [number, number, number, number][] = [
+  [0, 1, 2, 3],
+  [4, 5, 6, 7],
+  [0, 1, 5, 4],
+  [2, 3, 7, 6],
+  [0, 3, 7, 4],
+  [1, 2, 6, 5],
+];
+
+const CLIP_PLANES: readonly ((v: THREE.Vector4) => number)[] = [
+  (v) => v.x + v.w, // x >= -w
+  (v) => v.w - v.x, // x <= w
+  (v) => v.y + v.w, // y >= -w
+  (v) => v.w - v.y, // y <= w
+  (v) => v.z + v.w, // z >= -w
+  (v) => v.w - v.z, // z <= w
+];
+
+function clipClipSpacePoly(verts: THREE.Vector4[]): THREE.Vector4[] {
+  let poly = verts;
+  for (const plane of CLIP_PLANES) {
+    if (poly.length === 0) return [];
+    const out: THREE.Vector4[] = [];
+    for (let i = 0; i < poly.length; i++) {
+      const a = poly[i];
+      const b = poly[(i + 1) % poly.length];
+      const da = plane(a);
+      const db = plane(b);
+      if (da >= 0) out.push(a);
+      if ((da >= 0) !== (db >= 0)) {
+        const t = da / (da - db);
+        out.push(
+          new THREE.Vector4(
+            a.x + (b.x - a.x) * t,
+            a.y + (b.y - a.y) * t,
+            a.z + (b.z - a.z) * t,
+            a.w + (b.w - a.w) * t,
+          ),
+        );
+      }
+    }
+    poly = out;
+  }
+  return poly;
+}
+
 export class WeaponView {
   readonly group = new THREE.Group();
   readonly muzzleRig = new MuzzleFlashRig();
@@ -762,6 +816,13 @@ export class WeaponView {
 
   private readonly basePos = new THREE.Vector3(0.27, -0.265, -0.5);
   private readonly baseRot = new THREE.Euler(0.11, 0.075, 0);
+  // Portrait (aspect < 1) viewmodel framing: scaled 0.76× (spec 0.74–0.80) and tucked
+  // slightly inward/down/forward so the projected Box3 clears the right action buttons
+  // (x+w ≤ 340), stays within 0.22–0.42× viewport height, and never intrudes on the
+  // 120px crosshair center circle. Landscape stays fixed at scale 1.0 / basePos.
+  private readonly portraitScale = 0.76;
+  private readonly portraitBasePos = new THREE.Vector3(0.024, -0.326, -0.585);
+  private readonly portraitBaseRot = new THREE.Euler(0.095, 0.025, 0);
 
   constructor() {
     this.leftHand = new HumanHand('left');
@@ -888,6 +949,96 @@ export class WeaponView {
     gun.root.updateWorldMatrix(true, false);
     out.copy(gun.ejectPos);
     return gun.root.localToWorld(out);
+  }
+
+  /**
+   * Project the active weapon viewmodel's visible Box3 bounds (active gun +
+   * articulated hands, excluding muzzle VFX and hidden meshes) onto CSS pixels,
+   * clipped cleanly against the camera frustum.
+   */
+  screenRect(camera: THREE.PerspectiveCamera, vw: number, vh: number): ViewmodelScreenRect {
+    const scale = Number(this.group.scale.x.toFixed(4));
+    if (!this.group.visible || vw <= 0 || vh <= 0) {
+      return { x: 0, y: 0, w: 0, h: 0, scale };
+    }
+    camera.updateMatrixWorld(true);
+    camera.updateProjectionMatrix();
+    const viewProj = new THREE.Matrix4().multiplyMatrices(
+      camera.projectionMatrix,
+      camera.matrixWorldInverse,
+    );
+    const mvp = new THREE.Matrix4();
+
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+
+    const gun = this.guns.get(this.current);
+    const roots: THREE.Object3D[] = [this.leftHand.root, this.rightHand.root];
+    if (gun) roots.unshift(gun.root);
+
+    const projectLocalBox = (box: THREE.Box3, matWorld: THREE.Matrix4): void => {
+      if (box.isEmpty()) return;
+      mvp.multiplyMatrices(viewProj, matWorld);
+      const { min, max } = box;
+      const corners = [
+        new THREE.Vector4(min.x, min.y, min.z, 1),
+        new THREE.Vector4(max.x, min.y, min.z, 1),
+        new THREE.Vector4(max.x, max.y, min.z, 1),
+        new THREE.Vector4(min.x, max.y, min.z, 1),
+        new THREE.Vector4(min.x, min.y, max.z, 1),
+        new THREE.Vector4(max.x, min.y, max.z, 1),
+        new THREE.Vector4(max.x, max.y, max.z, 1),
+        new THREE.Vector4(min.x, max.y, max.z, 1),
+      ];
+      for (const c of corners) c.applyMatrix4(mvp);
+      for (const [i0, i1, i2, i3] of BOX_FACES) {
+        const clipped = clipClipSpacePoly([corners[i0], corners[i1], corners[i2], corners[i3]]);
+        for (const v of clipped) {
+          if (Math.abs(v.w) < 1e-6) continue;
+          const sx = ((v.x / v.w) * 0.5 + 0.5) * vw;
+          const sy = (-(v.y / v.w) * 0.5 + 0.5) * vh;
+          if (sx < minX) minX = sx;
+          if (sx > maxX) maxX = sx;
+          if (sy < minY) minY = sy;
+          if (sy > maxY) maxY = sy;
+        }
+      }
+    };
+
+    for (const r of roots) {
+      r.traverseVisible((obj) => {
+        const mesh = obj as THREE.Mesh;
+        if (!mesh.isMesh || !mesh.geometry) return;
+        const skinned = mesh as unknown as THREE.SkinnedMesh;
+        let box: THREE.Box3 | null = null;
+        if (skinned.isSkinnedMesh) {
+          skinned.skeleton?.update();
+          skinned.computeBoundingBox();
+          box = skinned.boundingBox;
+        } else {
+          if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox();
+          box = mesh.geometry.boundingBox;
+        }
+        if (box) projectLocalBox(box, mesh.matrixWorld);
+      });
+    }
+
+    if (!Number.isFinite(minX)) {
+      return { x: 0, y: 0, w: 0, h: 0, scale };
+    }
+    const cx = Math.max(0, Math.min(vw, minX));
+    const cy = Math.max(0, Math.min(vh, minY));
+    const cr = Math.max(0, Math.min(vw, maxX));
+    const cb = Math.max(0, Math.min(vh, maxY));
+    return {
+      x: Number(cx.toFixed(1)),
+      y: Number(cy.toFixed(1)),
+      w: Number(Math.max(0, cr - cx).toFixed(1)),
+      h: Number(Math.max(0, cb - cy).toFixed(1)),
+      scale,
+    };
   }
 
   private resetReloadPose(gun: ArticulatedGun): void {
@@ -1420,24 +1571,32 @@ export class WeaponView {
     const sway = Math.sin(this.time * 1.15) * 0.0015;
     const gatVibX = gatFiring ? Math.sin(this.time * 52) * 0.0024 : spin > 0.1 ? Math.sin(this.time * 34) * 0.0008 * spin : 0;
     const gatVibY = gatFiring ? Math.cos(this.time * 47) * 0.0020 : 0;
-    let px = this.basePos.x + gun.baseOffset.x;
     const cam = this.group.parent as THREE.PerspectiveCamera | null;
-    if (cam?.isPerspectiveCamera) {
+    const isPortrait = Boolean(cam?.isPerspectiveCamera && cam.aspect < 1);
+    const vmScale = isPortrait ? this.portraitScale : 1;
+    this.group.scale.setScalar(vmScale);
+
+    const bPos = isPortrait ? this.portraitBasePos : this.basePos;
+    const bRot = isPortrait ? this.portraitBaseRot : this.baseRot;
+    let px = bPos.x + gun.baseOffset.x * vmScale;
+    if (!isPortrait && cam?.isPerspectiveCamera) {
       const halfW =
         Math.tan((cam.fov * Math.PI) / 360) * Math.abs(this.basePos.z) * cam.aspect;
       px = Math.min(px, Math.max(0.11, halfW * 0.7));
     }
+    const py = bPos.y + gun.baseOffset.y * vmScale;
+    const pz = bPos.z + gun.baseOffset.z * vmScale;
 
     const rb = this.reloadBlend;
     this.group.position.set(
-      px + sway + this.bobX + gatVibX + this.reloadGunPos.x * rb,
-      this.basePos.y + gun.baseOffset.y - k * 0.018 * Math.min(2.2, kickScale) + breathe + this.bobY + gatVibY + this.swapDropY + this.reloadGunPos.y * rb,
-      this.basePos.z + gun.baseOffset.z + k * 0.058 * Math.min(2.2, kickScale) + this.reloadGunPos.z * rb,
+      px + sway + this.bobX + gatVibX + this.reloadGunPos.x * rb * vmScale,
+      py - k * 0.018 * Math.min(2.2, kickScale) + breathe + this.bobY + gatVibY + this.swapDropY * vmScale + this.reloadGunPos.y * rb * vmScale,
+      pz + k * 0.058 * Math.min(2.2, kickScale) + this.reloadGunPos.z * rb * vmScale,
     );
     this.group.rotation.set(
-      this.baseRot.x + k * 0.075 * Math.min(2.4, kickScale) + breathe * 0.6 + this.swapDropPitch + this.reloadGunRot.x * rb,
-      this.baseRot.y + sway * 0.5 + this.reloadGunRot.y * rb,
-      this.baseRot.z + this.reloadGunRot.z * rb,
+      bRot.x + k * 0.075 * Math.min(2.4, kickScale) + breathe * 0.6 + this.swapDropPitch + this.reloadGunRot.x * rb,
+      bRot.y + sway * 0.5 + this.reloadGunRot.y * rb,
+      bRot.z + this.reloadGunRot.z * rb,
     );
 
     this.muzzleRig.update(dt, telemetry);

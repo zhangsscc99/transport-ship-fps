@@ -18,36 +18,38 @@ import { buildHudButton, HUD_ICONS } from '../render/hud';
 const STICK_R = 56;
 const STICK_DZ = 8;
 
-type TouchBtnId = 'fire' | 'reload' | 'swap' | 'jump' | 'crouch';
+export type TouchBtnId = 'fire' | 'reload' | 'swap' | 'jump' | 'crouch';
 
-interface BtnAnchor {
+export interface BtnAnchor {
   size: number;
   side: 'left' | 'right';
   x: number;
   bottom: number;
 }
 
-interface LayoutSpec {
+export interface LayoutSpec {
   stick: { left: number; bottom: number };
   btns: Record<TouchBtnId, BtnAnchor>;
 }
 
 /** Portrait 390×844 anchors: right cluster sits in the lower-right thumb arc,
- *  all buttons stay strictly outside the 120px center crosshair clear radius. */
-const PORTRAIT_LAYOUT: LayoutSpec = {
+ *  all 5 buttons stay non-overlapping with ≥8px pairwise spacing (≥6px spec),
+ *  ≥24px safe margin from screen edges, FIRE at 24/24px, and strictly outside
+ *  the 120px center crosshair clear radius. */
+export const PORTRAIT_LAYOUT: LayoutSpec = {
   stick: { left: 20, bottom: 82 },
   btns: {
     fire: { size: 76, side: 'right', x: 24, bottom: 24 },
-    reload: { size: 52, side: 'right', x: 112, bottom: 42 },
-    swap: { size: 52, side: 'right', x: 96, bottom: 102 },
-    jump: { size: 52, side: 'right', x: 36, bottom: 108 },
-    crouch: { size: 48, side: 'right', x: 38, bottom: 168 },
+    reload: { size: 52, side: 'right', x: 108, bottom: 36 },
+    swap: { size: 52, side: 'right', x: 92, bottom: 108 },
+    jump: { size: 52, side: 'right', x: 28, bottom: 108 },
+    crouch: { size: 48, side: 'right', x: 30, bottom: 168 },
   },
 };
 
 /** Landscape 844×390 anchors: right cluster shifts right and scales down 8% (0.92×)
  *  while keeping every hit rect ≥ 44 CSS px. */
-const LANDSCAPE_LAYOUT: LayoutSpec = {
+export const LANDSCAPE_LAYOUT: LayoutSpec = {
   stick: { left: 20, bottom: 72 },
   btns: {
     fire: { size: 70, side: 'right', x: 16, bottom: 16 },

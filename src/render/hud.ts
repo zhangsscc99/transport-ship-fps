@@ -60,7 +60,7 @@ const GATLING_CELLS_PER_ROW = 20; // 20 cells Ã— 5 rounds = 100 rounds per row Ã
 
 const svgWrap = (inner: string, size: number): string =>
   `<svg viewBox="0 0 24 24" width="${size}" height="${size}" fill="none" stroke="currentColor" ` +
-  `stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ` +
+  `stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ` +
   `style="display:block;pointer-events:none;flex:0 0 auto;">${inner}</svg>`;
 
 export const HUD_ICONS = {
@@ -160,15 +160,16 @@ export function buildHudButton(opts: {
   const el = document.createElement('div');
   el.dataset.btn = id;
   const fg = danger ? PALETTE.accent : PALETTE.uiText;
-  const border = danger ? `1.5px solid ${PALETTE.accent}` : `1px solid ${PALETTE.uiBorder}`;
-  const labelSize = size >= 68 ? 9 : 7;
-  const tracking = size >= 68 ? '0.12em' : '0.05em';
+  const border = danger ? `2px solid ${PALETTE.accent}` : `1.5px solid ${PALETTE.uiBtnBorder}`;
+  const labelSize = size >= 68 ? 10 : 8.6;
+  const tracking = size >= 68 ? '0.10em' : '0em';
   el.style.cssText =
     `position:${zIndex !== undefined ? 'fixed' : 'absolute'};${posCss}` +
     `width:${size}px;height:${size}px;` +
     `display:flex;flex-direction:column;align-items:center;justify-content:center;gap:${size >= 68 ? 3 : 2}px;` +
     `border-radius:${circle ? '50%' : '10px'};` +
-    `background:${PALETTE.uiPanel};border:${border};color:${fg};` +
+    `background:${PALETTE.uiBtnPanel};border:${border};color:${fg};` +
+    `box-shadow:0 2px 6px ${PALETTE.uiBtnShadow};` +
     `font-family:${HUD_FONT};font-weight:700;letter-spacing:${tracking};text-transform:uppercase;` +
     `line-height:1;pointer-events:auto;touch-action:none;user-select:none;-webkit-user-select:none;` +
     `box-sizing:border-box;cursor:pointer;` +
@@ -182,7 +183,7 @@ export function buildHudButton(opts: {
   const txt = document.createElement('span');
   txt.dataset.role = 'label';
   txt.textContent = label;
-  txt.style.cssText = `font-size:${labelSize}px;opacity:${danger ? 0.95 : 0.78};pointer-events:none;`;
+  txt.style.cssText = `font-size:${labelSize}px;color:${PALETTE.uiText};opacity:1;white-space:nowrap;pointer-events:none;`;
 
   el.append(iconBox, txt);
   return el;
