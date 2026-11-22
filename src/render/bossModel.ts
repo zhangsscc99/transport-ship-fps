@@ -1,28 +1,30 @@
-// Procedural CF Biochemical Mode "Red Terminator" Boss Model (红色·岩浆骨刺终结者 — zero external assets).
+// Procedural Heavy Armored Mech Colossus Boss Model (重装机械巨人 — zero external assets).
 //
-// Recognizable Features (matched to docs/reference/boss-terminator-ref.png):
-//   1. Dark crimson / near-black volcanic crust skin covered in dense self-luminous orange-red
-//      molten lava cracks (densest across shoulders, chest, upper back, and forearms/claws).
-//   2. Exposed arched bone ribcage exoskeleton (weathered yellowed-ivory, clearly brighter than skin)
-//      wrapping cleanly around the glowing molten sternum core.
-//   3. Massive swept-back curved dorsal bone-spike clusters erupting from scapulae & spine —
-//      twin towering inner scythe-horns, wide sweeping outer wing-scythes with ribbed bone struts,
-//      and a serrated spinal ridge defining the silhouette from every angle.
-//   4. Seamless articulated 6-segment long tail extending from the sacrum in an organic S-arc,
-//      ending in a wicked curved blade-like bone stinger and swaying counter-phase while walking.
-//   5. Broad inverted-triangle hunched shoulders with hypertrophied forearms thicker than the waist,
-//      lined with heavy protruding outer forearm bone spikes and huge 4-digit (3 fingers + thumb)
-//      prominent-knuckle mutated claws.
-//   6. Faceless predatory head sitting proudly on a thick hunched neck, crowned by a sculpted bone
-//      helmet-crest & swept horns with two blazing orange-red glowing eyes.
+// Design Language (4.1m Hard-Surface Industrial Siege Mech):
+//   1. Sculpted 3-value industrial military palette calibrated for dark industrial scenes & IBL:
+//      deep obsidian-gunmetal primary chassis, cold titanium upper-armor highlight planes
+//      (chest brow, pauldron caps, knee prows, helmet crest), selective matte crimson-oxide
+//      command armor trim, and weathered ochre-amber hazard stripes for giant-scale cues.
+//   2. Heroic colossal proportions: broad V-tapered fortress chest (1.52m) narrowing to an
+//      armored piston-braced waist (0.76m), tight armored mono-eye head framed by high
+//      collar cowling so the 4.1m stature reads immediately, asymmetric fortress buckler
+//      left shoulder vs swept blade-servo right shoulder, and flared armored siege greaves.
+//   3. Authentic exposed mechanical engineering: smooth brushed rolled-steel plates (zero
+//      noisy tiling), gleaming chrome & machined-brass hydraulic pistons across waist, neck,
+//      shoulders, arms, knees, and ankles, twin dorsal radiator towers, and armored conduits.
+//   4. Focused melee-only emissive read (zero projectiles): recessed cyclops mono-eye lens
+//      scanning inside a deep dark visor slit, armored recessed front & dorsal reactor cores,
+//      sleek 1.48m razor-edged forearm thermal plasma cleaver-blade, and recessed 3D cooling
+//      vents/seams that surge like internal reactor overload in Phase 2 (hpPct <= 0.35 —
+//      never flashing whole armor red).
+//   5. Mechanical servo kinematics: stepped detent idle scanning, 75ms hydraulic clamp lock
+//      before explosive horizontal-diagonal blade cleave, heavy stomping vertical chassis
+//      drop, and counter-swinging armored pauldrons.
 //
 // Technical Budgets & Contracts:
-//   - Purely procedural Three.js BufferGeometries + single procedural Canvas2D atlas (albedo + emissive + normal).
-//   - Strictly <= 20,000 triangles (target ~15,000-18,000), <= 6 materials (4 total).
-//   - Standing height 4.0-4.2m, soles flush at y = 0, facing -Z.
-//   - Melee-only: chest/back core is purely self-emissive with zero projectiles.
-//   - Phase 2 / molten surge (hpPct <= 0.35): magma fissures & core self-emissive intensify strongly
-//     and bone spike/horn/claw/tail-blade tips glow translucently hot — NO whole-body red flashing.
+//   - Purely procedural Three.js BufferGeometries + single 512x512 procedural Canvas2D atlas.
+//   - Strictly <= 20,000 triangles, <= 6 PBR materials (5 total).
+//   - Standing height 4.0-4.2m (~4.10m), armored boots flush at y = 0, facing -Z.
 
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
@@ -36,13 +38,18 @@ export interface BossUpdateState {
 }
 
 export interface BossParts {
-  root: THREE.Group;        // 整体
-  torso?: THREE.Object3D;   // 躯干
-  head: THREE.Object3D;     // 头部（弱点）
-  core: THREE.Object3D;     // 胸/背岩浆核心（弱点，纯自发光）
-  leftArm: THREE.Object3D;  // 左臂肩关节
-  rightArm: THREE.Object3D; // 右臂肩关节
-  tail?: THREE.Object3D;    // 分节长尾根部
+  root: THREE.Group;              // Overall root
+  torso?: THREE.Object3D;         // Upper armored chassis
+  head: THREE.Object3D;           // Armored mono-eye sensor head (weakpoint)
+  core: THREE.Object3D;           // Recessed front/back reactor core (weakpoint, purely self-emissive)
+  leftArm: THREE.Object3D;        // Left shoulder arm actuator
+  rightArm: THREE.Object3D;       // Right shoulder blade-arm actuator
+  tail?: THREE.Object3D;          // Unused on mech (kept optional for interface compatibility)
+  leftShoulder?: THREE.Object3D;  // Articulated left fortress buckler pauldron
+  rightShoulder?: THREE.Object3D; // Articulated right hydraulic blade-servo pauldron
+  rightBlade?: THREE.Object3D;    // Forearm-mounted thermal energy blade assembly
+  ventGlow?: THREE.Object3D;      // Recessed chassis & heat-sink overload vent assembly
+  monoEye?: THREE.Object3D;       // Scanning optical mono-eye sensor lens
 }
 
 export interface BossModel {
@@ -52,8 +59,13 @@ export interface BossModel {
 }
 
 // ============================================================================
-// Deterministic Math & Noise Helpers
+// Deterministic Math, Mechanical Easing & Noise Helpers
 // ============================================================================
+
+type Vec3Tuple = [number, number, number];
+type Vec2Tuple = [number, number];
+
+const DEG2RAD = Math.PI / 180;
 
 function clamp(v: number, lo: number, hi: number): number {
   return v < lo ? lo : v > hi ? hi : v;
@@ -72,9 +84,27 @@ function smoothstep(t: number): number {
   return u * u * (3 - 2 * u);
 }
 
-function gauss(d: number, sigma: number): number {
-  const r = d / sigma;
-  return Math.exp(-0.5 * r * r);
+/** Mechanical actuator curve: sharp acceleration with crisp hydraulic brake at stop. */
+function mechSnap(t: number, power = 3.2): number {
+  const u = clamp01(t);
+  return 1 - Math.pow(1 - u, power);
+}
+
+/** Trapezoidal step-and-hold wave for rigid servo scanning / stepped mechanical stops. */
+function steppedServoWave(phase: number, holdFrac = 0.60): number {
+  const cyc = ((phase % 1) + 1) % 1;
+  const moveFrac = (1 - holdFrac) * 0.5;
+  if (cyc < moveFrac) {
+    return lerp(-1, 1, mechSnap(cyc / moveFrac, 2.6));
+  }
+  if (cyc < moveFrac + holdFrac * 0.5) {
+    return 1;
+  }
+  const mid = moveFrac + holdFrac * 0.5;
+  if (cyc < mid + moveFrac) {
+    return lerp(1, -1, mechSnap((cyc - mid) / moveFrac, 2.6));
+  }
+  return -1;
 }
 
 function hash3(ix: number, iy: number, iz: number, seed: number): number {
@@ -85,72 +115,6 @@ function hash3(ix: number, iy: number, iz: number, seed: number): number {
     Math.imul(seed | 0, 2246822519);
   n = Math.imul(n ^ (n >>> 13), 1274126177);
   return ((n ^ (n >>> 16)) >>> 0) / 4294967296;
-}
-
-function noise3(x: number, y: number, z: number, seed = 11): number {
-  const ix = Math.floor(x);
-  const iy = Math.floor(y);
-  const iz = Math.floor(z);
-  const fx = x - ix;
-  const fy = y - iy;
-  const fz = z - iz;
-  const ux = fx * fx * (3 - 2 * fx);
-  const uy = fy * fy * (3 - 2 * fy);
-  const uz = fz * fz * (3 - 2 * fz);
-
-  const c000 = hash3(ix, iy, iz, seed);
-  const c100 = hash3(ix + 1, iy, iz, seed);
-  const c010 = hash3(ix, iy + 1, iz, seed);
-  const c110 = hash3(ix + 1, iy + 1, iz, seed);
-  const c001 = hash3(ix, iy, iz + 1, seed);
-  const c101 = hash3(ix + 1, iy, iz + 1, seed);
-  const c011 = hash3(ix, iy + 1, iz + 1, seed);
-  const c111 = hash3(ix + 1, iy + 1, iz + 1, seed);
-
-  const x00 = c000 + (c100 - c000) * ux;
-  const x10 = c010 + (c110 - c010) * ux;
-  const x01 = c001 + (c101 - c001) * ux;
-  const x11 = c011 + (c111 - c011) * ux;
-  const y0 = x00 + (x10 - x00) * uy;
-  const y1 = x01 + (x11 - x01) * uy;
-  return y0 + (y1 - y0) * uz;
-}
-
-function fbm3(x: number, y: number, z: number, seed = 11, octaves = 3): number {
-  let sum = 0;
-  let amp = 0.5;
-  let norm = 0;
-  let px = x;
-  let py = y;
-  let pz = z;
-  for (let i = 0; i < octaves; i++) {
-    sum += amp * noise3(px, py, pz, seed + i * 29);
-    norm += amp;
-    px *= 2.03;
-    py *= 2.03;
-    pz *= 2.03;
-    amp *= 0.5;
-  }
-  return sum / norm;
-}
-
-function ridged3(x: number, y: number, z: number, seed = 37, octaves = 3): number {
-  let sum = 0;
-  let amp = 0.55;
-  let norm = 0;
-  let px = x;
-  let py = y;
-  let pz = z;
-  for (let i = 0; i < octaves; i++) {
-    const n = 1 - Math.abs(noise3(px, py, pz, seed + i * 31) * 2 - 1);
-    sum += amp * n * n;
-    norm += amp;
-    px *= 2.1;
-    py *= 2.1;
-    pz *= 2.1;
-    amp *= 0.48;
-  }
-  return sum / norm;
 }
 
 function hash2Tile(ix: number, iy: number, periodX: number, periodY: number, seed: number): number {
@@ -196,59 +160,24 @@ function fbm2Tile(
   return sum / norm;
 }
 
-/** Periodic domain-warped Voronoi edge distance (F2 - F1, ~0 on volcanic fracture seams). */
-function voronoiEdgeTile(
-  u: number,
-  v: number,
-  cellsX: number,
-  cellsY: number,
-  seed: number,
-): number {
-  const gx = u * cellsX;
-  const gy = v * cellsY;
-  const ix = Math.floor(gx);
-  const iy = Math.floor(gy);
-  let d1 = 1e9;
-  let d2 = 1e9;
-  for (let dy = -1; dy <= 1; dy++) {
-    for (let dx = -1; dx <= 1; dx++) {
-      const cx = ix + dx;
-      const cy = iy + dy;
-      const wx = ((cx % cellsX) + cellsX) % cellsX;
-      const wy = ((cy % cellsY) + cellsY) % cellsY;
-      const jx = 0.12 + 0.76 * hash3(wx, wy, 1, seed);
-      const jy = 0.12 + 0.76 * hash3(wx, wy, 2, seed + 17);
-      const px = cx + jx - gx;
-      const py = cy + jy - gy;
-      const dist = Math.hypot(px, py);
-      if (dist < d1) {
-        d2 = d1;
-        d1 = dist;
-      } else if (dist < d2) {
-        d2 = dist;
-      }
-    }
-  }
-  return d2 - d1;
-}
-
 // ============================================================================
-// Single Procedural Canvas2D Atlas (Albedo + Emissive + Normal)
+// Single Procedural 512x512 Mech Atlas (Albedo + Normal + Emissive)
 //
-// 4 horizontal seamless bands along v (Three.js flipY = true):
-//   - Band A (Dense Organic Lava Skin): v in [0.64, 0.98] — shoulders, chest, upper back, forearms
-//   - Band B (Flowing Vein Lava Skin):  v in [0.36, 0.60] — thighs, calves, pelvis, tail segments
-//   - Band C (Incandescent Molten Core):v in [0.22, 0.33] — chest sternum core & dorsal lava heart
-//   - Band D (Weathered Ivory Bone):    v in [0.02, 0.19] — ribs, dorsal spikes, horns, claws, tail blade
-//                                       (u = 0 at root -> u = 1 at tip -> Phase 2 tip translucency!)
+// 4 clean horizontal UV bands along v (Three.js flipY = true):
+//   - Band A (Forged Rolled Armor Plate): v in [0.54, 0.98] — sleek brushed metal plate,
+//                                         perimeter bezel seam & 4 corner fasteners (zero brick grid!),
+//                                         fine metallic wear scratches & subtle outer seam heat bleed
+//   - Band B (Industrial Hazard Trim):    v in [0.36, 0.51] — weathered 45-deg caution chevrons
+//   - Band C (Hydraulic / Louver):        v in [0.19, 0.33] — machined shaft grooves & cooling louvers
+//   - Band D (Thermal Reactor / Blade):   v in [0.02, 0.16] — plasma energy grain & superheated edge
 // ============================================================================
 
-const UV_BAND_LAVA_DENSE: [number, number] = [0.655, 0.975];
-const UV_BAND_LAVA_FLOW: [number, number] = [0.375, 0.595];
-const UV_BAND_CORE: [number, number] = [0.235, 0.325];
-const UV_BAND_BONE: [number, number] = [0.025, 0.185];
+const UV_BAND_ARMOR: [number, number] = [0.555, 0.965];
+const UV_BAND_HAZARD: [number, number] = [0.375, 0.495];
+const UV_BAND_MECH: [number, number] = [0.205, 0.315];
+const UV_BAND_ENERGY: [number, number] = [0.030, 0.150];
 
-interface TerminatorAtlas {
+interface MechAtlas {
   albedoMap: THREE.Texture;
   emissiveMap: THREE.Texture;
   normalMap: THREE.Texture;
@@ -314,10 +243,10 @@ function buildNormalCanvasFromHeight(
   return c;
 }
 
-function createTerminatorAtlas(): TerminatorAtlas {
+function createMechAtlas(): MechAtlas {
   if (typeof document === 'undefined') {
-    const albedoMap = makeFallbackTex(68, 22, 18, true);
-    const emissiveMap = makeFallbackTex(190, 64, 16, true);
+    const albedoMap = makeFallbackTex(150, 158, 168, true);
+    const emissiveMap = makeFallbackTex(190, 96, 26, true);
     const normalMap = makeFallbackTex(128, 128, 255, false);
     return { albedoMap, emissiveMap, normalMap, all: [albedoMap, emissiveMap, normalMap] };
   }
@@ -344,139 +273,143 @@ function createTerminatorAtlas(): TerminatorAtlas {
       const idx = y * S + x;
       const p4 = idx * 4;
 
-      if (v >= 0.63) {
-        // --- BAND A: Dense Organic Volcanic Lava-Cracked Skin (shoulders, chest, upper back, arms) ---
-        const bv = clamp01((v - 0.63) / 0.37);
-        // Strong organic domain warp breaks up geometric Voronoi regularity into jagged magma rivers
-        const w1 = fbm2Tile(u, bv, 5, 3, 101, 3) - 0.5;
-        const w2 = fbm2Tile(u, bv, 5, 3, 137, 3) - 0.5;
-        const warpU = u + w1 * 0.16;
-        const warpV = bv + w2 * 0.17;
+      if (v >= 0.53) {
+        // --- BAND A: Clean Forged Rolled-Steel Military Armor Sheet (NO brick pattern!) ---
+        // Each physical 3D plate maps cleanly across this sheet -> single machined plate perimeter
+        // bevel seam, 4 recessed corner hex-bolts, brushed rolled-steel sheen, and subtle wear.
+        const bv = clamp01((v - 0.53) / 0.47);
+        const edgeU = Math.min(u, 1 - u);
+        const edgeV = Math.min(bv, 1 - bv);
+        const borderDist = Math.min(edgeU, edgeV);
 
-        const river1 = 1 - Math.abs(fbm2Tile(warpU, warpV, 7, 4, 211, 4) * 2 - 1);
-        const river2 = 1 - Math.abs(fbm2Tile(warpU + 0.31, warpV + 0.19, 13, 7, 307, 3) * 2 - 1);
-        const cellEdge = voronoiEdgeTile(warpU, warpV, 7, 4, 401);
-        const clusterMask = smoothstep((fbm2Tile(u, bv, 4, 2, 463, 3) - 0.32) * 2.1);
+        // Single refined perimeter armor seam groove + subtle inner inspection line
+        const outerSeam = smoothstep((0.022 - borderDist) / 0.015);
+        const innerInset = Math.max(Math.abs(u - 0.5) - 0.43, Math.abs(bv - 0.5) - 0.41);
+        const panelGroove = smoothstep((0.008 - Math.abs(innerInset)) / 0.006) * 0.65;
 
-        // Tighter, sharper molten magma rivers + jagged fracture veins so charred volcanic
-        // crust dominates (~60-65% of skin) and cracks glow crisply without washing out under exposure 1.45.
-        const cRiver = Math.pow(clamp01((river1 - 0.76) / 0.24), 1.75) * (0.62 + 0.38 * clusterMask);
-        const cBranch = Math.pow(clamp01((river2 - 0.82) / 0.18), 2.0) * 0.72;
-        const cFissure = smoothstep((0.078 - cellEdge) / 0.072) * (0.45 + 0.55 * clusterMask);
-        const crack = clamp01(Math.max(cRiver, cBranch, cFissure));
-        const hotCore = clamp01(
-          Math.pow(clamp01((river1 - 0.90) / 0.10), 1.5) +
-            smoothstep((0.032 - cellEdge) / 0.030) * 0.48 * clusterMask,
-        );
+        // 4 clean industrial recessed corner bolts
+        let bolt = 0;
+        const bolts: Vec2Tuple[] = [
+          [0.09, 0.10], [0.91, 0.10], [0.09, 0.90], [0.91, 0.90],
+        ];
+        for (let k = 0; k < bolts.length; k++) {
+          const d = Math.hypot(u - bolts[k][0], bv - bolts[k][1]);
+          if (d < 0.026) {
+            bolt = Math.max(bolt, d < 0.014 ? 0.72 : -0.42);
+          }
+        }
 
-        const crustMacro = fbm2Tile(u, bv, 10, 6, 509, 3);
-        const muscleFibers = 0.5 + 0.5 * Math.sin((u * 18 + w1 * 5.0) * Math.PI * 2);
-        height[idx] = (1 - crack) * (0.60 + crustMacro * 0.28 + muscleFibers * 0.12) + crack * 0.12;
+        // Fine directional rolled-steel brushed grain + macro weathering mottling + subtle edge wear
+        const brush = fbm2Tile(u * 2, bv * 20, 6, 32, 109, 3);
+        const weather = fbm2Tile(u, bv, 4, 3, 223, 4);
+        const streak = fbm2Tile(u * 6, bv * 2, 14, 4, 331, 3);
+        const edgeChip =
+          smoothstep((0.055 - borderDist) / 0.04) * smoothstep((streak - 0.52) * 3.8);
+        const fineScratch = smoothstep((fbm2Tile(u * 5, bv * 5, 22, 16, 409, 2) - 0.80) * 6.5) * 0.35;
 
-        // Deep charred volcanic obsidian-crimson flesh plates (#1a0706 .. #3a100c) — rich dark contrast
-        // against bright maritime deck without collapsing to flat black.
-        const crustR = 24 + crustMacro * 22 + muscleFibers * 9;
-        const crustG = 7 + crustMacro * 6 + muscleFibers * 3;
-        const crustB = 7 + crustMacro * 5 + muscleFibers * 3;
+        // Smooth satin armor height (clean broad planes that catch specular highlights cleanly!)
+        const h =
+          0.66 -
+          outerSeam * 0.36 -
+          panelGroove * 0.18 +
+          bolt * 0.18 +
+          (brush - 0.5) * 0.05 +
+          (weather - 0.5) * 0.04;
+        height[idx] = clamp01(h);
 
-        // Keep crack diffuse deep crimson-amber so direct sun (4.8) doesn't double-expose cracks;
-        // emissiveMap drives the crisp fiery molten glow.
-        const r = lerp(crustR, lerp(148, 188, hotCore), crack);
-        const g = lerp(crustG, lerp(26, 80, hotCore), crack);
-        const b = lerp(crustB, lerp(6, 18, hotCore), crack);
-        ad[p4] = Math.round(clamp(r, 12, 220));
-        ad[p4 + 1] = Math.round(clamp(g, 5, 180));
-        ad[p4 + 2] = Math.round(clamp(b, 5, 120));
+        // Clean mid-neutral rolled steel albedo (vertex colors drive dark gunmetal / titanium / crimson!)
+        const grimeMod = lerp(0.86, 1.04, weather) * lerp(0.95, 1.04, brush);
+        const seamAO = 1 - outerSeam * 0.44 - panelGroove * 0.22;
+        const baseLum = clamp(184 * grimeMod * seamAO + edgeChip * 38 + fineScratch * 24 + bolt * 14, 58, 228);
+
+        ad[p4] = Math.round(baseLum * 0.96);
+        ad[p4 + 1] = Math.round(baseLum * 0.99);
+        ad[p4 + 2] = Math.round(clamp(baseLum * 1.04, 58, 232));
         ad[p4 + 3] = 255;
 
-        // Emissive strictly inside the sharp organic magma veins & fissures (0 on cooled dark crust)
-        const emMask = Math.pow(crack, 1.55);
-        ed[p4] = Math.round(clamp01(emMask * 1.02) * 255);
-        ed[p4 + 1] = Math.round(clamp01(emMask * 0.26 + hotCore * 0.44) * 255);
-        ed[p4 + 2] = Math.round(clamp01(emMask * 0.03 + hotCore * 0.14) * 255);
+        // Subtle perimeter heat-seam bleed ONLY in the outer plate gap (glows softly in P2 overload!)
+        const seamHeat = smoothstep((0.015 - borderDist) / 0.011) * (0.75 + 0.25 * weather);
+        ed[p4] = Math.round(clamp01(seamHeat * 1.0) * 255);
+        ed[p4 + 1] = Math.round(clamp01(seamHeat * 0.42) * 255);
+        ed[p4 + 2] = Math.round(clamp01(seamHeat * 0.08) * 255);
         ed[p4 + 3] = 255;
       } else if (v >= 0.35) {
-        // --- BAND B: Flowing Muscular Lava Skin (legs, pelvis, waist, tail segments) ---
-        const bv = clamp01((v - 0.35) / 0.28);
-        const w1 = fbm2Tile(u, bv, 4, 2, 701, 3) - 0.5;
-        const w2 = fbm2Tile(u, bv, 4, 2, 733, 3) - 0.5;
-        const warpU = u + w1 * 0.12;
-        const warpV = bv + w2 * 0.10;
+        // --- BAND B: Weathered Industrial Caution Hazard Stripes ---
+        const bv = clamp01((v - 0.35) / 0.18);
+        const border = bv < 0.11 || bv > 0.89;
+        const diag = ((u * 7 + bv * 1.55) % 1 + 1) % 1;
+        const isYellow = diag < 0.50;
+        const stripeDist = Math.min(Math.abs(diag - 0.50), Math.min(diag, 1 - diag));
+        const chipNoise = fbm2Tile(u * 2, bv, 14, 4, 521, 3);
+        const chipped = smoothstep((chipNoise - 0.72) * 5.0) * smoothstep((0.12 - stripeDist) / 0.12);
+        const wear = fbm2Tile(u, bv, 8, 4, 607, 3);
 
-        // Elongated vertical glowing magma sinews following thigh/calf/tail anatomy (like reference!)
-        const sinew1 = 1 - Math.abs(fbm2Tile(warpU, warpV, 9, 2, 811, 3) * 2 - 1);
-        const sinew2 = voronoiEdgeTile(warpU, warpV, 9, 2, 853);
-        const crack1 = Math.pow(clamp01((sinew1 - 0.80) / 0.20), 1.85);
-        const crack2 = smoothstep((0.068 - sinew2) / 0.062) * 0.65;
-        const crack = clamp01(Math.max(crack1, crack2));
-        const hotCore = Math.pow(clamp01((sinew1 - 0.91) / 0.09), 1.5);
+        height[idx] = border ? 0.42 : 0.64 - chipped * 0.16 + (wear - 0.5) * 0.08;
 
-        const crust = fbm2Tile(u, bv, 14, 4, 907, 3);
-        height[idx] = (1 - crack) * (0.64 + crust * 0.30) + crack * 0.14;
-
-        const crustR = 22 + crust * 20;
-        const crustG = 6 + crust * 6;
-        const crustB = 6 + crust * 5;
-
-        ad[p4] = Math.round(clamp(lerp(crustR, lerp(142, 182, hotCore), crack), 10, 215));
-        ad[p4 + 1] = Math.round(clamp(lerp(crustG, lerp(22, 74, hotCore), crack), 5, 175));
-        ad[p4 + 2] = Math.round(clamp(lerp(crustB, lerp(5, 16, hotCore), crack), 5, 115));
+        if (border) {
+          const lum = 44 + wear * 18;
+          ad[p4] = Math.round(lum * 0.94);
+          ad[p4 + 1] = Math.round(lum * 0.98);
+          ad[p4 + 2] = Math.round(lum * 1.05);
+        } else if (isYellow && chipped < 0.55) {
+          // Muted weathered industrial amber-ochre (never clips neon under exposure 1.45)
+          const sh = 0.80 + wear * 0.22;
+          ad[p4] = Math.round(clamp(182 * sh, 110, 194));
+          ad[p4 + 1] = Math.round(clamp(124 * sh, 74, 138));
+          ad[p4 + 2] = Math.round(clamp(28 * sh, 16, 44));
+        } else {
+          const lum = chipped >= 0.55 ? 116 + wear * 24 : 34 + wear * 16;
+          ad[p4] = Math.round(lum * 0.95);
+          ad[p4 + 1] = Math.round(lum * 0.98);
+          ad[p4 + 2] = Math.round(lum * 1.04);
+        }
         ad[p4 + 3] = 255;
-
-        const emMask = Math.pow(crack, 1.6) * 0.85;
-        ed[p4] = Math.round(clamp01(emMask * 1.0) * 255);
-        ed[p4 + 1] = Math.round(clamp01(emMask * 0.24 + hotCore * 0.38) * 255);
-        ed[p4 + 2] = Math.round(clamp01(emMask * 0.03 + hotCore * 0.12) * 255);
+        ed[p4] = 0;
+        ed[p4 + 1] = 0;
+        ed[p4 + 2] = 0;
         ed[p4 + 3] = 255;
-      } else if (v >= 0.21) {
-        // --- BAND C: Cracked Molten Furnace Core (charred lava plates over incandescent magma fissures!) ---
-        const bv = clamp01((v - 0.21) / 0.14);
-        const w1 = fbm2Tile(u, bv, 5, 3, 941, 3) - 0.5;
-        const w2 = fbm2Tile(u, bv, 5, 3, 953, 3) - 0.5;
-        const wu = u + w1 * 0.14;
-        const wv = bv + w2 * 0.14;
-        const edge = voronoiEdgeTile(wu, wv, 8, 4, 967);
-        const ridge = 1 - Math.abs(fbm2Tile(wu, wv, 10, 5, 977, 3) * 2 - 1);
-        const magma = clamp01(Math.max(smoothstep((0.22 - edge) / 0.17), Math.pow(clamp01((ridge - 0.58) / 0.42), 1.45)));
-        const superHot = clamp01(smoothstep((0.10 - edge) / 0.085) + Math.pow(clamp01((ridge - 0.82) / 0.18), 1.5) * 0.55);
-        height[idx] = (1 - magma) * 0.78 + magma * 0.16;
+      } else if (v >= 0.18) {
+        // --- BAND C: Machined Hydraulic Steel, Cooling Louvers & Segmented Hose Ribs ---
+        const bv = clamp01((v - 0.18) / 0.17);
+        const ribPhase = (bv * 8) % 1;
+        const rib = smoothstep(Math.min(ribPhase, 1 - ribPhase) / 0.24);
+        const lathe = fbm2Tile(u * 4, bv * 2, 16, 4, 733, 3);
 
-        // Charred dark volcanic crust fragments floating over blazing deep-orange magma (never clips to flat peach!)
-        ad[p4] = Math.round(lerp(24, lerp(168, 206, superHot), magma));
-        ad[p4 + 1] = Math.round(lerp(6, lerp(34, 96, superHot), magma));
-        ad[p4 + 2] = Math.round(lerp(5, lerp(6, 18, superHot), magma));
+        height[idx] = clamp01(0.28 + rib * 0.56 + (lathe - 0.5) * 0.08);
+        const lum = clamp(102 + rib * 84 + (lathe - 0.5) * 24, 46, 208);
+        ad[p4] = Math.round(lum * 0.96);
+        ad[p4 + 1] = Math.round(lum * 0.99);
+        ad[p4 + 2] = Math.round(lum * 1.04);
         ad[p4 + 3] = 255;
 
-        ed[p4] = Math.round(clamp01(0.12 + magma * 0.84) * 255);
-        ed[p4 + 1] = Math.round(clamp01(0.03 + magma * 0.28 + superHot * 0.42) * 255);
-        ed[p4 + 2] = Math.round(clamp01(magma * 0.03 + superHot * 0.14) * 255);
+        // Recessed louver slit emissive for heat-sink vents
+        const ventEm = Math.pow(1 - rib, 1.35);
+        ed[p4] = Math.round(clamp01(ventEm * 1.0) * 255);
+        ed[p4 + 1] = Math.round(clamp01(ventEm * 0.45) * 255);
+        ed[p4 + 2] = Math.round(clamp01(ventEm * 0.08) * 255);
         ed[p4 + 3] = 255;
       } else {
-        // --- BAND D: Weathered Yellowed-Ivory Bone & Striated Horn Grain ---
-        // u = 0 at socket root -> u = 1 at razor tip (Phase 2 bone-tip translucency glow!)
-        const bv = clamp01(v / 0.21);
-        const grain = fbm2Tile(u, bv, 8, 12, 1013, 3);
-        const flutes = 0.5 + 0.5 * Math.sin((bv * 14 + grain * 1.8) * Math.PI * 2);
-        const growthRings = 0.5 + 0.5 * Math.sin(u * Math.PI * 12 + grain * 2.5);
-        const h = grain * 0.45 + flutes * 0.35 + growthRings * 0.20;
-        height[idx] = h;
+        // --- BAND D: Thermal Reactor Lattice & Superheated Plasma Energy Blade ---
+        // bv = 0 near emitter spine/root -> bv = 1 at blazing white-gold razor edge!
+        const bv = clamp01(v / 0.18);
+        const flow = fbm2Tile(u * 2, bv, 10, 4, 881, 4);
+        const streak = 0.5 + 0.5 * Math.sin((u * 12 + flow * 2.2) * Math.PI * 2);
+        const edgeHeat = smoothstep((bv - 0.14) / 0.78);
+        const hotCore = clamp01(edgeHeat * 0.82 + streak * 0.14 + flow * 0.12);
+        height[idx] = clamp01(0.42 + streak * 0.18);
 
-        // Weathered smoky-ivory bone: clearly brighter than charred crimson skin, calibrated for
-        // Saltline exposure 1.45 so sunlit bone spikes never clip into chalk-white (> 205 luma).
-        const rootBlend = smoothstep((u - 0.02) / 0.22);
-        const shade = lerp(0.68, 0.98, rootBlend) * (0.82 + h * 0.20);
-        ad[p4] = Math.round(clamp(198 * shade, 88, 204));
-        ad[p4 + 1] = Math.round(clamp(178 * shade, 76, 184));
-        ad[p4 + 2] = Math.round(clamp(144 * shade, 58, 150));
+        const r = lerp(70, 224, hotCore);
+        const g = lerp(22, 152, Math.pow(hotCore, 1.3));
+        const b = lerp(8, 62, Math.pow(hotCore, 2.1));
+        ad[p4] = Math.round(clamp(r, 24, 232));
+        ad[p4 + 1] = Math.round(clamp(g, 10, 180));
+        ad[p4 + 2] = Math.round(clamp(b, 6, 98));
         ad[p4 + 3] = 255;
 
-        // Bone tip subsurface glow mask in emissiveMap:
-        //   u <= 0.58 -> 0 (solid bright ivory bone shafts & exposed ribs)
-        //   u >  0.58 -> smooth fiery translucent amber-orange glow peaking at spike/claw/blade tips!
-        const tipGlow = Math.pow(smoothstep((u - 0.58) / 0.40), 1.45) * (0.80 + 0.20 * flutes);
-        ed[p4] = Math.round(clamp01(tipGlow * 1.0) * 255);
-        ed[p4 + 1] = Math.round(clamp01(tipGlow * 0.44) * 255);
-        ed[p4 + 2] = Math.round(clamp01(tipGlow * 0.10) * 255);
+        const em = clamp01(0.22 + edgeHeat * 0.78) * (0.86 + 0.14 * streak);
+        ed[p4] = Math.round(clamp01(em * 1.0) * 255);
+        ed[p4 + 1] = Math.round(clamp01(em * lerp(0.32, 0.82, edgeHeat)) * 255);
+        ed[p4 + 2] = Math.round(clamp01(em * lerp(0.05, 0.36, Math.pow(edgeHeat, 1.8))) * 255);
         ed[p4 + 3] = 255;
       }
     }
@@ -484,7 +417,7 @@ function createTerminatorAtlas(): TerminatorAtlas {
 
   albedoCtx.putImageData(albedoImg, 0, 0);
   emCtx.putImageData(emImg, 0, 0);
-  const normalCanvas = buildNormalCanvasFromHeight(height, S, 4.2);
+  const normalCanvas = buildNormalCanvasFromHeight(height, S, 2.8);
 
   const wrapTex = (c: HTMLCanvasElement, srgb: boolean): THREE.CanvasTexture => {
     const t = new THREE.CanvasTexture(c);
@@ -503,26 +436,116 @@ function createTerminatorAtlas(): TerminatorAtlas {
 }
 
 // ============================================================================
-// Geometry Normalization, UV Band Mapping & Sculpting Primitives
+// Hard-Surface CAD Geometry Primitives & Merge Helpers
 // ============================================================================
 
-type Vec3Tuple = [number, number, number];
+// Bold 3-value industrial military mech palette (calibrated for Saltline exposure 1.45 & IBL 1.9
+// AND high silhouette separation in dark industrial scenes — zero pale-concrete washout!):
+const TINT_ARMOR_MAIN: Vec3Tuple = [0.22, 0.26, 0.32];    // Deep tactical obsidian-gunmetal steel (55%)
+const TINT_ARMOR_DARK: Vec3Tuple = [0.13, 0.16, 0.20];    // Recessed shadowed charcoal under-armor
+const TINT_ARMOR_LIGHT: Vec3Tuple = [0.54, 0.60, 0.67];   // Cold battleship titanium highlight plates (25%)
+const TINT_ARMOR_CRIMSON: Vec3Tuple = [0.52, 0.15, 0.12]; // Matte industrial crimson-oxide commander trim (12%)
+const TINT_ARMOR_TRIM: Vec3Tuple = [0.36, 0.41, 0.48];    // Mid brushed gunsteel secondary armor
+const TINT_HAZARD: Vec3Tuple = [0.88, 0.86, 0.82];        // Weathered caution hazard trim
+const TINT_FRAME_DARK: Vec3Tuple = [0.12, 0.14, 0.18];    // Oiled carbon-steel inner skeleton
+const TINT_FRAME_MID: Vec3Tuple = [0.26, 0.30, 0.36];     // Machined gunsteel rotor drums & clevises
+const TINT_PISTON_CHROME: Vec3Tuple = [0.76, 0.81, 0.88]; // Gleaming chrome-steel hydraulic rods
+const TINT_PISTON_BRASS: Vec3Tuple = [0.82, 0.64, 0.34];  // Industrial machined bronze-brass rams
+const TINT_CORE_HOT: Vec3Tuple = [1.0, 0.90, 0.78];       // Recessed reactor core & thermal vents
 
-function remapUvBand(
+interface HardSurfaceOpts {
+  pos?: Vec3Tuple;
+  rot?: Vec3Tuple;
+  tint?: Vec3Tuple;
+  band?: [number, number];
+  uvScale?: number;
+  aoBottom?: number;
+  faceted?: boolean;
+}
+
+/** Box-projected UVs mapped cleanly into [0..1] of the chosen atlas band (1 forged plate per part!). */
+function applyBoxBandUV(
   geo: THREE.BufferGeometry,
   band: [number, number],
-  uScale = 1.0,
-  uOffset = 0.0,
+  uvScale = 1.0,
 ): void {
-  const uv = geo.getAttribute('uv');
-  if (!uv) return;
+  const pos = geo.getAttribute('position');
+  const norm = geo.getAttribute('normal');
   const [vMin, vMax] = band;
-  for (let i = 0; i < uv.count; i++) {
-    const u = uv.getX(i) * uScale + uOffset;
-    const v = clamp01(uv.getY(i));
-    uv.setXY(i, u, lerp(vMin, vMax, v));
+  const uvs = new Float32Array(pos.count * 2);
+
+  geo.computeBoundingBox();
+  const bb = geo.boundingBox!;
+  const sx = Math.max(0.05, bb.max.x - bb.min.x);
+  const sy = Math.max(0.05, bb.max.y - bb.min.y);
+  const sz = Math.max(0.05, bb.max.z - bb.min.z);
+
+  for (let i = 0; i < pos.count; i++) {
+    const px = pos.getX(i);
+    const py = pos.getY(i);
+    const pz = pos.getZ(i);
+    const ax = norm ? Math.abs(norm.getX(i)) : 0;
+    const ay = norm ? Math.abs(norm.getY(i)) : 1;
+    const az = norm ? Math.abs(norm.getZ(i)) : 0;
+
+    let lu: number;
+    let lv: number;
+    if (ax >= ay && ax >= az) {
+      lu = ((pz - bb.min.z) / sz) * uvScale;
+      lv = clamp01((py - bb.min.y) / sy);
+    } else if (ay >= ax && ay >= az) {
+      lu = ((px - bb.min.x) / sx) * uvScale;
+      lv = clamp01((pz - bb.min.z) / sz);
+    } else {
+      lu = ((px - bb.min.x) / sx) * uvScale;
+      lv = clamp01((py - bb.min.y) / sy);
+    }
+    uvs[i * 2] = lu;
+    uvs[i * 2 + 1] = lerp(vMin, vMax, lv);
   }
-  uv.needsUpdate = true;
+  geo.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+}
+
+function finalizePart(geo: THREE.BufferGeometry, opts: HardSurfaceOpts = {}): THREE.BufferGeometry {
+  const g = geo.index ? geo.toNonIndexed() : geo.clone();
+  geo.dispose();
+
+  if (opts.faceted) {
+    g.computeVertexNormals();
+  } else if (!g.getAttribute('normal')) {
+    g.computeVertexNormals();
+  }
+
+  applyBoxBandUV(g, opts.band ?? UV_BAND_ARMOR, opts.uvScale ?? 1.0);
+
+  const pos = g.getAttribute('position');
+  const norm = g.getAttribute('normal');
+  g.computeBoundingBox();
+  const bb = g.boundingBox!;
+  const spanY = Math.max(0.001, bb.max.y - bb.min.y);
+  const tint = opts.tint ?? TINT_ARMOR_MAIN;
+  const aoBot = opts.aoBottom ?? 0.22;
+  const colors = new Float32Array(pos.count * 3);
+
+  for (let i = 0; i < pos.count; i++) {
+    const uy = clamp01((pos.getY(i) - bb.min.y) / spanY);
+    const ny = norm ? norm.getY(i) : 0;
+    // Directional bevel top-catch + crisp underside AO
+    const bevelBoost = 0.94 + ny * 0.14;
+    const shade = lerp(1 - aoBot, 1.08, uy) * bevelBoost;
+    colors[i * 3] = clamp(tint[0] * shade, 0.04, 1.2);
+    colors[i * 3 + 1] = clamp(tint[1] * shade, 0.04, 1.2);
+    colors[i * 3 + 2] = clamp(tint[2] * shade, 0.04, 1.2);
+  }
+  g.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+  if (opts.rot && (opts.rot[0] || opts.rot[1] || opts.rot[2])) {
+    g.applyMatrix4(new THREE.Matrix4().makeRotationFromEuler(new THREE.Euler(opts.rot[0], opts.rot[1], opts.rot[2])));
+  }
+  if (opts.pos && (opts.pos[0] || opts.pos[1] || opts.pos[2])) {
+    g.translate(opts.pos[0], opts.pos[1], opts.pos[2]);
+  }
+  return g;
 }
 
 function normalizeForMerge(geo: THREE.BufferGeometry): THREE.BufferGeometry {
@@ -533,8 +556,8 @@ function normalizeForMerge(geo: THREE.BufferGeometry): THREE.BufferGeometry {
   if (!g.getAttribute('uv')) {
     const uvs = new Float32Array(pos.count * 2);
     for (let i = 0; i < pos.count; i++) {
-      uvs[i * 2] = pos.getX(i) * 0.5 + 0.5;
-      uvs[i * 2 + 1] = lerp(UV_BAND_LAVA_DENSE[0], UV_BAND_LAVA_DENSE[1], 0.5);
+      uvs[i * 2] = 0.5;
+      uvs[i * 2 + 1] = lerp(UV_BAND_ARMOR[0], UV_BAND_ARMOR[1], 0.5);
     }
     g.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
   }
@@ -558,1713 +581,1374 @@ function mergeStrict(geos: THREE.BufferGeometry[]): THREE.BufferGeometry {
   return merged;
 }
 
-interface BlobOpts {
-  scale: Vec3Tuple;
-  pos?: Vec3Tuple;
-  rot?: Vec3Tuple;
-  segW?: number;
-  segH?: number;
-  noiseAmp?: number;
-  noiseFreq?: number;
-  ridgeAmp?: number;
-  seed?: number;
-  topTaper?: number;
-  botTaper?: number;
-  bendZ?: number;
-  bendX?: number;
-  tint?: Vec3Tuple;
-  aoBottom?: number;
-  uvBand?: [number, number];
-  uScale?: number;
-  uOffset?: number;
+/** Hard-surface 45-degree beveled rectangular armor block with exact outer dims (w x h x d). */
+function buildChamferBox(
+  w: number,
+  h: number,
+  d: number,
+  bevel = 0.026,
+  opts: HardSurfaceOpts = {},
+): THREE.BufferGeometry {
+  const b = Math.min(bevel, w * 0.34, h * 0.34, d * 0.34);
+  const hw = Math.max(0.004, w * 0.5 - b);
+  const hh = Math.max(0.004, h * 0.5 - b);
+  const coreD = Math.max(0.004, d - 2 * b);
+
+  const shape = new THREE.Shape();
+  shape.moveTo(-hw, -hh);
+  shape.lineTo(hw, -hh);
+  shape.lineTo(hw, hh);
+  shape.lineTo(-hw, hh);
+  shape.closePath();
+
+  const geo = new THREE.ExtrudeGeometry(shape, {
+    depth: coreD,
+    bevelEnabled: b > 0.001,
+    bevelThickness: b,
+    bevelSize: b,
+    bevelSegments: 1,
+    curveSegments: 1,
+  });
+  geo.translate(0, 0, -coreD * 0.5);
+  return finalizePart(geo, { faceted: true, ...opts });
 }
 
-function sculptOrganicBlob(opts: BlobOpts): THREE.BufferGeometry {
-  const segW = opts.segW ?? 12;
-  const segH = opts.segH ?? 8;
-  const geo = new THREE.SphereGeometry(1, segW, segH);
+/** Extruded custom polygonal armor plate (in XY plane, extruded along Z) with crisp 45-deg chamfers. */
+function buildSlopedPlate(
+  pts: Vec2Tuple[],
+  depth: number,
+  bevel = 0.024,
+  opts: HardSurfaceOpts = {},
+): THREE.BufferGeometry {
+  const b = Math.min(bevel, depth * 0.36);
+  const coreD = Math.max(0.004, depth - 2 * b);
+  const shape = new THREE.Shape();
+  shape.moveTo(pts[0][0], pts[0][1]);
+  for (let i = 1; i < pts.length; i++) {
+    shape.lineTo(pts[i][0], pts[i][1]);
+  }
+  shape.closePath();
+
+  const geo = new THREE.ExtrudeGeometry(shape, {
+    depth: coreD,
+    bevelEnabled: b > 0.001,
+    bevelThickness: b,
+    bevelSize: b,
+    bevelSegments: 1,
+    curveSegments: 1,
+  });
+  geo.translate(0, 0, -coreD * 0.5);
+  return finalizePart(geo, { faceted: true, ...opts });
+}
+
+/** Beveled octagonal/tapered armored frustum shell (much more sculpted than raw boxes!). */
+function buildArmoredFrustum(
+  wBot: number,
+  dBot: number,
+  wTop: number,
+  dTop: number,
+  h: number,
+  skewZ = 0,
+  skewX = 0,
+  opts: HardSurfaceOpts = {},
+): THREE.BufferGeometry {
+  // 8-sided chamfered prism cylinder rotated 22.5 deg so flat faces face +/-X and +/-Z with 45-deg corners!
+  const geo = new THREE.CylinderGeometry(1, 1, 1, 8, 1, false);
+  geo.rotateY(Math.PI / 8);
+  const scaleNorm = 1 / Math.cos(Math.PI / 8);
   const pos = geo.getAttribute('position');
-  const colors = new Float32Array(pos.count * 3);
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i) * scaleNorm * 0.5;
+    const y = pos.getY(i);
+    const z = pos.getZ(i) * scaleNorm * 0.5;
+    const isTop = y > 0;
+    const w = isTop ? wTop : wBot;
+    const d = isTop ? dTop : dBot;
+    const ox = isTop ? skewX * 0.5 : -skewX * 0.5;
+    const oz = isTop ? skewZ * 0.5 : -skewZ * 0.5;
+    pos.setXYZ(i, x * w + ox, y * h, z * d + oz);
+  }
+  return finalizePart(geo, { faceted: true, ...opts });
+}
 
-  const [sx, sy, sz] = opts.scale;
-  const noiseAmp = opts.noiseAmp ?? 0.08;
-  const noiseFreq = opts.noiseFreq ?? 2.3;
-  const ridgeAmp = opts.ridgeAmp ?? 0.04;
-  const seed = opts.seed ?? 17;
-  const topTaper = opts.topTaper ?? 1.0;
-  const botTaper = opts.botTaper ?? 1.0;
-  const bendZ = opts.bendZ ?? 0;
-  const bendX = opts.bendX ?? 0;
-  const tint = opts.tint ?? [1, 1, 1];
-  const aoBottom = opts.aoBottom ?? 0.18;
+/** Smooth-shaded machined cylinder/cone for drums, pistons, bearings, exhaust stacks. */
+function buildCylinder(
+  rTop: number,
+  rBot: number,
+  len: number,
+  segs = 12,
+  opts: HardSurfaceOpts = {},
+): THREE.BufferGeometry {
+  const geo = new THREE.CylinderGeometry(rTop, rBot, len, segs, 1, false);
+  return finalizePart(geo, { faceted: false, band: UV_BAND_MECH, ...opts });
+}
 
+/** Complete mechanical hydraulic actuator connecting point A -> point B (dark barrel + bright chrome/brass rod). */
+function buildHydraulicPiston(
+  a: Vec3Tuple,
+  b: Vec3Tuple,
+  barrelR: number,
+  rodR: number,
+  rodTint: Vec3Tuple = TINT_PISTON_CHROME,
+  barrelTint: Vec3Tuple = TINT_FRAME_DARK,
+): THREE.BufferGeometry[] {
+  const va = new THREE.Vector3(a[0], a[1], a[2]);
+  const vb = new THREE.Vector3(b[0], b[1], b[2]);
+  const dir = vb.clone().sub(va);
+  const len = dir.length();
+  if (len < 0.02) return [];
+
+  const unitDir = dir.clone().divideScalar(len);
+  const quat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), unitDir);
+  const euler = new THREE.Euler().setFromQuaternion(quat, 'XYZ');
+  const rot: Vec3Tuple = [euler.x, euler.y, euler.z];
+
+  const barrelLen = len * 0.54;
+  const barrelMid = va.clone().addScaledVector(unitDir, barrelLen * 0.5);
+  const collarPos = va.clone().addScaledVector(unitDir, barrelLen);
+  const rodLen = len * 0.56;
+  const rodMid = va.clone().addScaledVector(unitDir, len - rodLen * 0.5);
+
+  return [
+    buildCylinder(barrelR, barrelR * 1.04, barrelLen, 10, {
+      pos: [barrelMid.x, barrelMid.y, barrelMid.z],
+      rot,
+      tint: barrelTint,
+      band: UV_BAND_MECH,
+    }),
+    buildCylinder(barrelR * 1.26, barrelR * 1.26, Math.min(0.044, len * 0.10), 10, {
+      pos: [collarPos.x, collarPos.y, collarPos.z],
+      rot,
+      tint: TINT_FRAME_MID,
+      band: UV_BAND_MECH,
+    }),
+    buildCylinder(rodR, rodR, rodLen, 10, {
+      pos: [rodMid.x, rodMid.y, rodMid.z],
+      rot,
+      tint: rodTint,
+      band: UV_BAND_MECH,
+      aoBottom: 0.04,
+    }),
+    buildCylinder(barrelR * 1.15, barrelR * 1.15, barrelR * 1.8, 8, {
+      pos: a,
+      rot: [0, 0, Math.PI * 0.5],
+      tint: TINT_FRAME_MID,
+      band: UV_BAND_MECH,
+    }),
+    buildCylinder(rodR * 1.45, rodR * 1.45, rodR * 2.3, 8, {
+      pos: b,
+      rot: [0, 0, Math.PI * 0.5],
+      tint: TINT_FRAME_MID,
+      band: UV_BAND_MECH,
+    }),
+  ];
+}
+
+/** Armored segmented industrial power conduit hose along 3D waypoints. */
+function buildArmoredConduit(
+  pts: Vec3Tuple[],
+  radius: number,
+  tubularSegs = 12,
+  radialSegs = 7,
+  tint: Vec3Tuple = TINT_FRAME_DARK,
+): THREE.BufferGeometry {
+  const curve = new THREE.CatmullRomCurve3(pts.map((p) => new THREE.Vector3(p[0], p[1], p[2])));
+  const geo = new THREE.TubeGeometry(curve, tubularSegs, radius, radialSegs, false);
+  return finalizePart(geo, { faceted: false, band: UV_BAND_MECH, tint, uvScale: 2.0 });
+}
+
+/** Stacked angled mechanical radiator louver slats for chest/shoulder/backpack cooling vents. */
+function buildLouverBank(
+  w: number,
+  h: number,
+  d: number,
+  slats: number,
+  pos: Vec3Tuple,
+  rot: Vec3Tuple = [0, 0, 0],
+  tint: Vec3Tuple = TINT_FRAME_MID,
+): THREE.BufferGeometry[] {
+  const out: THREE.BufferGeometry[] = [];
+  const stepY = h / Math.max(1, slats);
+  const slatH = stepY * 0.42;
+  const mat = new THREE.Matrix4().makeRotationFromEuler(new THREE.Euler(rot[0], rot[1], rot[2]));
   const v = new THREE.Vector3();
-  for (let i = 0; i < pos.count; i++) {
-    v.fromBufferAttribute(pos, i);
-    const nx = v.x;
-    const ny = v.y;
-    const nz = v.z;
 
-    const f = fbm3(nx * noiseFreq, ny * noiseFreq, nz * noiseFreq, seed, 3) - 0.5;
-    const r = ridged3(nx * noiseFreq * 1.4, ny * noiseFreq * 1.4, nz * noiseFreq * 1.4, seed + 53, 2) - 0.45;
-    const disp = 1 + f * noiseAmp * 2 + r * ridgeAmp * 2;
-
-    const uY = ny * 0.5 + 0.5;
-    const taper = lerp(botTaper, topTaper, uY);
-
-    const px = nx * sx * taper * disp + bendX * (ny + 0.4 * ny * ny);
-    const py = ny * sy * disp;
-    const pz = nz * sz * taper * disp + bendZ * (ny + 0.4 * ny * ny);
-    pos.setXYZ(i, px, py, pz);
-
-    const heightLight = lerp(1 - aoBottom, 1.12, uY);
-    const creviceAO = clamp(0.88 + f * 0.26 + r * 0.22, 0.58, 1.16);
-    colors[i * 3] = clamp(tint[0] * heightLight * creviceAO, 0.28, 1.35);
-    colors[i * 3 + 1] = clamp(tint[1] * heightLight * creviceAO, 0.28, 1.35);
-    colors[i * 3 + 2] = clamp(tint[2] * heightLight * creviceAO, 0.28, 1.35);
+  for (let i = 0; i < slats; i++) {
+    const ly = -h * 0.5 + (i + 0.5) * stepY;
+    v.set(0, ly, 0).applyMatrix4(mat);
+    out.push(
+      buildChamferBox(w, slatH, d, 0.005, {
+        pos: [pos[0] + v.x, pos[1] + v.y, pos[2] + v.z],
+        rot: [rot[0] + 0.36, rot[1], rot[2]],
+        tint,
+        band: UV_BAND_MECH,
+      }),
+    );
   }
-
-  geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-  remapUvBand(geo, opts.uvBand ?? UV_BAND_LAVA_DENSE, opts.uScale ?? 1.0, opts.uOffset ?? 0);
-  if (opts.rot && (opts.rot[0] || opts.rot[1] || opts.rot[2])) {
-    geo.applyMatrix4(new THREE.Matrix4().makeRotationFromEuler(new THREE.Euler(opts.rot[0], opts.rot[1], opts.rot[2])));
-  }
-  if (opts.pos && (opts.pos[0] || opts.pos[1] || opts.pos[2])) {
-    geo.translate(opts.pos[0], opts.pos[1], opts.pos[2]);
-  }
-  geo.computeVertexNormals();
-  return geo;
-}
-
-interface LimbOpts {
-  length: number;
-  rTop: number;
-  rMid: number;
-  rBot: number;
-  midPos?: number;
-  radialSegs?: number;
-  heightSegs?: number;
-  striations?: number;
-  striationAmp?: number;
-  noiseAmp?: number;
-  seed?: number;
-  bendZ?: number;
-  bendX?: number;
-  scaleZ?: number;
-  pos?: Vec3Tuple;
-  rot?: Vec3Tuple;
-  tint?: Vec3Tuple;
-  uvBand?: [number, number];
-  uScale?: number;
-}
-
-/** Sculpted muscular limb segment spanning y = 0 (top) down to y = -length (bottom). */
-function sculptMuscleLimb(opts: LimbOpts): THREE.BufferGeometry {
-  const rSeg = opts.radialSegs ?? 12;
-  const hSeg = opts.heightSegs ?? 8;
-  const geo = new THREE.CylinderGeometry(1, 1, opts.length, rSeg, hSeg, false);
-  geo.translate(0, -opts.length * 0.5, 0);
-
-  const pos = geo.getAttribute('position');
-  const colors = new Float32Array(pos.count * 3);
-  const midPos = opts.midPos ?? 0.45;
-  const striations = opts.striations ?? 4;
-  const striationAmp = opts.striationAmp ?? 0.08;
-  const noiseAmp = opts.noiseAmp ?? 0.075;
-  const seed = opts.seed ?? 41;
-  const bendZ = opts.bendZ ?? 0;
-  const bendX = opts.bendX ?? 0;
-  const scaleZ = opts.scaleZ ?? 1.0;
-  const tint = opts.tint ?? [1, 1, 1];
-
-  for (let i = 0; i < pos.count; i++) {
-    const vx = pos.getX(i);
-    const vy = pos.getY(i);
-    const vz = pos.getZ(i);
-    const t = clamp01(-vy / opts.length);
-    const radial = Math.hypot(vx, vz);
-    const ang = Math.atan2(vz, vx);
-
-    let baseR: number;
-    if (t <= midPos) {
-      baseR = lerp(opts.rTop, opts.rMid, smoothstep(t / Math.max(0.01, midPos)));
-    } else {
-      baseR = lerp(opts.rMid, opts.rBot, smoothstep((t - midPos) / Math.max(0.01, 1 - midPos)));
-    }
-    const endCap = t < 0.05 ? lerp(0.90, 1.0, t / 0.05) : t > 0.95 ? lerp(1.0, 0.88, (t - 0.95) / 0.05) : 1.0;
-    const bundle = Math.sin(ang * striations + t * 1.3 + seed * 0.2) * striationAmp * Math.sin(t * Math.PI);
-    const nx = Math.cos(ang);
-    const nz = Math.sin(ang);
-    const f = fbm3(nx * 2.2, t * 3.4, nz * 2.2, seed, 3) - 0.5;
-    const radScale = baseR * endCap * (1 + bundle + f * noiseAmp * 2);
-
-    const px = vx * radScale + bendX * Math.sin(t * Math.PI) + bendX * 0.25 * t;
-    const py = vy;
-    const pz = vz * radScale * scaleZ + bendZ * Math.sin(t * Math.PI) + bendZ * 0.25 * t;
-    pos.setXYZ(i, px, py, pz);
-
-    const jointAO = 0.84 + 0.22 * Math.sin(t * Math.PI * 0.86 + 0.22);
-    const grooveAO = clamp(0.90 + bundle * 1.1 + f * 0.25 + (radial < 0.2 ? -0.10 : 0), 0.58, 1.15);
-    const shade = jointAO * grooveAO;
-    colors[i * 3] = clamp(tint[0] * shade, 0.30, 1.3);
-    colors[i * 3 + 1] = clamp(tint[1] * shade, 0.30, 1.3);
-    colors[i * 3 + 2] = clamp(tint[2] * shade, 0.30, 1.3);
-  }
-
-  geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-  remapUvBand(geo, opts.uvBand ?? UV_BAND_LAVA_DENSE, opts.uScale ?? 1.0);
-  if (opts.rot && (opts.rot[0] || opts.rot[1] || opts.rot[2])) {
-    geo.applyMatrix4(new THREE.Matrix4().makeRotationFromEuler(new THREE.Euler(opts.rot[0], opts.rot[1], opts.rot[2])));
-  }
-  if (opts.pos && (opts.pos[0] || opts.pos[1] || opts.pos[2])) {
-    geo.translate(opts.pos[0], opts.pos[1], opts.pos[2]);
-  }
-  geo.computeVertexNormals();
-  return geo;
-}
-
-interface HornOpts {
-  length: number;
-  baseR: number;
-  tipR?: number;
-  bendZ?: number;
-  bendX?: number;
-  flattenX?: number;
-  radialSegs?: number;
-  heightSegs?: number;
-  pos?: Vec3Tuple;
-  rot?: Vec3Tuple;
-  baseColor?: Vec3Tuple;
-  tipColor?: Vec3Tuple;
-  tipGlow?: boolean;
-  seed?: number;
-}
-
-/** Curved fluted weathered-ivory bone spike, forearm horn, claw, or spine blade (u = 0..1 base->tip). */
-function sculptBoneSpike(opts: HornOpts): THREE.BufferGeometry {
-  const rSeg = opts.radialSegs ?? 7;
-  const hSeg = opts.heightSegs ?? 5;
-  const tipR = opts.tipR ?? 0.008;
-  const geo = new THREE.CylinderGeometry(tipR, opts.baseR, opts.length, rSeg, hSeg, false);
-  geo.translate(0, opts.length * 0.5, 0);
-
-  const pos = geo.getAttribute('position');
-  const uv = geo.getAttribute('uv');
-  const colors = new Float32Array(pos.count * 3);
-  const bendZ = opts.bendZ ?? 0.14;
-  const bendX = opts.bendX ?? 0;
-  const flattenX = opts.flattenX ?? 0.70;
-  const baseCol = opts.baseColor ?? [0.80, 0.62, 0.50];
-  const tipCol = opts.tipColor ?? [1.22, 1.16, 1.00];
-  const tipGlow = opts.tipGlow ?? true;
-  const seed = opts.seed ?? 73;
-
-  for (let i = 0; i < pos.count; i++) {
-    const vx = pos.getX(i);
-    const vy = pos.getY(i);
-    const vz = pos.getZ(i);
-    const t = clamp01(vy / opts.length);
-
-    const ring = 1 + Math.sin(t * Math.PI * 5 + seed) * 0.05 * (1 - t);
-    const jitter = 1 + (noise3(vx * 6, vy * 5, vz * 6, seed) - 0.5) * 0.10;
-    const curve = t * t;
-
-    const px = vx * flattenX * ring * jitter + bendX * curve;
-    const py = vy;
-    const pz = vz * ring * jitter + bendZ * curve;
-    pos.setXYZ(i, px, py, pz);
-
-    const uMapped = tipGlow ? t : lerp(0.08, 0.48, t);
-    const vMapped = lerp(UV_BAND_BONE[0], UV_BAND_BONE[1], clamp01(uv.getX(i)));
-    uv.setXY(i, uMapped, vMapped);
-
-    const k = smoothstep(t);
-    colors[i * 3] = clamp(lerp(baseCol[0], tipCol[0], k) * 0.78, 0.22, 0.96);
-    colors[i * 3 + 1] = clamp(lerp(baseCol[1], tipCol[1], k) * 0.78, 0.20, 0.94);
-    colors[i * 3 + 2] = clamp(lerp(baseCol[2], tipCol[2], k) * 0.78, 0.16, 0.88);
-  }
-
-  uv.needsUpdate = true;
-  geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-  if (opts.rot && (opts.rot[0] || opts.rot[1] || opts.rot[2])) {
-    geo.applyMatrix4(new THREE.Matrix4().makeRotationFromEuler(new THREE.Euler(opts.rot[0], opts.rot[1], opts.rot[2])));
-  }
-  if (opts.pos && (opts.pos[0] || opts.pos[1] || opts.pos[2])) {
-    geo.translate(opts.pos[0], opts.pos[1], opts.pos[2]);
-  }
-  geo.computeVertexNormals();
-  return geo;
+  return out;
 }
 
 /**
- * Curved tapered bone scythe-blade or arched rib extruded along a 3D CatmullRomCurve3,
- * with verified STRICTLY OUTWARD normals (CCW winding checked against radial normal!).
+ * Sleek razor-chisel 1.54m thermal plasma cleaver-sword blade extending along -Y (0 -> -length),
+ * razor cutting edge along -Z, heavy mechanical tungsten spine along +Z.
+ * Asymmetric futuristic single-edged tanto/chisel point (zero blunt cone look!).
  */
-function sculptCurvedBoneBlade(opts: {
-  points: Vec3Tuple[];
-  radiusStart: number;
-  radiusMid: number;
-  radiusEnd: number;
-  midPos?: number;
-  tubularSegs?: number;
-  radialSegs?: number;
-  bladeAspect?: number;
-  tipGlow?: boolean;
-  baseColor?: Vec3Tuple;
-  tipColor?: Vec3Tuple;
-  seed?: number;
-}): THREE.BufferGeometry {
-  const tubularSegs = opts.tubularSegs ?? 12;
-  const radialSegs = opts.radialSegs ?? 7;
-  const midPos = opts.midPos ?? 0.36;
-  const aspect = opts.bladeAspect ?? 1.40;
-  const tipGlow = opts.tipGlow ?? true;
-  const baseCol = opts.baseColor ?? [0.78, 0.56, 0.44];
-  const tipCol = opts.tipColor ?? [1.24, 1.18, 1.00];
-  const seed = opts.seed ?? 97;
+function buildPlasmaBladeGeometry(length: number, width: number, thickness: number): THREE.BufferGeometry {
+  const shape = new THREE.Shape();
+  // In XY plane (rotated -90 deg around Y -> +X becomes +Z spine, -X becomes -Z razor cutting edge):
+  shape.moveTo(width * 0.14, 0.05);            // Spine emitter socket root
+  shape.lineTo(-width * 0.42, -0.02);          // Emitter guard throat
+  shape.lineTo(-width * 0.58, -length * 0.12); // Flared plasma heel
+  shape.lineTo(-width * 0.56, -length * 0.78); // Long straight razor plasma edge
+  shape.lineTo(width * 0.12, -length);         // Razor asymmetric chisel-tanto tip!
+  shape.lineTo(width * 0.16, -length * 0.88);  // Short sharp back spine corner
+  shape.lineTo(width * 0.16, 0.05);            // Straight mechanical back spine
+  shape.closePath();
 
-  const curve = new THREE.CatmullRomCurve3(opts.points.map(([x, y, z]) => new THREE.Vector3(x, y, z)));
+  const raw = new THREE.ExtrudeGeometry(shape, {
+    depth: thickness * 0.24,
+    bevelEnabled: true,
+    bevelThickness: thickness * 0.38,
+    bevelSize: 0.008,
+    bevelSegments: 1,
+    curveSegments: 1,
+  });
+  raw.translate(0, 0, -thickness * 0.12);
+  raw.rotateY(-Math.PI * 0.5);
 
-  // Parallel-transport (Bishop) frames along the curve: zero 180-degree Frenet twists at inflection points!
-  const tangents: THREE.Vector3[] = [];
-  const normals: THREE.Vector3[] = [];
-  const binormals: THREE.Vector3[] = [];
-  for (let s = 0; s <= tubularSegs; s++) {
-    tangents.push(curve.getTangentAt(s / tubularSegs).normalize());
-  }
-  const refAxis = Math.abs(tangents[0].y) < 0.9 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0);
-  const n0 = new THREE.Vector3().crossVectors(refAxis, tangents[0]).normalize();
-  const b0 = new THREE.Vector3().crossVectors(tangents[0], n0).normalize();
-  normals.push(n0);
-  binormals.push(b0);
-  const rotAxis = new THREE.Vector3();
-  const rotQ = new THREE.Quaternion();
-  for (let s = 1; s <= tubularSegs; s++) {
-    const prevT = tangents[s - 1];
-    const curT = tangents[s];
-    const prevN = normals[s - 1];
-    const dot = clamp(prevT.dot(curT), -1, 1);
-    const nextN = prevN.clone();
-    if (dot < 0.999999) {
-      rotAxis.crossVectors(prevT, curT);
-      if (rotAxis.lengthSq() > 1e-10) {
-        rotAxis.normalize();
-        rotQ.setFromAxisAngle(rotAxis, Math.acos(dot));
-        nextN.applyQuaternion(rotQ);
-      }
-    }
-    // Re-orthonormalize (N, B, T) so N x B = +T strictly at every ring
-    nextN.addScaledVector(curT, -nextN.dot(curT)).normalize();
-    const nextB = new THREE.Vector3().crossVectors(curT, nextN).normalize();
-    normals.push(nextN);
-    binormals.push(nextB);
-  }
+  const g = raw.index ? raw.toNonIndexed() : raw;
+  g.computeVertexNormals();
 
-  const ringVerts = radialSegs + 1;
-  const vertCount = (tubularSegs + 1) * ringVerts + 2;
-  const positions = new Float32Array(vertCount * 3);
-  const uvs = new Float32Array(vertCount * 2);
-  const colors = new Float32Array(vertCount * 3);
-  const indices: number[] = [];
-
-  const pt = new THREE.Vector3();
-  const N = new THREE.Vector3();
-  const B = new THREE.Vector3();
-
-  for (let s = 0; s <= tubularSegs; s++) {
-    const t = s / tubularSegs;
-    curve.getPointAt(t, pt);
-    // Note: T x N = B => N x B = +T (strictly right-handed everywhere!)
-    N.copy(normals[s]);
-    B.copy(binormals[s]);
-
-    let rBase: number;
-    if (t <= midPos) {
-      rBase = lerp(opts.radiusStart, opts.radiusMid, smoothstep(t / Math.max(0.01, midPos)));
-    } else {
-      rBase = lerp(opts.radiusMid, opts.radiusEnd, smoothstep((t - midPos) / Math.max(0.01, 1 - midPos)));
-    }
-
-    const uMapped = tipGlow ? t : lerp(0.08, 0.48, t);
-    const colK = smoothstep(t);
-    const cr = clamp(lerp(baseCol[0], tipCol[0], colK) * 0.78, 0.22, 0.96);
-    const cg = clamp(lerp(baseCol[1], tipCol[1], colK) * 0.78, 0.20, 0.94);
-    const cb = clamp(lerp(baseCol[2], tipCol[2], colK) * 0.78, 0.16, 0.88);
-
-    for (let r = 0; r < ringVerts; r++) {
-      const frac = r / radialSegs;
-      const theta = frac * Math.PI * 2;
-      const cs = Math.cos(theta);
-      const sn = Math.sin(theta);
-      const ridgeSharp = 1 + 0.14 * Math.pow(Math.abs(cs), 3);
-      const jitter = 1 + (noise3(pt.x * 4 + cs, pt.y * 4 + sn, pt.z * 4, seed) - 0.5) * 0.08;
-      const rx = cs * rBase * aspect * ridgeSharp * jitter;
-      const ry = sn * rBase * (1 / Math.sqrt(aspect)) * jitter;
-
-      const idx = s * ringVerts + r;
-      positions[idx * 3] = pt.x + N.x * rx + B.x * ry;
-      positions[idx * 3 + 1] = pt.y + N.y * rx + B.y * ry;
-      positions[idx * 3 + 2] = pt.z + N.z * rx + B.z * ry;
-
-      uvs[idx * 2] = uMapped;
-      uvs[idx * 2 + 1] = lerp(UV_BAND_BONE[0], UV_BAND_BONE[1], frac);
-
-      colors[idx * 3] = cr;
-      colors[idx * 3 + 1] = cg;
-      colors[idx * 3 + 2] = cb;
-    }
-  }
-
-  // With right-handed (N, B, T) where N x B = +T:
-  //   a -> d is +theta (-sin*N + cos*B)
-  //   a -> b is +s (+T)
-  //   (d - a) x (b - a) = (-sin*N + cos*B) x T = +cos*N + sin*B = OUTWARD RADIAL NORMAL!
-  for (let s = 0; s < tubularSegs; s++) {
-    for (let r = 0; r < radialSegs; r++) {
-      const a = s * ringVerts + r;
-      const b = (s + 1) * ringVerts + r;
-      const c = (s + 1) * ringVerts + r + 1;
-      const d = s * ringVerts + r + 1;
-      indices.push(a, d, b, b, d, c);
-    }
-  }
-
-  // Outward-facing root & tip end caps
-  const startCapIdx = (tubularSegs + 1) * ringVerts;
-  const endCapIdx = startCapIdx + 1;
-  const pStart = curve.getPointAt(0);
-  const pEnd = curve.getPointAt(1);
-  positions[startCapIdx * 3] = pStart.x;
-  positions[startCapIdx * 3 + 1] = pStart.y;
-  positions[startCapIdx * 3 + 2] = pStart.z;
-  uvs[startCapIdx * 2] = tipGlow ? 0 : 0.08;
-  uvs[startCapIdx * 2 + 1] = (UV_BAND_BONE[0] + UV_BAND_BONE[1]) * 0.5;
-  colors[startCapIdx * 3] = clamp(baseCol[0] * 0.78, 0.22, 0.96);
-  colors[startCapIdx * 3 + 1] = clamp(baseCol[1] * 0.78, 0.20, 0.94);
-  colors[startCapIdx * 3 + 2] = clamp(baseCol[2] * 0.78, 0.16, 0.88);
-
-  positions[endCapIdx * 3] = pEnd.x;
-  positions[endCapIdx * 3 + 1] = pEnd.y;
-  positions[endCapIdx * 3 + 2] = pEnd.z;
-  uvs[endCapIdx * 2] = tipGlow ? 1 : 0.48;
-  uvs[endCapIdx * 2 + 1] = (UV_BAND_BONE[0] + UV_BAND_BONE[1]) * 0.5;
-  colors[endCapIdx * 3] = clamp(tipCol[0] * 0.78, 0.22, 0.96);
-  colors[endCapIdx * 3 + 1] = clamp(tipCol[1] * 0.78, 0.20, 0.94);
-  colors[endCapIdx * 3 + 2] = clamp(tipCol[2] * 0.78, 0.16, 0.88);
-
-  for (let r = 0; r < radialSegs; r++) {
-    // Root cap normal points -T -> (start, r, r+1) gives N x B = +T, so reverse to (start, r+1, r)
-    indices.push(startCapIdx, r, r + 1);
-    const lastRing = tubularSegs * ringVerts;
-    indices.push(endCapIdx, lastRing + r + 1, lastRing + r);
-  }
-
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-  geo.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
-  geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-  geo.setIndex(indices);
-  geo.computeVertexNormals();
-  return geo;
-}
-
-// ============================================================================
-// Anatomical Body-Part Builders (CF Red Terminator Silhouette)
-// ============================================================================
-
-/**
- * Unified sculpted inverted-triangle hunched Terminator trunk:
- *   - Narrow taut waist (half-width 0.34m) -> broad angular pectoral chest & shoulders (half-width 0.84m)
- *   - Predatory forward hunch along upper spine & chest
- *   - Carved anterior sternum V-cavity cradling the recessed molten lava core inside the bone ribs
- */
-function sculptTerminatorTrunk(): THREE.BufferGeometry {
-  const geo = new THREE.SphereGeometry(1, 28, 22);
-  const pos = geo.getAttribute('position');
-  const uv = geo.getAttribute('uv');
+  // Heat gradient UV in Band D: emitter spine (+Z) = deep orange root, razor edge (-Z) & chisel tip = incandescent white-gold!
+  const pos = g.getAttribute('position');
+  const uvs = new Float32Array(pos.count * 2);
   const colors = new Float32Array(pos.count * 3);
-
-  const v = new THREE.Vector3();
   for (let i = 0; i < pos.count; i++) {
-    v.fromBufferAttribute(pos, i);
-    const nx = v.x;
-    const ny = v.y; // -1 (hip waist) .. +1 (upper trapezius)
-    const nz = v.z; // -1 (chest front) .. +1 (dorsal back)
-    const uY = ny * 0.5 + 0.5;
-
-    let py = lerp(-0.04, 1.54, uY);
-
-    // Athletic demonic V-taper: sleek narrow waist -> broad flaring chest/shoulders
-    const vFlare = smoothstep((uY - 0.16) / 0.54);
-    const topClose = 1 - 0.38 * smoothstep((uY - 0.78) / 0.22);
-    const halfWidth = lerp(0.34, 0.84, vFlare) * topClose;
-
-    const halfDepth = lerp(0.26, 0.44, smoothstep((uY - 0.16) / 0.52));
-
-    let px = nx * halfWidth;
-    let pz = nz * halfDepth;
-
-    // Forward hunched upper torso & arched upper back
-    pz += -0.14 * smoothstep((uY - 0.44) / 0.56) + 0.14 * smoothstep((uY - 0.54) / 0.46) * smoothstep((nz - 0.05) / 0.7);
-
-    const frontMask = smoothstep((-nz - 0.05) / 0.65);
-    const backMask = smoothstep((nz - 0.05) / 0.65);
-    const absX = Math.abs(nx);
-
-    // 1. Sculpted broad pectoral muscle plates + upper clavicle shelf
-    const pec = gauss(uY - 0.68, 0.13) * smoothstep((absX - 0.14) / 0.26) * frontMask;
-    const clavicle = gauss(uY - 0.83, 0.05) * smoothstep((absX - 0.10) / 0.28) * frontMask;
-    pz -= pec * 0.11 + clavicle * 0.045;
-    py += pec * 0.025;
-
-    // 2. Flared latissimus wings tapering smoothly into narrow waist
-    const lat = gauss(uY - 0.56, 0.17) * gauss(absX - 0.76, 0.24) * (0.35 + 0.65 * backMask);
-    px += Math.sign(nx) * lat * 0.12;
-    pz += lat * 0.06 * backMask;
-
-    // 3. Hunched trapezius neck collar
-    const trap = smoothstep((uY - 0.66) / 0.32) * (0.4 + 0.6 * backMask);
-    py += trap * 0.10;
-    pz += trap * 0.08 * backMask;
-
-    // 4. Segmented armored abdomen plates
-    const abBand = gauss(uY - 0.27, 0.16) * frontMask * (1 - smoothstep((absX - 0.45) / 0.3));
-    pz -= Math.sin(uY * 34) * 0.020 * abBand;
-
-    // 5. Recessed anterior chest core cavity (core glows FROM INSIDE behind the pale curved ribs!)
-    const chestCavDist = Math.hypot(px / 0.34, (py - 0.94) / 0.34);
-    const chestCav = chestCavDist < 1.0 ? smoothstep(1 - chestCavDist) * frontMask : 0;
-    pz += chestCav * 0.16;
-
-    const backCavDist = Math.hypot(px / 0.24, (py - 1.02) / 0.34);
-    const backCav = backCavDist < 1.0 ? smoothstep(1 - backCavDist) * backMask : 0;
-    pz -= backCav * 0.12;
-
-    // 6. Angular volcanic crust displacement
-    const f = fbm3(px * 2.5, py * 2.5, pz * 2.5, 101, 3) - 0.5;
-    const r = ridged3(px * 3.6, py * 3.6, pz * 3.6, 139, 2) - 0.45;
-    const disp = f * 0.055 + r * 0.036;
-    const outLen = Math.hypot(px, pz) || 1;
-    px += (px / outLen) * disp;
-    pz += (pz / outLen) * disp;
-
-    pos.setXYZ(i, px, py, pz);
-
-    // Clean seam-free Dense Lava UV mapping (no pole stretching!)
-    const uOrig = uv.getX(i);
-    const vMapped = clamp01(uY * 0.92 + 0.04);
-    uv.setXY(i, uOrig * 1.8, lerp(UV_BAND_LAVA_DENSE[0], UV_BAND_LAVA_DENSE[1], vMapped));
-
-    const heightShade = lerp(0.80, 1.12, uY);
-    const microAO = clamp(0.88 + f * 0.26 + r * 0.22 - (chestCav + backCav) * 0.20, 0.58, 1.16);
-    const heatBoost = clamp01(smoothstep(1.32 - chestCavDist) * frontMask * 0.52 + smoothstep(1.25 - backCavDist) * backMask * 0.42);
-    colors[i * 3] = clamp(heightShade * microAO * (1 + heatBoost * 0.32), 0.30, 1.38);
-    colors[i * 3 + 1] = clamp(heightShade * microAO * (1 - heatBoost * 0.08), 0.26, 1.24);
-    colors[i * 3 + 2] = clamp(heightShade * microAO * (1 - heatBoost * 0.18), 0.24, 1.16);
+    const py = pos.getY(i);
+    const pz = pos.getZ(i);
+    const along = clamp01(-py / length);
+    const edgeFactor = clamp01((-pz + width * 0.14) / (width * 0.72));
+    const heat = clamp01(edgeFactor * 0.86 + along * 0.20);
+    uvs[i * 2] = along * 2.4;
+    uvs[i * 2 + 1] = lerp(UV_BAND_ENERGY[0], UV_BAND_ENERGY[1], heat);
+    const c = lerp(0.84, 1.18, heat);
+    colors[i * 3] = c;
+    colors[i * 3 + 1] = c;
+    colors[i * 3 + 2] = c;
   }
-
-  uv.needsUpdate = true;
-  geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-  geo.computeVertexNormals();
-  return geo;
+  g.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+  g.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  return g;
 }
 
-function buildTorsoGeometries(): {
-  skin: THREE.BufferGeometry;
-  bone: THREE.BufferGeometry;
+// ============================================================================
+// Mech Skeleton Dimension Constants (Standing Height = 4.10m, Soles at y = 0.000)
+// ============================================================================
+
+const BASE_HIP_Y = 1.96;     // World Y of hip/pelvis pivot
+const THIGH_LEN = 0.88;      // Hip (1.92) -> Knee (1.04)
+const SHIN_LEN = 0.80;       // Knee (1.04) -> Ankle (0.24)
+const FOOT_SOLE_Y = -0.24;   // Ankle (0.24) -> Sole flush at world y = 0.000
+
+const ATTACK_LOCK_SEC = 0.075;   // 75ms rigid hydraulic lock before blade release
+const ATTACK_SWEEP_SEC = 0.095;  // 95ms explosive hydraulic cleave sweep
+const RECOVER_DURATION = 0.78;
+
+// ============================================================================
+// Articulated Component Geometry Builders
+// ============================================================================
+
+function buildTorsoParts(): {
+  armor: THREE.BufferGeometry;
+  frame: THREE.BufferGeometry;
+  core: THREE.BufferGeometry;
+  vent: THREE.BufferGeometry;
 } {
-  const skinParts: THREE.BufferGeometry[] = [];
-  const boneParts: THREE.BufferGeometry[] = [];
+  const armor: THREE.BufferGeometry[] = [];
+  const frame: THREE.BufferGeometry[] = [];
+  const core: THREE.BufferGeometry[] = [];
+  const vent: THREE.BufferGeometry[] = [];
 
-  // 1. Unified sculpted inverted-triangle hunched trunk
-  skinParts.push(sculptTerminatorTrunk());
+  // --- 1. Compact Tapered Hydraulic Waist Gimbal (V-taper hero proportions! y = 0.12..0.60) ---
+  frame.push(
+    buildCylinder(0.24, 0.26, 0.56, 12, { pos: [0, 0.34, 0.02], tint: TINT_FRAME_DARK }),
+    buildCylinder(0.32, 0.32, 0.08, 12, { pos: [0, 0.24, 0.02], tint: TINT_FRAME_MID }),
+    buildCylinder(0.31, 0.31, 0.08, 12, { pos: [0, 0.44, 0.02], tint: TINT_FRAME_MID }),
+  );
+  // 2 angular V-shaped segmented abdominal armor plates (compact waist!)
+  armor.push(
+    buildArmoredFrustum(0.54, 0.42, 0.62, 0.46, 0.20, -0.02, 0, { pos: [0, 0.28, -0.06], tint: TINT_ARMOR_DARK }),
+    buildArmoredFrustum(0.62, 0.46, 0.76, 0.52, 0.22, -0.04, 0, { pos: [0, 0.48, -0.08], tint: TINT_ARMOR_MAIN }),
+  );
+  // 4 gleaming diagonal heavy waist hydraulic pistons bracing pelvis -> fortress chest!
+  frame.push(
+    ...buildHydraulicPiston([-0.32, 0.08, -0.14], [-0.46, 0.66, -0.22], 0.052, 0.030, TINT_PISTON_CHROME),
+    ...buildHydraulicPiston([0.32, 0.08, -0.14], [0.46, 0.66, -0.22], 0.052, 0.030, TINT_PISTON_CHROME),
+    ...buildHydraulicPiston([-0.30, 0.08, 0.24], [-0.42, 0.68, 0.30], 0.056, 0.032, TINT_PISTON_BRASS),
+    ...buildHydraulicPiston([0.30, 0.08, 0.24], [0.42, 0.68, 0.30], 0.056, 0.032, TINT_PISTON_BRASS),
+  );
 
-  // 2. Muscular hunched neck extending upward & forward so the head stands clearly proud of the shoulders!
-  skinParts.push(
-    sculptMuscleLimb({
-      length: 0.34,
-      rTop: 0.16,
-      rMid: 0.19,
-      rBot: 0.25,
-      radialSegs: 10,
-      heightSegs: 4,
-      striations: 3,
-      pos: [0, 1.66, -0.22],
-      rot: [-0.30, 0, 0],
-      seed: 167,
-      uvBand: UV_BAND_LAVA_DENSE,
+  // --- 2. Broad V-Tapered Angular Fortress Chest Hull (y = 0.56..1.50, width ~1.52m!) ---
+  // Core sloped octagonal armored chassis core
+  frame.push(
+    buildArmoredFrustum(0.92, 0.72, 1.38, 0.86, 0.84, -0.06, 0, { pos: [0, 1.00, 0.02], tint: TINT_FRAME_DARK }),
+  );
+
+  // Angled composite reactive-armor pectoral doors framing a deeply recessed central reactor bay!
+  for (const s of [-1, 1] as const) {
+    // Broad sweeping gunmetal pectoral armor wedge (tilted forward & outward like an armored tank hull!)
+    const mainPec: Vec2Tuple[] = [
+      [-0.18, -0.32],
+      [0.34, -0.26],
+      [0.44, 0.26],
+      [-0.12, 0.34],
+    ];
+    armor.push(
+      buildSlopedPlate(
+        s === 1 ? mainPec : mainPec.map(([x, y]) => [-x, y] as Vec2Tuple).reverse(),
+        0.26,
+        0.032,
+        {
+          pos: [s * 0.44, 1.02, -0.34],
+          rot: [-0.18, s * 0.28, s * -0.06],
+          tint: TINT_ARMOR_MAIN,
+        },
+      ),
+    );
+    // High-contrast cold titanium upper pectoral glacis armor plate (creates unmistakable V-chest silhouette!)
+    const upperPec: Vec2Tuple[] = [
+      [-0.18, -0.14],
+      [0.30, -0.10],
+      [0.34, 0.16],
+      [-0.10, 0.20],
+    ];
+    armor.push(
+      buildSlopedPlate(
+        s === 1 ? upperPec : upperPec.map(([x, y]) => [-x, y] as Vec2Tuple).reverse(),
+        0.14,
+        0.024,
+        {
+          pos: [s * 0.48, 1.18, -0.46],
+          rot: [-0.26, s * 0.30, s * -0.06],
+          tint: TINT_ARMOR_LIGHT,
+        },
+      ),
+    );
+    // Matte crimson-oxide command chevron accent strip beneath upper chest plate
+    armor.push(
+      buildChamferBox(0.38, 0.08, 0.12, 0.012, {
+        pos: [s * 0.46, 0.96, -0.49],
+        rot: [-0.16, s * 0.28, s * 0.14],
+        tint: TINT_ARMOR_CRIMSON,
+      }),
+      // Weathered hazard caution trim on lower chest chin
+      buildChamferBox(0.28, 0.075, 0.12, 0.010, {
+        pos: [s * 0.40, 0.72, -0.46],
+        rot: [-0.14, s * 0.24, 0],
+        tint: TINT_HAZARD,
+        band: UV_BAND_HAZARD,
+        uvScale: 0.75,
+      }),
+    );
+
+    // Diagonal recessed glowing chest cooling slits (subtle amber in P1, blazing overload in P2!)
+    vent.push(
+      buildChamferBox(0.24, 0.045, 0.06, 0.006, {
+        pos: [s * 0.46, 1.06, -0.49],
+        rot: [-0.20, s * 0.28, s * 0.16],
+        tint: TINT_CORE_HOT,
+        band: UV_BAND_ENERGY,
+      }),
+    );
+
+    // Heavy sloped flank rib-armor plates + cooling louver banks
+    armor.push(
+      buildChamferBox(0.22, 0.56, 0.68, 0.026, {
+        pos: [s * 0.72, 1.02, 0.04],
+        rot: [0, 0, s * -0.18],
+        tint: TINT_ARMOR_DARK,
+      }),
+    );
+    frame.push(
+      ...buildLouverBank(0.08, 0.34, 0.34, 5, [s * 0.82, 1.00, 0.04], [0, 0, s * -0.18], TINT_FRAME_MID),
+    );
+    vent.push(
+      buildChamferBox(0.05, 0.32, 0.26, 0.008, {
+        pos: [s * 0.77, 1.00, 0.04],
+        rot: [0, 0, s * -0.18],
+        tint: TINT_CORE_HOT,
+        band: UV_BAND_MECH,
+      }),
+    );
+
+    // Seamless armored clavicle bridge connecting torso into rotary shoulder drum (zero floating gap!)
+    armor.push(
+      buildChamferBox(0.46, 0.20, 0.48, 0.026, {
+        pos: [s * 0.62, 1.38, -0.04],
+        rot: [0.06, s * 0.08, s * -0.16],
+        tint: TINT_ARMOR_TRIM,
+      }),
+    );
+    frame.push(
+      buildCylinder(0.23, 0.23, 0.38, 12, {
+        pos: [s * 0.80, 1.30, 0.0],
+        rot: [0, 0, Math.PI * 0.5],
+        tint: TINT_FRAME_MID,
+      }),
+      ...buildHydraulicPiston(
+        [s * 0.34, 1.40, -0.14],
+        [s * 0.76, 1.44, 0.0],
+        0.046,
+        0.026,
+        TINT_PISTON_BRASS,
+      ),
+    );
+  }
+
+  // Deeply Recessed Octagonal Armored Reactor Bay Housing (replaces flat sticker look!)
+  // Thick sloped dark bezel walls framing the glowing inner turbine core!
+  armor.push(
+    // Heavy protruding central upper sternal prow hood overhanging reactor recess
+    buildChamferBox(0.56, 0.22, 0.34, 0.028, { pos: [0, 1.24, -0.44], rot: [-0.28, 0, 0], tint: TINT_ARMOR_LIGHT }),
+    // Crimson command badge stripe across upper sternal brow
+    buildChamferBox(0.32, 0.08, 0.14, 0.012, { pos: [0, 1.31, -0.54], rot: [-0.28, 0, 0], tint: TINT_ARMOR_CRIMSON }),
+    // Lower sternal armored keel block
+    buildChamferBox(0.46, 0.20, 0.30, 0.026, { pos: [0, 0.66, -0.42], rot: [0.24, 0, 0], tint: TINT_ARMOR_MAIN }),
+  );
+  frame.push(
+    // Thick recessed outer armored octagonal turbine bezel framing front core
+    buildCylinder(0.25, 0.28, 0.18, 8, {
+      pos: [0, 0.96, -0.42],
+      rot: [Math.PI * 0.5, Math.PI / 8, 0],
+      tint: TINT_FRAME_DARK,
+    }),
+    // Diagonal X-brace turbine blast cage + central machined reactor hub cap (exposes 4 glowing quadrants!)
+    buildChamferBox(0.42, 0.044, 0.09, 0.007, { pos: [0, 0.96, -0.51], rot: [0, 0, Math.PI * 0.25], tint: TINT_FRAME_MID }),
+    buildChamferBox(0.42, 0.044, 0.09, 0.007, { pos: [0, 0.96, -0.51], rot: [0, 0, -Math.PI * 0.25], tint: TINT_FRAME_MID }),
+    buildCylinder(0.072, 0.082, 0.11, 8, {
+      pos: [0, 0.96, -0.50],
+      rot: [Math.PI * 0.5, Math.PI / 8, 0],
+      tint: TINT_ARMOR_LIGHT,
     }),
   );
 
-  // 3. Exposed Weathered-Ivory Rib Exoskeleton (5 diagonal predatory rib arches cradling the recessed molten sternum!)
-  const ribDefs: Array<{ yOuter: number; yInner: number; xBack: number; xSide: number; xInner: number; zFront: number; r: number }> = [
-    { yOuter: 1.24, yInner: 1.12, xBack: 0.56, xSide: 0.72, xInner: 0.14, zFront: -0.49, r: 0.036 },
-    { yOuter: 1.09, yInner: 0.96, xBack: 0.54, xSide: 0.70, xInner: 0.13, zFront: -0.50, r: 0.038 },
-    { yOuter: 0.94, yInner: 0.80, xBack: 0.50, xSide: 0.64, xInner: 0.13, zFront: -0.49, r: 0.036 },
-    { yOuter: 0.79, yInner: 0.65, xBack: 0.44, xSide: 0.56, xInner: 0.15, zFront: -0.44, r: 0.033 },
-    { yOuter: 0.64, yInner: 0.52, xBack: 0.36, xSide: 0.46, xInner: 0.17, zFront: -0.37, r: 0.029 },
-  ];
-  for (let i = 0; i < ribDefs.length; i++) {
-    const rb = ribDefs[i];
-    for (const side of [-1, 1] as const) {
-      boneParts.push(
-        sculptCurvedBoneBlade({
-          points: [
-            [side * rb.xBack, rb.yOuter + 0.04, 0.12],
-            [side * rb.xSide, rb.yOuter + 0.01, -0.14],
-            [side * (rb.xSide * 0.66), lerp(rb.yOuter, rb.yInner, 0.55), rb.zFront],
-            [side * rb.xInner, rb.yInner, rb.zFront * 0.96],
-          ],
-          radiusStart: rb.r * 0.76,
-          radiusMid: rb.r * 1.10,
-          radiusEnd: rb.r * 0.50,
-          midPos: 0.50,
-          tubularSegs: 11,
-          radialSegs: 7,
-          bladeAspect: 1.32,
-          tipGlow: false, // exposed bone ribs stay bright weathered yellowed-ivory
-          baseColor: [0.96, 0.88, 0.74],
-          tipColor: [1.26, 1.20, 1.02],
-          seed: 301 + i * 11 + (side > 0 ? 3 : 0),
-        }),
-      );
-    }
-  }
-
-  // Clavicle bone collar arches framing the upper chest glowing V-core
-  for (const side of [-1, 1] as const) {
-    boneParts.push(
-      sculptCurvedBoneBlade({
-        points: [
-          [side * 0.08, 1.28, -0.43],
-          [side * 0.36, 1.38, -0.35],
-          [side * 0.68, 1.40, -0.12],
-        ],
-        radiusStart: 0.028,
-        radiusMid: 0.036,
-        radiusEnd: 0.028,
-        tubularSegs: 8,
-        radialSegs: 6,
-        bladeAspect: 1.25,
-        tipGlow: false,
-        baseColor: [0.98, 0.90, 0.76],
-        tipColor: [1.22, 1.14, 0.98],
-        seed: side < 0 ? 331 : 337,
+  // --- 3. High Armored Fortress Gorget / Collar Bunker & Rollbars (frames compact head cleanly!) ---
+  armor.push(
+    // Rear sloped armored bunker cowl behind head
+    buildChamferBox(0.74, 0.36, 0.30, 0.030, { pos: [0, 1.54, 0.22], rot: [-0.16, 0, 0], tint: TINT_ARMOR_MAIN }),
+    buildChamferBox(0.62, 0.14, 0.34, 0.022, { pos: [0, 1.68, 0.16], rot: [0.20, 0, 0], tint: TINT_ARMOR_LIGHT }),
+    // Low angled front gorget chin-shield (never blocks mono-eye!)
+    buildChamferBox(0.44, 0.14, 0.20, 0.018, { pos: [0, 1.40, -0.36], rot: [-0.26, 0, 0], tint: TINT_ARMOR_DARK }),
+  );
+  for (const s of [-1, 1] as const) {
+    // Angled armored collar cheek bunkers flanking neck
+    armor.push(
+      buildChamferBox(0.16, 0.30, 0.46, 0.022, {
+        pos: [s * 0.36, 1.52, -0.02],
+        rot: [0.06, s * -0.16, s * 0.14],
+        tint: TINT_ARMOR_MAIN,
       }),
+    );
+    frame.push(
+      buildArmoredConduit(
+        [
+          [s * 0.34, 1.38, -0.32],
+          [s * 0.44, 1.58, -0.26],
+          [s * 0.44, 1.68, 0.06],
+          [s * 0.36, 1.60, 0.26],
+        ],
+        0.028,
+        10,
+        6,
+        TINT_FRAME_MID,
+      ),
     );
   }
 
-  // 4. ICONIC MASSIVE SWEPT-BACK DORSAL BONE-SPIKE CLUSTERS (背部巨大骨刺簇)
-  //    Sleek, wicked scythe-horn arches matching docs/reference/boss-terminator-ref.png (front, side, back)!
-  for (const side of [-1, 1] as const) {
-    // (a) Towering Upper Inner Crown-Scythe Pair — rises behind head & curves outward-downward
-    //     Peaks at torso y = 2.05 -> world y = 1.92 + 2.05 + r = ~4.05m (BOTH neutral & idle inside 4.0-4.2m!)
-    boneParts.push(
-      sculptCurvedBoneBlade({
-        points: [
-          [side * 0.18, 1.38, 0.16],
-          [side * 0.28, 1.80, 0.34],
-          [side * 0.46, 2.05, 0.50], // peak ~4.05m world!
-          [side * 0.70, 1.98, 0.56],
-          [side * 0.90, 1.74, 0.50],
-        ],
-        radiusStart: 0.070,
-        radiusMid: 0.054,
-        radiusEnd: 0.008,
-        midPos: 0.36,
-        tubularSegs: 14,
-        radialSegs: 7,
-        bladeAspect: 1.45,
-        tipGlow: true,
-        baseColor: [0.78, 0.52, 0.40],
-        tipColor: [1.28, 1.22, 1.02],
-        seed: side < 0 ? 361 : 367,
-      }),
-    );
+  // --- 4. Twin Dorsal Reactor Heat-Sink Towers & Armored Exhaust Stacks (Back +Z) ---
+  armor.push(
+    buildChamferBox(0.70, 0.86, 0.36, 0.032, { pos: [0, 1.02, 0.44], tint: TINT_ARMOR_DARK }),
+  );
+  // Armored blast-shutter bezel framing rear dorsal reactor core
+  frame.push(
+    buildCylinder(0.24, 0.27, 0.18, 8, {
+      pos: [0, 0.98, 0.56],
+      rot: [Math.PI * 0.5, Math.PI / 8, 0],
+      tint: TINT_FRAME_DARK,
+    }),
+    buildChamferBox(0.40, 0.055, 0.10, 0.008, { pos: [0, 1.05, 0.65], tint: TINT_FRAME_MID }),
+    buildChamferBox(0.40, 0.055, 0.10, 0.008, { pos: [0, 0.91, 0.65], tint: TINT_FRAME_MID }),
+    buildChamferBox(0.06, 0.36, 0.10, 0.008, { pos: [0, 0.98, 0.65], tint: TINT_FRAME_MID }),
+  );
 
-    // (b) Giant Sweeping Outer Wing-Scythe Pair — flares wide beyond shoulders & arcs far backward in side view!
-    boneParts.push(
-      sculptCurvedBoneBlade({
-        points: [
-          [side * 0.38, 1.18, 0.24],
-          [side * 0.74, 1.54, 0.68],
-          [side * 1.12, 1.84, 0.74],
-          [side * 1.38, 1.66, 0.56],
-          [side * 1.50, 1.32, 0.36],
-        ],
-        radiusStart: 0.076,
-        radiusMid: 0.062,
-        radiusEnd: 0.009,
-        midPos: 0.38,
-        tubularSegs: 14,
-        radialSegs: 7,
-        bladeAspect: 1.60,
-        tipGlow: true,
-        baseColor: [0.72, 0.44, 0.34],
-        tipColor: [1.28, 1.22, 1.02],
-        seed: side < 0 ? 373 : 379,
+  for (const s of [-1, 1] as const) {
+    // Heavy twin vertical turbine heat-sink towers
+    armor.push(
+      buildArmoredFrustum(0.36, 0.46, 0.42, 0.44, 0.94, 0.06, s * 0.04, {
+        pos: [s * 0.48, 1.18, 0.50],
+        tint: TINT_ARMOR_MAIN,
       }),
-    );
-
-    // (c) Curved Lower Dorsal Bone Arch-Strut bridging mid-back into the giant outer wing-scythe (reference side view!)
-    boneParts.push(
-      sculptCurvedBoneBlade({
-        points: [
-          [side * 0.28, 0.74, 0.28],
-          [side * 0.56, 1.02, 0.76],
-          [side * 0.84, 1.46, 0.84],
-          [side * 1.04, 1.74, 0.74],
-        ],
-        radiusStart: 0.048,
-        radiusMid: 0.040,
-        radiusEnd: 0.016,
-        midPos: 0.46,
-        tubularSegs: 11,
-        radialSegs: 6,
-        bladeAspect: 1.42,
-        tipGlow: true,
-        baseColor: [0.74, 0.48, 0.36],
-        tipColor: [1.22, 1.16, 0.98],
-        seed: side < 0 ? 383 : 389,
+      // Titanium upper heat-sink cowl cap + crimson command tip
+      buildChamferBox(0.36, 0.24, 0.42, 0.026, {
+        pos: [s * 0.50, 1.66, 0.48],
+        rot: [0.16, s * -0.12, s * -0.10],
+        tint: TINT_ARMOR_LIGHT,
       }),
-    );
-
-    // (d) Mid-Scapula Backward Sickle Spur (adds fierce layered dorsal silhouette!)
-    boneParts.push(
-      sculptCurvedBoneBlade({
-        points: [
-          [side * 0.34, 0.94, 0.30],
-          [side * 0.64, 1.14, 0.76],
-          [side * 0.92, 1.06, 0.94],
-          [side * 1.04, 0.84, 0.88],
+      // Swept dorsal stabilizer wing-fin (breaks up upper back silhouette cleanly!)
+      buildSlopedPlate(
+        [
+          [-0.08, -0.22],
+          [0.10, -0.22],
+          [0.26, 0.32],
+          [0.04, 0.38],
         ],
-        radiusStart: 0.052,
-        radiusMid: 0.042,
-        radiusEnd: 0.008,
-        midPos: 0.40,
-        tubularSegs: 10,
-        radialSegs: 6,
-        bladeAspect: 1.52,
-        tipGlow: true,
-        baseColor: [0.74, 0.46, 0.36],
-        tipColor: [1.26, 1.18, 1.00],
-        seed: side < 0 ? 397 : 401,
-      }),
+        0.09,
+        0.016,
+        {
+          pos: [s * 0.62, 1.68, 0.60],
+          rot: [0.22, s * -0.24, s * -0.26],
+          tint: TINT_ARMOR_CRIMSON,
+        },
+      ),
     );
-
-    // (e) Secondary upward serrated horn barb jutting off the wing arch
-    boneParts.push(
-      sculptBoneSpike({
-        length: 0.42,
-        baseR: 0.040,
-        tipR: 0.007,
-        bendZ: 0.14,
-        bendX: side * 0.08,
-        flattenX: 0.56,
-        radialSegs: 6,
-        heightSegs: 4,
-        pos: [side * 0.62, 1.44, 0.52],
-        rot: [0.66, side * 0.22, -side * 0.48],
-        seed: side < 0 ? 409 : 419,
+    // Twin vertical armored exhaust chimney stacks reaching ~3.98m world Y
+    frame.push(
+      buildCylinder(0.082, 0.102, 0.44, 10, {
+        pos: [s * 0.44, 1.82, 0.54],
+        rot: [0.14, 0, s * -0.10],
+        tint: TINT_FRAME_DARK,
+      }),
+      buildCylinder(0.112, 0.112, 0.07, 10, {
+        pos: [s * 0.46, 2.00, 0.57],
+        rot: [0.14, 0, s * -0.10],
+        tint: TINT_FRAME_MID,
+      }),
+      // Lower thruster exhaust nozzle bell
+      buildCylinder(0.11, 0.17, 0.24, 10, {
+        pos: [s * 0.46, 0.68, 0.56],
+        rot: [0.26, 0, s * -0.06],
+        tint: TINT_FRAME_MID,
+      }),
+      // Ribbed armored power conduit arching from backpack over shoulder drum
+      buildArmoredConduit(
+        [
+          [s * 0.50, 1.54, 0.34],
+          [s * 0.68, 1.50, 0.14],
+          [s * 0.80, 1.38, 0.02],
+        ],
+        0.048,
+        10,
+        7,
+        TINT_FRAME_DARK,
+      ),
+    );
+    // Dorsal heat-sink vent slats + recessed glowing exhaust chamber
+    frame.push(
+      ...buildLouverBank(0.26, 0.44, 0.10, 5, [s * 0.48, 1.24, 0.72], [0.06, s * -0.10, 0], TINT_FRAME_MID),
+    );
+    vent.push(
+      buildChamferBox(0.22, 0.42, 0.05, 0.008, {
+        pos: [s * 0.48, 1.24, 0.69],
+        rot: [0.06, s * -0.10, 0],
+        tint: TINT_CORE_HOT,
+        band: UV_BAND_MECH,
+      }),
+      buildCylinder(0.09, 0.11, 0.07, 10, {
+        pos: [s * 0.46, 0.62, 0.58],
+        rot: [0.26, 0, s * -0.06],
+        tint: TINT_CORE_HOT,
+        band: UV_BAND_ENERGY,
       }),
     );
   }
 
-  // (f) Central Spinal Bone-Spike Ridge running down the back (5 curved dorsal blades)
-  const spineSpikes: Array<{ y: number; z: number; rx: number; len: number; r: number }> = [
-    { y: 1.42, z: 0.24, rx: 0.72, len: 0.48, r: 0.062 },
-    { y: 1.16, z: 0.32, rx: 0.94, len: 0.52, r: 0.066 },
-    { y: 0.88, z: 0.32, rx: 1.10, len: 0.46, r: 0.058 },
-    { y: 0.62, z: 0.28, rx: 1.24, len: 0.38, r: 0.050 },
-    { y: 0.36, z: 0.24, rx: 1.34, len: 0.32, r: 0.042 },
-  ];
-  for (let i = 0; i < spineSpikes.length; i++) {
-    const sp = spineSpikes[i];
-    boneParts.push(
-      sculptBoneSpike({
-        length: sp.len,
-        baseR: sp.r,
-        tipR: 0.008,
-        bendZ: 0.14,
-        flattenX: 0.52,
-        radialSegs: 6,
-        heightSegs: 4,
-        pos: [0, sp.y, sp.z],
-        rot: [sp.rx, 0, 0],
-        seed: 431 + i * 7,
-      }),
-    );
-  }
+  // --- 5. Recessed Front Chest & Rear Dorsal Reactor Core (parts.core, centered at local y = 0.96 -> world 2.92m) ---
+  core.push(
+    // Front deeply recessed inner reactor turbine drum (behind armored cage bars!)
+    buildCylinder(0.20, 0.20, 0.12, 14, {
+      pos: [0, 0, -0.45],
+      rot: [Math.PI * 0.5, 0, 0],
+      tint: TINT_CORE_HOT,
+      band: UV_BAND_ENERGY,
+    }),
+    // Rear deeply recessed dorsal reactor turbine drum (matches back-core weakpoint!)
+    buildCylinder(0.19, 0.19, 0.12, 14, {
+      pos: [0, 0.02, 0.60],
+      rot: [Math.PI * 0.5, 0, 0],
+      tint: TINT_CORE_HOT,
+      band: UV_BAND_ENERGY,
+    }),
+  );
 
   return {
-    skin: mergeStrict(skinParts),
-    bone: mergeStrict(boneParts),
+    armor: mergeStrict(armor),
+    frame: mergeStrict(frame),
+    core: mergeStrict(core),
+    vent: mergeStrict(vent),
   };
 }
 
-/** Purely self-emissive recessed molten sternum V-core & dorsal spine glow (zero projectiles). */
-function buildCoreGeometry(): THREE.BufferGeometry {
-  const parts: THREE.BufferGeometry[] = [];
-
-  // Recessed glowing molten sternum furnace nestled cleanly INSIDE the arched ivory bone ribs!
-  parts.push(
-    sculptOrganicBlob({
-      scale: [0.19, 0.30, 0.11],
-      pos: [0, 0.0, -0.37],
-      segW: 14,
-      segH: 10,
-      noiseAmp: 0.12,
-      ridgeAmp: 0.08,
-      seed: 451,
-      topTaper: 1.32,
-      botTaper: 0.48,
-      aoBottom: 0.04,
-      uvBand: UV_BAND_CORE,
-    }),
-  );
-  // Glowing molten V-collar flare right below the bone clavicles (reference front view's glowing chest V!)
-  for (const side of [-1, 1] as const) {
-    parts.push(
-      sculptOrganicBlob({
-        scale: [0.18, 0.08, 0.08],
-        pos: [side * 0.20, 0.23, -0.37],
-        rot: [0, 0, side * 0.34],
-        segW: 9,
-        segH: 6,
-        noiseAmp: 0.12,
-        seed: side < 0 ? 457 : 461,
-        aoBottom: 0.03,
-        uvBand: UV_BAND_CORE,
-      }),
-    );
-  }
-  // Recessed glowing dorsal spine molten vent
-  parts.push(
-    sculptOrganicBlob({
-      scale: [0.13, 0.26, 0.09],
-      pos: [0, 0.08, 0.33],
-      segW: 12,
-      segH: 8,
-      noiseAmp: 0.12,
-      ridgeAmp: 0.08,
-      seed: 467,
-      aoBottom: 0.04,
-      uvBand: UV_BAND_CORE,
-    }),
-  );
-
-  return mergeStrict(parts);
-}
-
-/**
- * Faceless Bone-Crowned Head (world y ~3.48..4.02m, sitting clearly proud above the hunched collar):
- *   - No normal human face (no nose/lips); smooth dark crimson armored demon cranium & sharp mandible
- *   - Sculpted ivory-bone crown helmet & twin sweeping curved cranial horns
- *   - Two blazing orange-red glowing predatory eyes recessed beneath the bone brow
- */
-function buildHeadGeometries(): {
-  skin: THREE.BufferGeometry;
-  bone: THREE.BufferGeometry;
-  eyes: THREE.BufferGeometry;
+function buildHeadParts(): {
+  armor: THREE.BufferGeometry;
+  frame: THREE.BufferGeometry;
+  monoEye: THREE.BufferGeometry;
+  monoEyeBezel: THREE.BufferGeometry;
 } {
-  const skinParts: THREE.BufferGeometry[] = [];
-  const boneParts: THREE.BufferGeometry[] = [];
-  const eyeParts: THREE.BufferGeometry[] = [];
+  // Mounted at torso (0, 1.52, -0.12) -> world (0, 3.48, -0.12).
+  // Compact, lethal armored siege helmet (spans local y in [-0.05, +0.62] -> world y = 3.43..4.10m).
+  // Tighter head scale vs massive 2.7m shoulders creates instant 4.1m giant-mech monumentality!
+  const armor: THREE.BufferGeometry[] = [];
+  const frame: THREE.BufferGeometry[] = [];
 
-  // Sleek angular predatory faceless cranium
-  skinParts.push(
-    sculptOrganicBlob({
-      scale: [0.18, 0.22, 0.24],
-      pos: [0, 0.12, -0.06],
-      rot: [0.08, 0, 0],
-      segW: 14,
-      segH: 10,
-      noiseAmp: 0.07,
-      ridgeAmp: 0.05,
-      seed: 503,
-      topTaper: 0.84,
-      botTaper: 0.70,
-      uvBand: UV_BAND_LAVA_DENSE,
-    }),
-  );
-  // Sharp faceless armored jaw wedge
-  skinParts.push(
-    sculptOrganicBlob({
-      scale: [0.12, 0.11, 0.17],
-      pos: [0, -0.06, -0.14],
-      rot: [0.22, 0, 0],
-      segW: 10,
-      segH: 7,
-      noiseAmp: 0.07,
-      seed: 521,
-      topTaper: 0.94,
-      botTaper: 0.52,
-      uvBand: UV_BAND_LAVA_DENSE,
-    }),
+  // Hydraulic neck gimbal & twin chrome neck pistons
+  frame.push(
+    buildCylinder(0.13, 0.16, 0.20, 10, { pos: [0, 0.04, 0.02], tint: TINT_FRAME_DARK }),
+    ...buildHydraulicPiston([-0.12, -0.04, -0.02], [-0.13, 0.15, -0.06], 0.028, 0.016, TINT_PISTON_CHROME),
+    ...buildHydraulicPiston([0.12, -0.04, -0.02], [0.13, 0.15, -0.06], 0.028, 0.016, TINT_PISTON_CHROME),
   );
 
-  // Sleek razor-ridged ivory-bone helmet crown sheathing the forehead & top of skull (predatory, NOT puffy!)
-  boneParts.push(
-    sculptCurvedBoneBlade({
-      points: [
-        [0, 0.17, -0.30],
-        [0, 0.28, -0.16],
-        [0, 0.33, 0.04],
-        [0, 0.25, 0.24],
+  // Deep recessed matte-dark cylindrical visor track cavity (mono-eye glows INSIDE this dark slit!)
+  frame.push(
+    buildCylinder(0.185, 0.185, 0.12, 14, { pos: [0, 0.26, -0.03], tint: [0.05, 0.06, 0.08] }),
+    // Thin vertical center visor pillar framing the cyclops bay
+    buildChamferBox(0.036, 0.12, 0.06, 0.006, { pos: [0, 0.14, -0.21], tint: TINT_FRAME_MID }),
+  );
+
+  // Swept angular V-brow Armored Siege Helmet (predatory scowl overhanging recessed visor!)
+  armor.push(
+    // Sloped titanium top helmet dome angled forward-down over visor slit
+    buildArmoredFrustum(0.44, 0.48, 0.34, 0.40, 0.18, -0.04, 0, {
+      pos: [0, 0.40, -0.01],
+      rot: [0.14, 0, 0],
+      tint: TINT_ARMOR_LIGHT,
+    }),
+    // Sharp angled V-brow crimson visor wings (menacing heavy combat mech scowl!)
+    buildChamferBox(0.22, 0.075, 0.20, 0.012, {
+      pos: [-0.11, 0.345, -0.17],
+      rot: [0.22, 0.10, -0.16],
+      tint: TINT_ARMOR_CRIMSON,
+    }),
+    buildChamferBox(0.22, 0.075, 0.20, 0.012, {
+      pos: [0.11, 0.345, -0.17],
+      rot: [0.22, -0.10, 0.16],
+      tint: TINT_ARMOR_CRIMSON,
+    }),
+    // Rear heavy helmet occiput armor shell
+    buildArmoredFrustum(0.42, 0.28, 0.36, 0.24, 0.28, 0.02, 0, {
+      pos: [0, 0.26, 0.12],
+      tint: TINT_ARMOR_MAIN,
+    }),
+    // Angular armored lower jaw / muzzle breathing grille block
+    buildArmoredFrustum(0.30, 0.28, 0.36, 0.32, 0.15, -0.04, 0, {
+      pos: [0, 0.12, -0.09],
+      tint: TINT_ARMOR_MAIN,
+    }),
+    buildChamferBox(0.18, 0.085, 0.14, 0.014, { pos: [0, 0.11, -0.22], tint: TINT_ARMOR_LIGHT }),
+    // Swept-back tactical commander sensor crest fin reaching local y = +0.62 (world y = 4.10m!)
+    buildSlopedPlate(
+      [
+        [-0.20, 0.0],
+        [0.14, 0.0],
+        [0.20, 0.15],
+        [-0.08, 0.18],
       ],
-      radiusStart: 0.034,
-      radiusMid: 0.048,
-      radiusEnd: 0.016,
-      midPos: 0.44,
-      tubularSegs: 10,
-      radialSegs: 7,
-      bladeAspect: 1.55,
-      tipGlow: true,
-      baseColor: [0.92, 0.80, 0.66],
-      tipColor: [1.28, 1.22, 1.02],
-      seed: 541,
-    }),
+      0.08,
+      0.014,
+      {
+        pos: [0, 0.44, 0.04],
+        rot: [0, Math.PI * 0.5, 0],
+        tint: TINT_ARMOR_CRIMSON,
+      },
+    ),
   );
 
-  // Twin overhanging bone brow-plates, cheek-guards, & fierce swept ivory cranial horns!
-  for (const side of [-1, 1] as const) {
-    boneParts.push(
-      sculptCurvedBoneBlade({
-        points: [
-          [side * 0.02, 0.16, -0.28],
-          [side * 0.13, 0.21, -0.22],
-          [side * 0.19, 0.24, -0.05],
-          [side * 0.15, 0.21, 0.14],
-        ],
-        radiusStart: 0.028,
-        radiusMid: 0.036,
-        radiusEnd: 0.018,
-        tubularSegs: 8,
-        radialSegs: 6,
-        bladeAspect: 1.38,
-        tipGlow: false,
-        baseColor: [0.94, 0.84, 0.70],
-        tipColor: [1.24, 1.16, 0.98],
-        seed: side < 0 ? 547 : 557,
+  // Angled side cheek-mandible guards & ear sensor rangefinders
+  for (const s of [-1, 1] as const) {
+    armor.push(
+      buildChamferBox(0.10, 0.22, 0.36, 0.018, {
+        pos: [s * 0.21, 0.22, -0.02],
+        rot: [0.06, s * -0.14, s * 0.10],
+        tint: TINT_ARMOR_MAIN,
       }),
     );
-
-    // Sleek sweeping curved ivory cranial horns arcing boldly upward & back from the bone crown
-    boneParts.push(
-      sculptCurvedBoneBlade({
-        points: [
-          [side * 0.09, 0.23, -0.10],
-          [side * 0.19, 0.40, -0.01],
-          [side * 0.29, 0.49, 0.14],
-          [side * 0.34, 0.40, 0.28],
-        ],
-        radiusStart: 0.044,
-        radiusMid: 0.034,
-        radiusEnd: 0.007,
-        midPos: 0.36,
-        tubularSegs: 9,
-        radialSegs: 6,
-        bladeAspect: 1.42,
-        tipGlow: true,
-        baseColor: [0.90, 0.76, 0.62],
-        tipColor: [1.30, 1.24, 1.04],
-        seed: side < 0 ? 563 : 569,
+    frame.push(
+      buildCylinder(0.072, 0.072, 0.10, 10, {
+        pos: [s * 0.25, 0.26, 0.04],
+        rot: [0, 0, Math.PI * 0.5],
+        tint: TINT_FRAME_MID,
       }),
+      ...(s === 1
+        ? [
+            buildCylinder(0.014, 0.022, 0.22, 6, {
+              pos: [0.25, 0.42, 0.08],
+              rot: [-0.18, 0, -0.08],
+              tint: TINT_FRAME_MID,
+            }),
+          ]
+        : []),
     );
-
-    // Armored bone mandible/cheekblade
-    boneParts.push(
-      sculptBoneSpike({
-        length: 0.20,
-        baseR: 0.036,
-        tipR: 0.009,
-        bendZ: -0.04,
-        flattenX: 0.58,
-        radialSegs: 5,
-        heightSegs: 3,
-        pos: [side * 0.15, 0.01, -0.10],
-        rot: [-1.14, side * 0.36, -side * 0.24],
-        tipGlow: false,
-        seed: side < 0 ? 571 : 577,
-      }),
-    );
-
-    // Two fierce glowing orange-red predatory eyes recessed beneath the overhanging bone brow
-    const eye = new THREE.SphereGeometry(0.038, 8, 6);
-    eye.scale(1.42, 0.55, 0.85);
-    eye.rotateZ(-side * 0.34);
-    eye.rotateY(side * 0.22);
-    eye.translate(side * 0.080, 0.095, -0.238);
-    eyeParts.push(eye);
   }
 
-  // Subtle vertical glowing molten visor seam along the faceless center
-  const slit = new THREE.BoxGeometry(0.026, 0.075, 0.032);
-  slit.translate(0, -0.035, -0.245);
-  eyeParts.push(slit);
+  // Deep-set precision optical Mono-Eye Sensor Lens inside recessed visor cavity (with metallic camera bezel!)
+  const lensSphere = new THREE.SphereGeometry(0.052, 12, 10);
+  lensSphere.scale(1.0, 0.94, 0.62);
+  lensSphere.translate(0, 0, -0.194);
+  const monoEye = mergeStrict([
+    finalizePart(lensSphere, { faceted: false, band: UV_BAND_ENERGY, tint: [1, 1, 1] }),
+    // Tight precision laser-rangefinder optical slit flanking the cyclops lens
+    buildChamferBox(0.15, 0.020, 0.028, 0.004, {
+      pos: [0, 0, -0.182],
+      tint: [0.78, 0.78, 0.78],
+      band: UV_BAND_ENERGY,
+    }),
+  ]);
+  // Precision optical housing bezel collar mounted on monoEye pivot so it tracks with the lens!
+  const monoEyeBezel = buildCylinder(0.068, 0.072, 0.045, 12, {
+    pos: [0, 0, -0.184],
+    rot: [Math.PI * 0.5, 0, 0],
+    tint: TINT_FRAME_MID,
+  });
 
   return {
-    skin: mergeStrict(skinParts),
-    bone: mergeStrict(boneParts),
-    eyes: mergeStrict(eyeParts),
+    armor: mergeStrict(armor),
+    frame: mergeStrict(frame),
+    monoEye,
+    monoEyeBezel,
   };
 }
 
-/** Broad integrated volcanic deltoid + muscular bicep (y = 0 down to elbow y = -0.76). */
-function buildUpperArmGeometries(side: -1 | 1): {
-  skin: THREE.BufferGeometry;
-  bone: THREE.BufferGeometry;
+/** Asymmetric sweeping heavy shoulder pauldrons tucked seamlessly over shoulder drums! */
+function buildShoulderPauldron(side: -1 | 1): {
+  armor: THREE.BufferGeometry;
+  frame: THREE.BufferGeometry;
+  vent: THREE.BufferGeometry;
 } {
-  const skinParts: THREE.BufferGeometry[] = [];
-  const boneParts: THREE.BufferGeometry[] = [];
+  const armor: THREE.BufferGeometry[] = [];
+  const frame: THREE.BufferGeometry[] = [];
+  const vent: THREE.BufferGeometry[] = [];
 
-  // Broad muscular deltoid shoulder tapering cleanly into upper arm (angled, NOT a round ball!)
-  skinParts.push(
-    sculptOrganicBlob({
-      scale: [0.30, 0.27, 0.28],
-      pos: [side * 0.02, 0.02, 0.0],
-      rot: [0, 0, -side * 0.28],
-      segW: 12,
-      segH: 9,
-      noiseAmp: 0.08,
-      ridgeAmp: 0.05,
-      topTaper: 0.90,
-      botTaper: 1.06,
-      seed: side < 0 ? 601 : 607,
-      uvBand: UV_BAND_LAVA_DENSE,
-      uScale: 1.2,
-    }),
-  );
-  // Muscular upper arm shaft
-  skinParts.push(
-    sculptMuscleLimb({
-      length: 0.82,
-      rTop: 0.24,
-      rMid: 0.22,
-      rBot: 0.21,
-      midPos: 0.46,
-      radialSegs: 12,
-      heightSegs: 7,
-      striations: 4,
-      bendX: side * 0.05,
-      bendZ: 0.02,
-      scaleZ: 1.06,
+  // Heavy internal rotary linkage drum & mounting yoke
+  frame.push(
+    buildCylinder(0.20, 0.20, 0.28, 12, {
       pos: [side * 0.04, 0.0, 0],
-      seed: side < 0 ? 613 : 617,
-      uvBand: UV_BAND_LAVA_DENSE,
+      rot: [0, 0, Math.PI * 0.5],
+      tint: TINT_FRAME_DARK,
+    }),
+    buildChamferBox(0.36, 0.20, 0.52, 0.020, {
+      pos: [side * 0.14, 0.16, 0],
+      rot: [0, 0, side * -0.18],
+      tint: TINT_FRAME_MID,
     }),
   );
 
-  // Curved shoulder bone ridge plate cresting the outer deltoid
-  boneParts.push(
-    sculptCurvedBoneBlade({
-      points: [
-        [side * -0.06, 0.22, -0.06],
-        [side * 0.14, 0.24, 0.01],
-        [side * 0.30, 0.14, 0.06],
-        [side * 0.38, -0.02, 0.08],
-      ],
-      radiusStart: 0.036,
-      radiusMid: 0.052,
-      radiusEnd: 0.014,
-      tubularSegs: 8,
-      radialSegs: 6,
-      bladeAspect: 1.48,
-      tipGlow: true,
-      baseColor: [0.76, 0.50, 0.38],
-      tipColor: [1.24, 1.18, 1.00],
-      seed: side < 0 ? 631 : 641,
-    }),
-  );
-
-  return {
-    skin: mergeStrict(skinParts),
-    bone: mergeStrict(boneParts),
-  };
-}
-
-/**
- * Hypertrophied Terminator Forearm (thicker than half-waist!)
- * heavily armored with dense lava fissures and 4 chunky swept-back outer bone spikes/plates!
- */
-function buildForearmGeometries(side: -1 | 1): {
-  skin: THREE.BufferGeometry;
-  bone: THREE.BufferGeometry;
-} {
-  const skinParts: THREE.BufferGeometry[] = [];
-  const boneParts: THREE.BufferGeometry[] = [];
-
-  // Seamless elbow blend + swollen armored forearm (radius 0.30m — thicker than half-waist!)
-  skinParts.push(
-    sculptMuscleLimb({
-      length: 0.90,
-      rTop: 0.23,
-      rMid: 0.30,
-      rBot: 0.22,
-      midPos: 0.42,
-      radialSegs: 14,
-      heightSegs: 8,
-      striations: 5,
-      striationAmp: 0.09,
-      bendX: side * 0.04,
-      bendZ: -0.05,
-      scaleZ: 1.08,
-      pos: [0, 0.05, 0],
-      seed: side < 0 ? 653 : 659,
-      uvBand: UV_BAND_LAVA_DENSE,
-      uScale: 1.3,
-    }),
-  );
-
-  // Heavy swept-back elbow bone spur
-  boneParts.push(
-    sculptBoneSpike({
-      length: 0.32,
-      baseR: 0.066,
-      tipR: 0.010,
-      bendZ: 0.09,
-      flattenX: 0.64,
-      radialSegs: 6,
-      heightSegs: 4,
-      pos: [side * 0.05, -0.02, 0.18],
-      rot: [1.32, 0, -side * 0.16],
-      seed: side < 0 ? 661 : 673,
-    }),
-  );
-
-  // 4 chunky curved armored bone spikes / horn plates stepping down the outer forearm (angled back-up like reference!)
-  const forearmSpikes: Array<{ y: number; z: number; len: number; r: number; rz: number }> = [
-    { y: -0.15, z: 0.06, len: 0.28, r: 0.072, rz: -side * 0.92 },
-    { y: -0.33, z: 0.03, len: 0.32, r: 0.078, rz: -side * 1.02 },
-    { y: -0.51, z: -0.02, len: 0.29, r: 0.070, rz: -side * 1.12 },
-    { y: -0.67, z: -0.06, len: 0.23, r: 0.058, rz: -side * 1.22 },
-  ];
-  for (let i = 0; i < forearmSpikes.length; i++) {
-    const sp = forearmSpikes[i];
-    boneParts.push(
-      sculptBoneSpike({
-        length: sp.len,
-        baseR: sp.r,
-        tipR: 0.013,
-        bendZ: 0.10,
-        flattenX: 0.72,
-        radialSegs: 6,
-        heightSegs: 4,
-        pos: [side * 0.22, sp.y, sp.z],
-        rot: [0.46, -side * 0.26, sp.rz],
-        seed: 683 + i * 11 + (side > 0 ? 3 : 0),
+  if (side === -1) {
+    // LEFT SHOULDER: Massive Multi-Faceted Aegis Fortress Buckler-Shield Pauldron (tightly nested!)
+    armor.push(
+      // Sweeping deep-gunmetal armored shoulder hood wrapping seamlessly over shoulder drum
+      buildArmoredFrustum(0.58, 0.80, 0.46, 0.66, 0.46, 0, -0.06, {
+        pos: [-0.14, 0.18, 0],
+        rot: [0, 0, 0.20],
+        tint: TINT_ARMOR_MAIN,
       }),
-    );
-  }
-
-  return {
-    skin: mergeStrict(skinParts),
-    bone: mergeStrict(boneParts),
-  };
-}
-
-/**
- * Huge Mutated Clawed Hand: 3 thick predatory curved fingers + 1 opposable thumb,
- * with pronounced bony knuckles and long curved ivory-bone talons!
- */
-function buildHandGeometries(side: -1 | 1): {
-  skin: THREE.BufferGeometry;
-  bone: THREE.BufferGeometry;
-} {
-  const skinParts: THREE.BufferGeometry[] = [];
-  const boneParts: THREE.BufferGeometry[] = [];
-
-  // Broad mutated volcanic palm bridging cleanly from the thick wrist
-  skinParts.push(
-    sculptOrganicBlob({
-      scale: [0.19, 0.22, 0.20],
-      pos: [side * 0.01, -0.12, -0.02],
-      segW: 10,
-      segH: 7,
-      noiseAmp: 0.09,
-      seed: side < 0 ? 701 : 709,
-      topTaper: 1.06,
-      botTaper: 0.96,
-      uvBand: UV_BAND_LAVA_DENSE,
-    }),
-  );
-
-  // 3 massive mutated clawed fingers with prominent knuckles + sweeping curved talons (NOT thin needles!)
-  const fingerDefs: Array<{ x: number; z: number; spreadX: number; len: number; curlZ: number }> = [
-    { x: -side * 0.10, z: -0.10, spreadX: -side * 0.07, len: 0.44, curlZ: -0.08 },
-    { x: side * 0.01, z: -0.12, spreadX: side * 0.01, len: 0.49, curlZ: -0.09 },
-    { x: side * 0.11, z: -0.07, spreadX: side * 0.08, len: 0.42, curlZ: -0.06 },
-  ];
-  for (let i = 0; i < fingerDefs.length; i++) {
-    const f = fingerDefs[i];
-    // Prominent swollen lava-skinned base knuckle
-    skinParts.push(
-      sculptOrganicBlob({
-        scale: [0.060, 0.056, 0.062],
-        pos: [f.x, -0.27, f.z + 0.03],
-        segW: 7,
-        segH: 5,
-        noiseAmp: 0.08,
-        seed: 719 + i * 7 + (side > 0 ? 3 : 0),
-        uvBand: UV_BAND_LAVA_DENSE,
+      // Cold titanium upper armored cap
+      buildChamferBox(0.44, 0.14, 0.64, 0.026, {
+        pos: [-0.14, 0.40, 0],
+        rot: [0, 0, 0.26],
+        tint: TINT_ARMOR_LIGHT,
       }),
-    );
-    // Thick proximal phalanx
-    skinParts.push(
-      sculptMuscleLimb({
-        length: 0.18,
-        rTop: 0.050,
-        rMid: 0.045,
-        rBot: 0.040,
-        radialSegs: 6,
-        heightSegs: 3,
-        striations: 2,
-        pos: [f.x, -0.28, f.z + 0.02],
-        rot: [0.34, 0, -f.spreadX * 2.2],
-        seed: 733 + i * 7 + (side > 0 ? 3 : 0),
-        uvBand: UV_BAND_LAVA_DENSE,
-      }),
-    );
-    // Pronounced distal bone knuckle boss + curved thick talon blade!
-    const knX = f.x + f.spreadX * 0.65;
-    const knY = -0.43;
-    const knZ = f.z - 0.04;
-    boneParts.push(
-      sculptOrganicBlob({
-        scale: [0.046, 0.042, 0.048],
-        pos: [knX, knY, knZ],
-        segW: 6,
-        segH: 4,
-        noiseAmp: 0.08,
-        seed: 743 + i * 5 + (side > 0 ? 2 : 0),
-        uvBand: UV_BAND_BONE,
-        tint: [1.14, 1.06, 0.92],
-      }),
-    );
-    boneParts.push(
-      sculptCurvedBoneBlade({
-        points: [
-          [knX, knY + 0.01, knZ],
-          [knX + f.spreadX * 0.45, knY - f.len * 0.34, knZ + f.curlZ * 0.45],
-          [knX + f.spreadX * 0.30, knY - f.len * 0.68, knZ + f.curlZ * 0.15 + 0.05],
-          [knX - side * 0.02, knY - f.len * 0.84, knZ + 0.13],
+      // Tall angled fortress buckler riot-shield slab bolted tightly to outer pauldron
+      buildSlopedPlate(
+        [
+          [-0.38, -0.44],
+          [0.38, -0.44],
+          [0.30, 0.48],
+          [-0.30, 0.48],
         ],
-        radiusStart: 0.042,
-        radiusMid: 0.032,
-        radiusEnd: 0.006,
-        midPos: 0.38,
-        tubularSegs: 8,
-        radialSegs: 6,
-        bladeAspect: 1.38,
-        tipGlow: true,
-        baseColor: [0.80, 0.56, 0.44],
-        tipColor: [1.26, 1.20, 1.00],
-        seed: 751 + i * 9 + (side > 0 ? 3 : 0),
+        0.15,
+        0.026,
+        {
+          pos: [-0.42, 0.02, 0],
+          rot: [0, Math.PI * 0.5, 0.14],
+          tint: TINT_ARMOR_LIGHT,
+        },
+      ),
+      // Matte crimson-oxide command stripe boss down center of shield
+      buildChamferBox(0.09, 0.56, 0.30, 0.018, {
+        pos: [-0.49, 0.04, 0],
+        rot: [0, 0, 0.14],
+        tint: TINT_ARMOR_CRIMSON,
+      }),
+      // Bolted ERA reactive dark gunmetal edge guards
+      buildChamferBox(0.09, 0.20, 0.52, 0.016, {
+        pos: [-0.48, 0.34, 0],
+        rot: [0, 0, 0.14],
+        tint: TINT_ARMOR_DARK,
+      }),
+      // Caution hazard band across lower shield lip
+      buildChamferBox(0.09, 0.12, 0.60, 0.012, {
+        pos: [-0.47, -0.28, 0],
+        rot: [0, 0, 0.14],
+        tint: TINT_HAZARD,
+        band: UV_BAND_HAZARD,
+        uvScale: 1.0,
       }),
     );
-  }
-
-  // Opposable mutated clawed thumb (inner edge, prominent knuckle + hooked claw)
-  skinParts.push(
-    sculptOrganicBlob({
-      scale: [0.066, 0.060, 0.066],
-      pos: [-side * 0.15, -0.18, -0.09],
-      segW: 7,
-      segH: 5,
-      noiseAmp: 0.09,
-      seed: side < 0 ? 769 : 773,
-      uvBand: UV_BAND_LAVA_DENSE,
-    }),
-  );
-  skinParts.push(
-    sculptMuscleLimb({
-      length: 0.16,
-      rTop: 0.052,
-      rMid: 0.046,
-      rBot: 0.038,
-      radialSegs: 6,
-      heightSegs: 3,
-      striations: 2,
-      pos: [-side * 0.16, -0.19, -0.10],
-      rot: [0.46, side * 0.48, -side * 0.56],
-      seed: side < 0 ? 787 : 797,
-      uvBand: UV_BAND_LAVA_DENSE,
-    }),
-  );
-  boneParts.push(
-    sculptCurvedBoneBlade({
-      points: [
-        [-side * 0.23, -0.31, -0.16],
-        [-side * 0.28, -0.43, -0.17],
-        [-side * 0.22, -0.54, -0.10],
-      ],
-      radiusStart: 0.042,
-      radiusMid: 0.030,
-      radiusEnd: 0.006,
-      tubularSegs: 7,
-      radialSegs: 6,
-      bladeAspect: 1.35,
-      tipGlow: true,
-      baseColor: [0.80, 0.56, 0.44],
-      tipColor: [1.26, 1.20, 1.00],
-      seed: side < 0 ? 809 : 811,
-    }),
-  );
-
-  return {
-    skin: mergeStrict(skinParts),
-    bone: mergeStrict(boneParts),
-  };
-}
-
-/** Armored volcanic pelvis girdle seamlessly blending waist -> thighs + snug iliac bone hip-crests. */
-function buildPelvisGeometries(): {
-  skin: THREE.BufferGeometry;
-  bone: THREE.BufferGeometry;
-} {
-  const skinParts: THREE.BufferGeometry[] = [];
-  const boneParts: THREE.BufferGeometry[] = [];
-
-  skinParts.push(
-    sculptOrganicBlob({
-      scale: [0.46, 0.30, 0.34],
-      pos: [0, 0.0, 0.02],
-      segW: 14,
-      segH: 9,
-      noiseAmp: 0.08,
-      ridgeAmp: 0.05,
-      seed: 821,
-      topTaper: 0.82,
-      botTaper: 1.06,
-      uvBand: UV_BAND_LAVA_FLOW,
-    }),
-  );
-
-  // Diagonal snug pelvic bone-crest plates blending waist seamlessly into sculpted thighs
-  for (const side of [-1, 1] as const) {
-    boneParts.push(
-      sculptCurvedBoneBlade({
-        points: [
-          [side * 0.12, 0.12, -0.27],
-          [side * 0.36, 0.05, -0.12],
-          [side * 0.39, -0.06, 0.08],
-          [side * 0.22, 0.02, 0.28],
-        ],
-        radiusStart: 0.024,
-        radiusMid: 0.034,
-        radiusEnd: 0.022,
-        tubularSegs: 8,
-        radialSegs: 6,
-        bladeAspect: 1.35,
-        tipGlow: false,
-        baseColor: [0.88, 0.76, 0.62],
-        tipColor: [1.18, 1.10, 0.94],
-        seed: side < 0 ? 827 : 829,
-      }),
+    // Heavy steel mounting struts + hydraulic shock arms bolting shield onto pauldron
+    frame.push(
+      buildChamferBox(0.24, 0.12, 0.18, 0.014, { pos: [-0.30, 0.16, -0.18], tint: TINT_FRAME_MID }),
+      buildChamferBox(0.24, 0.12, 0.18, 0.014, { pos: [-0.30, 0.16, 0.18], tint: TINT_FRAME_MID }),
+      ...buildLouverBank(0.24, 0.18, 0.08, 3, [-0.18, 0.20, -0.38], [0, 0, 0.20], TINT_FRAME_MID),
+      ...buildLouverBank(0.24, 0.18, 0.08, 3, [-0.18, 0.20, 0.38], [0, 0, 0.20], TINT_FRAME_MID),
     );
-  }
-
-  return {
-    skin: mergeStrict(skinParts),
-    bone: mergeStrict(boneParts),
-  };
-}
-
-/**
- * Seamless articulated tail segment extending STRICTLY ALONG +Z (z = -0.04 overlap -> +segLen + 0.04)!
- * Segment 0..4: muscular lava-veined tapered tail body + smooth joint cap + armored bone keel/spine.
- * Segment 5 (tip): seamless socket flaring into a wicked curved razor-blade bone stinger!
- */
-function buildTailSegmentGeometries(
-  index: number,
-  segLen: number,
-  rStart: number,
-  rEnd: number,
-  isTip: boolean,
-): {
-  skin: THREE.BufferGeometry | null;
-  bone: THREE.BufferGeometry;
-} {
-  const skinParts: THREE.BufferGeometry[] = [];
-  const boneParts: THREE.BufferGeometry[] = [];
-
-  if (!isTip) {
-    // Joint ball cap at z = 0 so adjacent articulated segments blend seamlessly with ZERO gap at any bend angle!
-    skinParts.push(
-      sculptOrganicBlob({
-        scale: [rStart * 1.02, rStart * 0.98, rStart * 1.02],
-        pos: [0, 0, 0],
-        segW: 8,
-        segH: 6,
-        noiseAmp: 0.05,
-        seed: 841 + index * 7,
-        uvBand: UV_BAND_LAVA_FLOW,
-      }),
-    );
-
-    // Tapered lava-fissured tail segment extending along +Z:
-    // rot X = -Math.PI/2 maps (0, -L, 0) -> (0, 0, +L)!
-    skinParts.push(
-      sculptMuscleLimb({
-        length: segLen + 0.05,
-        rTop: rStart,
-        rMid: lerp(rStart, rEnd, 0.5) * 1.02,
-        rBot: rEnd,
-        radialSegs: 10,
-        heightSegs: 5,
-        striations: 3,
-        striationAmp: 0.06,
-        noiseAmp: 0.06,
-        rot: [-Math.PI * 0.5, 0, 0],
-        pos: [0, 0, -0.02],
-        seed: 851 + index * 13,
-        uvBand: UV_BAND_LAVA_FLOW,
-      }),
-    );
-
-    // Armored dorsal bone keel/spike + segmented bone collar ridge along each tail vertebra
-    boneParts.push(
-      sculptBoneSpike({
-        length: lerp(0.24, 0.14, index / 4),
-        baseR: rStart * 0.42,
-        tipR: 0.008,
-        bendZ: 0.05,
-        flattenX: 0.52,
-        radialSegs: 6,
-        heightSegs: 3,
-        pos: [0, rStart * 0.72, segLen * 0.46],
-        rot: [0.96, 0, 0],
-        tipGlow: true,
-        seed: 877 + index * 7,
-      }),
-    );
-    boneParts.push(
-      sculptCurvedBoneBlade({
-        points: [
-          [-rStart * 0.95, 0.0, segLen * 0.10],
-          [0, rStart * 0.96, segLen * 0.18],
-          [rStart * 0.95, 0.0, segLen * 0.10],
-        ],
-        radiusStart: rStart * 0.22,
-        radiusMid: rStart * 0.30,
-        radiusEnd: rStart * 0.22,
-        tubularSegs: 6,
-        radialSegs: 5,
-        bladeAspect: 1.25,
-        tipGlow: false,
-        baseColor: [0.88, 0.78, 0.64],
-        tipColor: [1.14, 1.06, 0.90],
-        seed: 887 + index * 5,
-      }),
+    vent.push(
+      buildChamferBox(0.20, 0.14, 0.05, 0.008, { pos: [-0.18, 0.20, -0.35], rot: [0, 0, 0.20], tint: TINT_CORE_HOT, band: UV_BAND_MECH }),
+      buildChamferBox(0.20, 0.14, 0.05, 0.008, { pos: [-0.18, 0.20, 0.35], rot: [0, 0, 0.20], tint: TINT_CORE_HOT, band: UV_BAND_MECH }),
     );
   } else {
-    // Seamless joint ball + tapered muscular base socket transitioning smoothly into the giant razor bone blade!
-    skinParts.push(
-      sculptOrganicBlob({
-        scale: [rStart * 1.02, rStart * 0.98, rStart * 1.02],
-        pos: [0, 0, 0],
-        segW: 8,
-        segH: 6,
-        noiseAmp: 0.05,
-        seed: 907,
-        uvBand: UV_BAND_LAVA_DENSE,
+    // RIGHT SHOULDER: Swept High-Clearance Blade-Vanguard Pauldron (tightly nested!)
+    armor.push(
+      buildArmoredFrustum(0.60, 0.76, 0.46, 0.62, 0.42, 0, 0.08, {
+        pos: [0.14, 0.16, 0],
+        rot: [0, 0, -0.24],
+        tint: TINT_ARMOR_MAIN,
       }),
-    );
-    skinParts.push(
-      sculptMuscleLimb({
-        length: segLen * 0.58,
-        rTop: rStart,
-        rMid: rStart * 0.90,
-        rBot: rEnd * 1.05,
-        radialSegs: 9,
-        heightSegs: 4,
-        striations: 2,
-        rot: [-Math.PI * 0.5, 0, 0], // STRICTLY along +Z!
-        pos: [0, 0, -0.015],
-        seed: 911,
-        uvBand: UV_BAND_LAVA_DENSE,
+      // Swept crimson-oxide upper vanguard ridge
+      buildChamferBox(0.46, 0.14, 0.58, 0.024, {
+        pos: [0.18, 0.37, 0],
+        rot: [0, 0, -0.30],
+        tint: TINT_ARMOR_CRIMSON,
       }),
-    );
-
-    // Wicked curved blade-like bone stinger (末端刃状骨刺 — rooted cleanly inside the socket at z = segLen * 0.40!)
-    boneParts.push(
-      sculptCurvedBoneBlade({
-        points: [
-          [0, 0.0, segLen * 0.38],
-          [0, 0.03, segLen * 0.85],
-          [0, 0.14, segLen * 1.38],
-          [0, 0.30, segLen * 1.82],
+      // Angled titanium outer shoulder winglet fairing (clear of high blade arc!)
+      buildSlopedPlate(
+        [
+          [-0.30, -0.26],
+          [0.30, -0.26],
+          [0.24, 0.26],
+          [-0.24, 0.26],
         ],
-        radiusStart: rStart * 0.96,
-        radiusMid: rStart * 1.48,
-        radiusEnd: 0.008,
-        midPos: 0.36,
-        tubularSegs: 11,
-        radialSegs: 7,
-        bladeAspect: 2.25,
-        tipGlow: true,
-        baseColor: [0.76, 0.44, 0.34],
-        tipColor: [1.30, 1.24, 1.02],
-        seed: 919,
+        0.14,
+        0.024,
+        {
+          pos: [0.42, 0.00, 0],
+          rot: [0, Math.PI * 0.5, -0.40],
+          tint: TINT_ARMOR_LIGHT,
+        },
+      ),
+      buildChamferBox(0.28, 0.10, 0.52, 0.012, {
+        pos: [0.40, 0.20, 0],
+        rot: [0, 0, -0.32],
+        tint: TINT_HAZARD,
+        band: UV_BAND_HAZARD,
+        uvScale: 0.9,
       }),
     );
-    // Lower reverse hook barb on the tail blade
-    boneParts.push(
-      sculptBoneSpike({
-        length: 0.18,
-        baseR: 0.032,
-        tipR: 0.006,
-        bendZ: -0.04,
-        flattenX: 0.48,
-        radialSegs: 5,
-        heightSegs: 3,
-        pos: [0, -0.02, segLen * 0.66],
-        rot: [Math.PI * 0.72, 0, 0],
-        tipGlow: true,
-        seed: 929,
-      }),
+    frame.push(
+      ...buildHydraulicPiston([0.04, 0.32, -0.22], [0.40, 0.12, -0.24], 0.042, 0.024, TINT_PISTON_BRASS),
+      ...buildHydraulicPiston([0.04, 0.32, 0.22], [0.40, 0.12, 0.24], 0.042, 0.024, TINT_PISTON_BRASS),
+      ...buildLouverBank(0.22, 0.16, 0.08, 3, [0.18, 0.18, -0.36], [0, 0, -0.24], TINT_FRAME_MID),
+      ...buildLouverBank(0.22, 0.16, 0.08, 3, [0.18, 0.18, 0.36], [0, 0, -0.24], TINT_FRAME_MID),
+    );
+    vent.push(
+      buildChamferBox(0.20, 0.13, 0.05, 0.008, { pos: [0.18, 0.18, -0.33], rot: [0, 0, -0.24], tint: TINT_CORE_HOT, band: UV_BAND_MECH }),
+      buildChamferBox(0.20, 0.13, 0.05, 0.008, { pos: [0.18, 0.18, 0.33], rot: [0, 0, -0.24], tint: TINT_CORE_HOT, band: UV_BAND_MECH }),
     );
   }
 
   return {
-    skin: skinParts.length > 0 ? mergeStrict(skinParts) : null,
-    bone: mergeStrict(boneParts),
+    armor: mergeStrict(armor),
+    frame: mergeStrict(frame),
+    vent: mergeStrict(vent),
   };
 }
 
-/** Muscular volcanic thigh (y = 0 down to knee y = -0.84) with seamless hip/knee blend & bone knee guard. */
-function buildThighGeometries(side: -1 | 1): {
-  skin: THREE.BufferGeometry;
-  bone: THREE.BufferGeometry;
+function buildUpperArmParts(side: -1 | 1): {
+  armor: THREE.BufferGeometry;
+  frame: THREE.BufferGeometry;
 } {
-  const skinParts: THREE.BufferGeometry[] = [];
-  const boneParts: THREE.BufferGeometry[] = [];
+  const armor: THREE.BufferGeometry[] = [];
+  const frame: THREE.BufferGeometry[] = [];
 
-  skinParts.push(
-    sculptMuscleLimb({
-      length: 0.92,
-      rTop: 0.24,
-      rMid: 0.22,
-      rBot: 0.16,
-      midPos: 0.42,
-      radialSegs: 12,
-      heightSegs: 8,
-      striations: 4,
-      bendX: side * 0.02,
-      bendZ: -0.05,
-      scaleZ: 1.08,
-      pos: [0, 0.05, 0],
-      seed: side < 0 ? 941 : 947,
-      uvBand: UV_BAND_LAVA_FLOW,
-      uScale: 1.1,
-    }),
-  );
-  // Smooth knee joint sphere eliminating any cylinder-to-cylinder seam!
-  skinParts.push(
-    sculptOrganicBlob({
-      scale: [0.16, 0.15, 0.17],
-      pos: [side * 0.02, -0.84, -0.06],
-      segW: 10,
-      segH: 7,
-      noiseAmp: 0.06,
-      seed: side < 0 ? 949 : 951,
-      uvBand: UV_BAND_LAVA_FLOW,
+  frame.push(
+    buildCylinder(0.145, 0.135, 0.78, 12, { pos: [side * 0.05, -0.39, 0], tint: TINT_FRAME_DARK }),
+    ...buildHydraulicPiston(
+      [side * 0.04, -0.06, -0.16],
+      [side * 0.08, -0.70, -0.14],
+      0.048,
+      0.028,
+      TINT_PISTON_CHROME,
+    ),
+    ...buildHydraulicPiston(
+      [side * 0.04, -0.08, 0.16],
+      [side * 0.08, -0.70, 0.14],
+      0.044,
+      0.026,
+      TINT_PISTON_BRASS,
+    ),
+    buildCylinder(0.17, 0.17, 0.36, 12, {
+      pos: [side * 0.08, -0.78, 0],
+      rot: [0, 0, Math.PI * 0.5],
+      tint: TINT_FRAME_MID,
     }),
   );
 
-  // Armored bone knee-guard crest + lateral thigh bone ridge
-  boneParts.push(
-    sculptBoneSpike({
-      length: 0.24,
-      baseR: 0.068,
-      tipR: 0.014,
-      bendZ: -0.04,
-      flattenX: 0.76,
-      radialSegs: 6,
-      heightSegs: 3,
-      pos: [side * 0.01, -0.78, -0.14],
-      rot: [-0.40, 0, 0],
-      tipGlow: false,
-      seed: side < 0 ? 953 : 967,
+  // Tapered octagonal upper-arm armor sleeve
+  armor.push(
+    buildArmoredFrustum(0.32, 0.34, 0.38, 0.38, 0.48, 0, 0, {
+      pos: [side * 0.08, -0.38, 0],
+      tint: TINT_ARMOR_MAIN,
+    }),
+    buildChamferBox(0.10, 0.42, 0.24, 0.018, {
+      pos: [side * 0.25, -0.38, 0],
+      tint: TINT_ARMOR_LIGHT,
     }),
   );
-  boneParts.push(
-    sculptCurvedBoneBlade({
-      points: [
-        [side * 0.21, -0.10, 0.02],
-        [side * 0.22, -0.40, -0.02],
-        [side * 0.14, -0.72, -0.06],
+
+  return {
+    armor: mergeStrict(armor),
+    frame: mergeStrict(frame),
+  };
+}
+
+/** Left Forearm: Heavy Hydraulic Siege Buckler-Gauntlet + Mechanical Block Crusher Fist. */
+function buildLeftForearmParts(): {
+  armor: THREE.BufferGeometry;
+  frame: THREE.BufferGeometry;
+  vent: THREE.BufferGeometry;
+} {
+  const armor: THREE.BufferGeometry[] = [];
+  const frame: THREE.BufferGeometry[] = [];
+  const vent: THREE.BufferGeometry[] = [];
+
+  frame.push(
+    buildCylinder(0.13, 0.15, 0.72, 12, { pos: [0, -0.36, 0], tint: TINT_FRAME_DARK }),
+    ...buildHydraulicPiston([-0.14, -0.06, -0.12], [-0.16, -0.68, -0.14], 0.046, 0.026, TINT_PISTON_CHROME),
+    ...buildHydraulicPiston([0.10, -0.06, 0.12], [0.12, -0.68, 0.12], 0.042, 0.024, TINT_PISTON_BRASS),
+    buildCylinder(0.15, 0.15, 0.12, 12, { pos: [0, -0.76, 0], tint: TINT_FRAME_MID }),
+  );
+
+  armor.push(
+    buildChamferBox(0.34, 0.24, 0.30, 0.024, { pos: [-0.02, -0.08, 0.14], rot: [0.22, 0, 0], tint: TINT_ARMOR_DARK }),
+    buildArmoredFrustum(0.42, 0.44, 0.36, 0.38, 0.66, 0, 0, { pos: [-0.02, -0.40, 0], tint: TINT_ARMOR_MAIN }),
+    // Heavy outer forearm buckler ram-shield
+    buildSlopedPlate(
+      [
+        [-0.24, -0.44],
+        [0.24, -0.36],
+        [0.24, 0.34],
+        [-0.22, 0.42],
       ],
-      radiusStart: 0.026,
-      radiusMid: 0.032,
-      radiusEnd: 0.018,
-      tubularSegs: 7,
-      radialSegs: 5,
-      bladeAspect: 1.38,
-      tipGlow: false,
-      baseColor: [0.86, 0.74, 0.60],
-      tipColor: [1.16, 1.08, 0.94],
-      seed: side < 0 ? 971 : 977,
+      0.12,
+      0.022,
+      {
+        pos: [-0.24, -0.42, -0.04],
+        rot: [0, Math.PI * 0.5, 0],
+        tint: TINT_ARMOR_LIGHT,
+      },
+    ),
+    buildChamferBox(0.08, 0.42, 0.18, 0.014, { pos: [-0.30, -0.42, -0.04], tint: TINT_ARMOR_CRIMSON }),
+    buildChamferBox(0.42, 0.11, 0.46, 0.014, {
+      pos: [-0.02, -0.66, 0],
+      tint: TINT_HAZARD,
+      band: UV_BAND_HAZARD,
+      uvScale: 0.9,
     }),
+  );
+
+  vent.push(
+    buildChamferBox(0.06, 0.26, 0.16, 0.008, {
+      pos: [-0.19, -0.34, 0.14],
+      tint: TINT_CORE_HOT,
+      band: UV_BAND_MECH,
+    }),
+  );
+
+  // Heavy Mechanical Industrial Crusher Fist (blocky metal knuckle ram + articulated finger blocks)
+  armor.push(
+    buildChamferBox(0.28, 0.22, 0.34, 0.022, { pos: [0, -0.88, -0.02], tint: TINT_ARMOR_MAIN }),
+    buildChamferBox(0.32, 0.10, 0.38, 0.016, { pos: [-0.02, -0.96, -0.04], tint: TINT_ARMOR_LIGHT }),
+  );
+  for (let i = 0; i < 3; i++) {
+    const fz = -0.12 + i * 0.11;
+    frame.push(
+      buildChamferBox(0.09, 0.16, 0.085, 0.012, { pos: [-0.09, -1.04, fz], rot: [0, 0, 0.22], tint: TINT_FRAME_MID }),
+      buildChamferBox(0.085, 0.14, 0.080, 0.010, { pos: [-0.02, -1.14, fz], rot: [0, 0, 0.85], tint: TINT_FRAME_DARK }),
+    );
+  }
+  frame.push(
+    buildChamferBox(0.11, 0.15, 0.10, 0.014, { pos: [0.11, -0.96, -0.16], rot: [0.30, 0, -0.45], tint: TINT_FRAME_MID }),
+    buildChamferBox(0.09, 0.12, 0.09, 0.010, { pos: [0.06, -1.06, -0.20], rot: [0.45, 0, -0.95], tint: TINT_FRAME_DARK }),
   );
 
   return {
-    skin: mergeStrict(skinParts),
-    bone: mergeStrict(boneParts),
+    armor: mergeStrict(armor),
+    frame: mergeStrict(frame),
+    vent: mergeStrict(vent),
   };
 }
 
-/** Athletic muscular calf/shin (y = 0 down to ankle y = -0.86) + bony shin greave. */
-function buildShinGeometries(side: -1 | 1): {
-  skin: THREE.BufferGeometry;
-  bone: THREE.BufferGeometry;
+/** Right Forearm: Sleek Twin-Rail Plasma Emitter Gauntlet + Razor-Edged 1.50m Thermal Energy Blade! */
+function buildRightForearmAndBladeParts(): {
+  armor: THREE.BufferGeometry;
+  frame: THREE.BufferGeometry;
+  vent: THREE.BufferGeometry;
+  bladeSpine: THREE.BufferGeometry;
+  bladePlasma: THREE.BufferGeometry;
 } {
-  const skinParts: THREE.BufferGeometry[] = [];
-  const boneParts: THREE.BufferGeometry[] = [];
+  const armor: THREE.BufferGeometry[] = [];
+  const frame: THREE.BufferGeometry[] = [];
+  const vent: THREE.BufferGeometry[] = [];
 
-  skinParts.push(
-    sculptMuscleLimb({
-      length: 0.92,
-      rTop: 0.16,
-      rMid: 0.175,
-      rBot: 0.115,
-      midPos: 0.36,
-      radialSegs: 12,
-      heightSegs: 8,
-      striations: 3,
-      bendZ: 0.05,
-      scaleZ: 1.12,
-      pos: [0, 0.04, 0],
-      seed: side < 0 ? 983 : 991,
-      uvBand: UV_BAND_LAVA_FLOW,
-    }),
-  );
-
-  // Sharp anterior bone shin greave ridge
-  boneParts.push(
-    sculptCurvedBoneBlade({
-      points: [
-        [0, -0.08, -0.14],
-        [0, -0.44, -0.15],
-        [0, -0.80, -0.09],
+  frame.push(
+    buildCylinder(0.14, 0.16, 0.78, 12, { pos: [0, -0.39, 0], tint: TINT_FRAME_DARK }),
+    ...buildHydraulicPiston([0.16, -0.06, 0.12], [0.18, -0.74, 0.12], 0.048, 0.028, TINT_PISTON_BRASS),
+    ...buildHydraulicPiston([-0.12, -0.08, -0.10], [-0.14, -0.72, -0.12], 0.044, 0.026, TINT_PISTON_CHROME),
+    buildArmoredConduit(
+      [
+        [0.14, -0.04, 0.16],
+        [0.24, -0.26, 0.18],
+        [0.22, -0.52, 0.02],
+        [0.16, -0.72, -0.16],
       ],
-      radiusStart: 0.040,
-      radiusMid: 0.038,
-      radiusEnd: 0.022,
-      tubularSegs: 7,
-      radialSegs: 6,
-      bladeAspect: 1.55,
-      tipGlow: false,
-      baseColor: [0.88, 0.76, 0.62],
-      tipColor: [1.18, 1.10, 0.94],
-      seed: side < 0 ? 997 : 1009,
+      0.038,
+      10,
+      7,
+      TINT_FRAME_DARK,
+    ),
+  );
+
+  armor.push(
+    buildChamferBox(0.36, 0.28, 0.34, 0.026, { pos: [0.02, -0.08, 0.14], rot: [0.20, 0, 0], tint: TINT_ARMOR_DARK }),
+    buildArmoredFrustum(0.44, 0.48, 0.38, 0.40, 0.74, -0.02, 0, { pos: [0.02, -0.42, -0.02], tint: TINT_ARMOR_MAIN }),
+    // Sleek crimson-oxide + titanium emitter cowling plates
+    buildChamferBox(0.13, 0.64, 0.36, 0.022, { pos: [0.22, -0.44, -0.04], tint: TINT_ARMOR_CRIMSON }),
+    buildChamferBox(0.28, 0.48, 0.10, 0.018, { pos: [0.02, -0.36, -0.25], tint: TINT_ARMOR_LIGHT }),
+    buildChamferBox(0.44, 0.11, 0.50, 0.014, {
+      pos: [0.02, -0.73, -0.04],
+      tint: TINT_HAZARD,
+      band: UV_BAND_HAZARD,
+      uvScale: 0.9,
+    }),
+  );
+
+  frame.push(
+    ...buildLouverBank(0.08, 0.34, 0.18, 5, [0.24, -0.42, 0.12], [0, 0, 0], TINT_FRAME_MID),
+  );
+  vent.push(
+    buildChamferBox(0.06, 0.34, 0.16, 0.008, { pos: [0.20, -0.42, 0.12], tint: TINT_CORE_HOT, band: UV_BAND_MECH }),
+    buildChamferBox(0.20, 0.14, 0.06, 0.008, { pos: [0.02, -0.58, -0.24], tint: TINT_CORE_HOT, band: UV_BAND_ENERGY }),
+  );
+
+  // --- Separate `rightBlade` Assembly: Sleek Armored Emitter Hilt + 1.54m Razor Thermal Cleaver ---
+  const spineParts: THREE.BufferGeometry[] = [
+    // Tapered emitter muzzle housing clamping the plasma blade root
+    buildChamferBox(0.24, 0.24, 0.30, 0.022, { pos: [0, -0.04, 0.02], tint: TINT_ARMOR_DARK }),
+    // Forward & rear angular emitter focus prongs
+    buildChamferBox(0.14, 0.30, 0.09, 0.014, { pos: [0, -0.22, 0.10], tint: TINT_ARMOR_LIGHT }),
+    buildChamferBox(0.12, 0.20, 0.08, 0.012, { pos: [0, -0.16, -0.12], tint: TINT_ARMOR_CRIMSON }),
+    // Sleek notched dark-gunmetal mechanical blade spine extending cleanly down back edge
+    buildChamferBox(0.056, 1.24, 0.075, 0.010, { pos: [0, -0.66, 0.06], tint: TINT_ARMOR_MAIN }),
+    // 4 sharp cooling fin teeth along mechanical blade spine
+    buildChamferBox(0.082, 0.10, 0.05, 0.008, { pos: [0, -0.40, 0.10], tint: TINT_ARMOR_LIGHT }),
+    buildChamferBox(0.082, 0.10, 0.05, 0.008, { pos: [0, -0.64, 0.10], tint: TINT_ARMOR_LIGHT }),
+    buildChamferBox(0.078, 0.10, 0.05, 0.008, { pos: [0, -0.88, 0.10], tint: TINT_ARMOR_LIGHT }),
+    buildChamferBox(0.070, 0.09, 0.04, 0.007, { pos: [0, -1.10, 0.09], tint: TINT_ARMOR_LIGHT }),
+    // Twin slim machined brass plasma containment rails flanking blade spine
+    buildCylinder(0.013, 0.010, 1.02, 8, { pos: [0.036, -0.58, 0.02], tint: TINT_PISTON_BRASS }),
+    buildCylinder(0.013, 0.010, 1.02, 8, { pos: [-0.036, -0.58, 0.02], tint: TINT_PISTON_BRASS }),
+  ];
+
+  // Sleek, razor-chisel 1.54m double-beveled thermal plasma cleaver-sword!
+  const bladePlasma = buildPlasmaBladeGeometry(1.54, 0.21, 0.030);
+
+  return {
+    armor: mergeStrict(armor),
+    frame: mergeStrict(frame),
+    vent: mergeStrict(vent),
+    bladeSpine: mergeStrict(spineParts),
+    bladePlasma,
+  };
+}
+
+function buildPelvisParts(): {
+  armor: THREE.BufferGeometry;
+  frame: THREE.BufferGeometry;
+} {
+  const armor: THREE.BufferGeometry[] = [];
+  const frame: THREE.BufferGeometry[] = [];
+
+  frame.push(
+    buildCylinder(0.17, 0.17, 1.12, 12, {
+      pos: [0, -0.04, 0],
+      rot: [0, 0, Math.PI * 0.5],
+      tint: TINT_FRAME_DARK,
+    }),
+    buildChamferBox(0.72, 0.28, 0.52, 0.024, { pos: [0, 0.04, 0], tint: TINT_FRAME_DARK }),
+  );
+
+  // Sloped angular armored groin prow & crimson command crest + mechanical bustle
+  armor.push(
+    buildArmoredFrustum(0.32, 0.38, 0.44, 0.48, 0.44, -0.06, 0, { pos: [0, -0.04, -0.14], tint: TINT_ARMOR_MAIN }),
+    buildChamferBox(0.28, 0.26, 0.14, 0.022, { pos: [0, 0.02, -0.36], rot: [0.18, 0, 0], tint: TINT_ARMOR_LIGHT }),
+    buildChamferBox(0.22, 0.08, 0.10, 0.010, {
+      pos: [0, -0.16, -0.35],
+      rot: [0.18, 0, 0],
+      tint: TINT_HAZARD,
+      band: UV_BAND_HAZARD,
+      uvScale: 0.7,
+    }),
+    // Rear heavy armored bustle bumper (pure hard-surface mech, zero tail)
+    buildArmoredFrustum(0.46, 0.34, 0.58, 0.38, 0.36, 0.06, 0, { pos: [0, 0.02, 0.26], tint: TINT_ARMOR_DARK }),
+    buildChamferBox(0.40, 0.14, 0.14, 0.020, { pos: [0, 0.10, 0.44], rot: [-0.16, 0, 0], tint: TINT_ARMOR_LIGHT }),
+  );
+
+  // Swept angular armored waist skirts angled clear of forward thigh articulation (zero clipping!)
+  for (const s of [-1, 1] as const) {
+    armor.push(
+      buildSlopedPlate(
+        [
+          [-0.17, -0.18],
+          [0.17, -0.14],
+          [0.16, 0.18],
+          [-0.16, 0.18],
+        ],
+        0.10,
+        0.018,
+        {
+          pos: [s * 0.42, -0.01, -0.39],
+          rot: [-0.36, s * 0.20, s * -0.12],
+          tint: TINT_ARMOR_MAIN,
+        },
+      ),
+      buildChamferBox(0.14, 0.40, 0.52, 0.022, {
+        pos: [s * 0.64, -0.01, 0.02],
+        rot: [0, 0, s * -0.22],
+        tint: TINT_ARMOR_TRIM,
+      }),
+      buildChamferBox(0.32, 0.36, 0.11, 0.020, {
+        pos: [s * 0.38, -0.04, 0.37],
+        rot: [0.24, s * -0.14, s * -0.08],
+        tint: TINT_ARMOR_MAIN,
+      }),
+    );
+  }
+
+  return {
+    armor: mergeStrict(armor),
+    frame: mergeStrict(frame),
+  };
+}
+
+function buildThighParts(side: -1 | 1): {
+  armor: THREE.BufferGeometry;
+  frame: THREE.BufferGeometry;
+} {
+  // Mounted at hips (side * 0.47, -0.04, 0) -> world y = 1.92 down to knee at local y = -0.88 (world y = 1.04)
+  const armor: THREE.BufferGeometry[] = [];
+  const frame: THREE.BufferGeometry[] = [];
+
+  frame.push(
+    buildCylinder(0.16, 0.15, 0.86, 12, { pos: [0, -0.44, 0], tint: TINT_FRAME_DARK }),
+    ...buildHydraulicPiston([0, -0.06, -0.22], [0, -0.80, -0.20], 0.054, 0.030, TINT_PISTON_CHROME),
+    ...buildHydraulicPiston([0, -0.08, 0.22], [0, -0.80, 0.20], 0.052, 0.030, TINT_PISTON_BRASS),
+    // Prominent rotary knee hub drum
+    buildCylinder(0.19, 0.19, 0.46, 14, {
+      pos: [0, -THIGH_LEN, 0],
+      rot: [0, 0, Math.PI * 0.5],
+      tint: TINT_FRAME_MID,
+    }),
+    buildCylinder(0.11, 0.12, 0.52, 10, {
+      pos: [0, -THIGH_LEN, 0],
+      rot: [0, 0, Math.PI * 0.5],
+      tint: TINT_PISTON_BRASS,
+    }),
+  );
+
+  // Sculpted tapered octagonal armored thigh housing (thick at hip, tapering sleekly toward knee!)
+  armor.push(
+    buildArmoredFrustum(0.36, 0.38, 0.48, 0.50, 0.72, -0.05, side * 0.04, {
+      pos: [0, -0.42, -0.02],
+      tint: TINT_ARMOR_MAIN,
+    }),
+    // High-contrast cold titanium sloped front thigh glacis
+    buildChamferBox(0.30, 0.54, 0.14, 0.024, {
+      pos: [0, -0.42, -0.25],
+      rot: [-0.10, 0, 0],
+      tint: TINT_ARMOR_LIGHT,
+    }),
+    // Outer armored thigh shield plate with crimson trim stripe
+    buildChamferBox(0.14, 0.60, 0.42, 0.024, {
+      pos: [side * 0.24, -0.44, 0.02],
+      rot: [0, 0, side * -0.10],
+      tint: TINT_ARMOR_TRIM,
+    }),
+    buildChamferBox(0.08, 0.32, 0.22, 0.014, {
+      pos: [side * 0.29, -0.34, 0.02],
+      rot: [0, 0, side * -0.10],
+      tint: TINT_ARMOR_CRIMSON,
+    }),
+    buildChamferBox(0.34, 0.56, 0.14, 0.022, {
+      pos: [0, -0.42, 0.22],
+      tint: TINT_ARMOR_DARK,
     }),
   );
 
   return {
-    skin: mergeStrict(skinParts),
-    bone: mergeStrict(boneParts),
+    armor: mergeStrict(armor),
+    frame: mergeStrict(frame),
   };
 }
 
-/** Broad armored clawed foot flush at local y = -0.22 (world y = 0.000). */
-function buildFootGeometries(side: -1 | 1): {
-  skin: THREE.BufferGeometry;
-  bone: THREE.BufferGeometry;
+function buildShinParts(side: -1 | 1): {
+  armor: THREE.BufferGeometry;
+  frame: THREE.BufferGeometry;
+  vent: THREE.BufferGeometry;
 } {
-  const skinParts: THREE.BufferGeometry[] = [];
-  const boneParts: THREE.BufferGeometry[] = [];
-  const SOLE_Y = -0.22;
+  // Mounted at thigh (0, -0.88, 0) -> world y = 1.04 down to ankle at local y = -0.80 (world y = 0.24)
+  const armor: THREE.BufferGeometry[] = [];
+  const frame: THREE.BufferGeometry[] = [];
+  const vent: THREE.BufferGeometry[] = [];
 
-  const footBase = sculptOrganicBlob({
-    scale: [0.18, 0.12, 0.30],
-    pos: [0, -0.12, -0.11],
-    segW: 10,
-    segH: 7,
-    noiseAmp: 0.06,
-    seed: side < 0 ? 1013 : 1019,
-    uvBand: UV_BAND_LAVA_FLOW,
-  });
-  const fpos = footBase.getAttribute('position');
-  for (let i = 0; i < fpos.count; i++) {
-    if (fpos.getY(i) < SOLE_Y) fpos.setY(i, SOLE_Y);
-  }
-  footBase.computeVertexNormals();
-  skinParts.push(footBase);
+  frame.push(
+    buildCylinder(0.15, 0.14, 0.78, 12, { pos: [0, -0.40, 0.02], tint: TINT_FRAME_DARK }),
+    ...buildHydraulicPiston([side * 0.24, -0.04, 0.04], [side * 0.27, -0.74, 0.02], 0.050, 0.028, TINT_PISTON_CHROME),
+    ...buildHydraulicPiston([0, -0.10, 0.28], [0, -0.76, 0.22], 0.058, 0.034, TINT_PISTON_BRASS),
+    buildCylinder(0.155, 0.155, 0.44, 12, {
+      pos: [0, -SHIN_LEN, 0],
+      rot: [0, 0, Math.PI * 0.5],
+      tint: TINT_FRAME_MID,
+    }),
+  );
 
-  const toeXs = [-0.11, 0, 0.11];
-  for (let i = 0; i < toeXs.length; i++) {
-    const tx = toeXs[i];
-    const claw = sculptBoneSpike({
-      length: 0.16,
-      baseR: 0.036,
-      tipR: 0.007,
-      bendZ: -0.015,
-      pos: [tx, -0.16, -0.35 - (i === 1 ? 0.03 : 0)],
-      rot: [-Math.PI * 0.52, -tx * 0.8, 0],
-      radialSegs: 5,
-      heightSegs: 3,
-      tipGlow: false,
-      seed: 1031 + i * 7 + (side > 0 ? 3 : 0),
-    });
-    const cpos = claw.getAttribute('position');
-    for (let k = 0; k < cpos.count; k++) {
-      if (cpos.getY(k) < SOLE_Y) cpos.setY(k, SOLE_Y);
-    }
-    claw.computeVertexNormals();
-    boneParts.push(claw);
-  }
+  // Aggressive protruding double-beveled Heavy Knee-Breaker Prow Shield (cold titanium + crimson boss!)
+  armor.push(
+    buildSlopedPlate(
+      [
+        [-0.20, -0.20],
+        [0.20, -0.20],
+        [0.26, 0.08],
+        [0.14, 0.28],
+        [-0.14, 0.28],
+        [-0.26, 0.08],
+      ],
+      0.16,
+      0.026,
+      {
+        pos: [0, 0.04, -0.28],
+        rot: [0.16, 0, 0],
+        tint: TINT_ARMOR_LIGHT,
+      },
+    ),
+    buildChamferBox(0.22, 0.16, 0.10, 0.016, { pos: [0, 0.06, -0.36], rot: [0.16, 0, 0], tint: TINT_ARMOR_CRIMSON }),
+  );
 
-  const heel = sculptBoneSpike({
-    length: 0.15,
-    baseR: 0.036,
-    tipR: 0.007,
-    bendZ: 0.02,
-    pos: [0, -0.15, 0.14],
-    rot: [Math.PI * 0.54, 0, 0],
-    radialSegs: 5,
-    heightSegs: 3,
-    tipGlow: false,
-    seed: side < 0 ? 1051 : 1061,
-  });
-  const hpos = heel.getAttribute('position');
-  for (let k = 0; k < hpos.count; k++) {
-    if (hpos.getY(k) < SOLE_Y) hpos.setY(k, SOLE_Y);
-  }
-  heel.computeVertexNormals();
-  boneParts.push(heel);
+  // Iconic Bell-Flared Armored Heavy Siege Greave (narrow at knee, flaring dramatically wide over ankle!)
+  armor.push(
+    buildArmoredFrustum(0.54, 0.54, 0.36, 0.38, 0.66, 0.06, side * -0.04, {
+      pos: [0, -0.45, -0.03],
+      tint: TINT_ARMOR_MAIN,
+    }),
+    // Sloped forward titanium shin glacis apron
+    buildSlopedPlate(
+      [
+        [-0.22, -0.28],
+        [0.22, -0.28],
+        [0.15, 0.28],
+        [-0.15, 0.28],
+      ],
+      0.14,
+      0.024,
+      {
+        pos: [0, -0.44, -0.26],
+        rot: [0.14, 0, 0],
+        tint: TINT_ARMOR_LIGHT,
+      },
+    ),
+    // Weathered hazard band across flared ankle cuff
+    buildChamferBox(0.52, 0.10, 0.52, 0.014, {
+      pos: [0, -0.68, -0.04],
+      tint: TINT_HAZARD,
+      band: UV_BAND_HAZARD,
+      uvScale: 1.0,
+    }),
+    // Angled outer calf thruster housing
+    buildChamferBox(0.14, 0.46, 0.38, 0.022, {
+      pos: [side * 0.28, -0.42, 0.10],
+      rot: [0, 0, side * -0.14],
+      tint: TINT_ARMOR_TRIM,
+    }),
+    // Heavy rear calf armored bumper shroud
+    buildChamferBox(0.38, 0.44, 0.16, 0.022, {
+      pos: [0, -0.38, 0.28],
+      rot: [-0.14, 0, 0],
+      tint: TINT_ARMOR_DARK,
+    }),
+  );
+
+  // Rear calf thermal exhaust vent (subtle in P1, glows bright orange in P2!)
+  frame.push(
+    ...buildLouverBank(0.24, 0.22, 0.07, 4, [0, -0.36, 0.36], [-0.14, 0, 0], TINT_FRAME_MID),
+  );
+  vent.push(
+    buildChamferBox(0.20, 0.20, 0.05, 0.008, {
+      pos: [0, -0.36, 0.34],
+      rot: [-0.14, 0, 0],
+      tint: TINT_CORE_HOT,
+      band: UV_BAND_MECH,
+    }),
+  );
 
   return {
-    skin: mergeStrict(skinParts),
-    bone: mergeStrict(boneParts),
+    armor: mergeStrict(armor),
+    frame: mergeStrict(frame),
+    vent: mergeStrict(vent),
+  };
+}
+
+/** Wide Grounded 3-Point Heavy Armored Mech Boot strictly flush at local y = FOOT_SOLE_Y (-0.24 -> world y = 0.000). */
+function buildFootParts(side: -1 | 1): {
+  armor: THREE.BufferGeometry;
+  frame: THREE.BufferGeometry;
+} {
+  const armor: THREE.BufferGeometry[] = [];
+  const frame: THREE.BufferGeometry[] = [];
+
+  frame.push(
+    buildChamferBox(0.54, 0.08, 0.78, 0.012, { pos: [0, FOOT_SOLE_Y + 0.04, -0.08], tint: TINT_FRAME_DARK }),
+    ...buildHydraulicPiston([-0.15, 0.02, -0.14], [-0.17, -0.14, -0.34], 0.038, 0.022, TINT_PISTON_CHROME),
+    ...buildHydraulicPiston([0.15, 0.02, -0.14], [0.17, -0.14, -0.34], 0.038, 0.022, TINT_PISTON_CHROME),
+    ...buildHydraulicPiston([0, 0.02, 0.16], [0, -0.14, 0.28], 0.042, 0.024, TINT_PISTON_BRASS),
+  );
+
+  armor.push(
+    buildChamferBox(0.48, 0.14, 0.46, 0.022, { pos: [0, FOOT_SOLE_Y + 0.14, -0.06], rot: [0.14, 0, 0], tint: TINT_ARMOR_MAIN }),
+    // Twin wide armored mechanical front toe-clamps (strictly flush at y = -0.24!)
+    buildChamferBox(0.24, 0.13, 0.38, 0.020, { pos: [-0.15, FOOT_SOLE_Y + 0.065, -0.34], tint: TINT_ARMOR_LIGHT }),
+    buildChamferBox(0.24, 0.13, 0.38, 0.020, { pos: [0.15, FOOT_SOLE_Y + 0.065, -0.34], tint: TINT_ARMOR_LIGHT }),
+    // Heavy rear armored heel anchor spur (strictly flush at y = -0.24!)
+    buildChamferBox(0.40, 0.14, 0.26, 0.020, { pos: [0, FOOT_SOLE_Y + 0.07, 0.26], tint: TINT_ARMOR_DARK }),
+    // Outer ankle armored fender guard
+    buildChamferBox(0.11, 0.18, 0.36, 0.016, { pos: [side * 0.27, FOOT_SOLE_Y + 0.16, -0.04], tint: TINT_ARMOR_TRIM }),
+  );
+
+  return {
+    armor: mergeStrict(armor),
+    frame: mergeStrict(frame),
   };
 }
 
 // ============================================================================
-// Kinematics & Phase 2 Molten Heating Constants
+// Joint Pose Table & Emissive Palette Constants
 // ============================================================================
-
-const BASE_HIP_Y = 1.92; // thigh (-0.84) + shin (-0.86) + foot sole (-0.22) = 0.000!
-const DEG2RAD = Math.PI / 180;
-const ATTACK_DURATION = 0.18;
-const RECOVER_DURATION = 0.80;
-const TAIL_SEG_COUNT = 6;
-
-const LAVA_EMISSIVE_P1 = new THREE.Color('#DE3608');
-const LAVA_EMISSIVE_P2 = new THREE.Color('#F26C18');
-const CORE_EMISSIVE_P1 = new THREE.Color('#E84E0E');
-const CORE_EMISSIVE_P2 = new THREE.Color('#FA8622');
-const BONE_TIP_EMISSIVE = new THREE.Color('#E66010');
 
 interface JointPose {
   torso: Vec3Tuple;
   head: Vec3Tuple;
+  leftShoulder: Vec3Tuple;
+  rightShoulder: Vec3Tuple;
   leftArm: Vec3Tuple;
   elbowL: Vec3Tuple;
-  handL: Vec3Tuple;
   rightArm: Vec3Tuple;
   elbowR: Vec3Tuple;
-  handR: Vec3Tuple;
   hips: Vec3Tuple;
   thighL: Vec3Tuple;
   shinL: Vec3Tuple;
@@ -2278,12 +1962,12 @@ function makeNeutralPose(): JointPose {
   return {
     torso: [0, 0, 0],
     head: [0, 0, 0],
+    leftShoulder: [0, 0, 0],
+    rightShoulder: [0, 0, 0],
     leftArm: [0, 0, 0],
     elbowL: [0, 0, 0],
-    handL: [0, 0, 0],
     rightArm: [0, 0, 0],
     elbowR: [0, 0, 0],
-    handR: [0, 0, 0],
     hips: [0, 0, 0],
     thighL: [0, 0, 0],
     shinL: [0, 0, 0],
@@ -2294,16 +1978,22 @@ function makeNeutralPose(): JointPose {
   };
 }
 
-// Graceful organic S-curve sweeping backward & downward along +Z, then curling up at the bladed tip
-// (positive X rotates +Z downward; negative X curls +Z upward!)
-const TAIL_BASE_PITCH = [0.22, 0.34, 0.34, 0.14, -0.34, -0.44];
+// Cohesive industrial thermal-orange / molten-amber emissive hierarchy
+const SEAM_EMISSIVE_P1 = new THREE.Color('#CC4610');
+const SEAM_EMISSIVE_P2 = new THREE.Color('#FF7C1C');
+const CORE_EMISSIVE_P1 = new THREE.Color('#FF5212');
+const CORE_EMISSIVE_P2 = new THREE.Color('#FF9B2E');
+const EYE_EMISSIVE_P1 = new THREE.Color('#FF280C');
+const EYE_EMISSIVE_P2 = new THREE.Color('#FF6A1C');
+const BLADE_EMISSIVE_P1 = new THREE.Color('#FF6016');
+const BLADE_EMISSIVE_P2 = new THREE.Color('#FFB842');
 
 // ============================================================================
 // Public Factory: createBossModel()
 // ============================================================================
 
 export function createBossModel(): BossModel {
-  const atlas = createTerminatorAtlas();
+  const atlas = createMechAtlas();
   const ownedGeometries: THREE.BufferGeometry[] = [];
   const ownedMaterials: THREE.Material[] = [];
 
@@ -2316,76 +2006,93 @@ export function createBossModel(): BossModel {
     return m;
   };
 
-  // --- Strictly 4 PBR Materials (<= 6), sharing the single procedural atlas ---
-  // 1. Dark charred obsidian-crimson lava-cracked skin (emissiveMap illuminates organic magma veins only!)
-  const skinMat = trackMat(
+  // --- Strictly 5 PBR Materials (<= 6), sharing the single procedural 512x512 mech atlas ---
+
+  // 1. Primary Forged Rolled-Steel Military Armor (gunmetal / titanium / crimson / hazard via vertexColors)
+  //    emissiveMap illuminates outer plate seam bleed ONLY during Phase 2 overload — never flashes albedo!
+  const armorMat = trackMat(
     new THREE.MeshStandardMaterial({
-      color: new THREE.Color('#BDA6A0'),
+      color: new THREE.Color('#CFD6DF'),
       map: atlas.albedoMap,
-      emissive: LAVA_EMISSIVE_P1.clone(),
-      emissiveMap: atlas.emissiveMap,
-      emissiveIntensity: 0.78,
       normalMap: atlas.normalMap,
-      normalScale: new THREE.Vector2(1.15, 1.15),
-      roughness: 0.84,
-      metalness: 0.06,
+      normalScale: new THREE.Vector2(0.85, 0.85),
+      emissive: SEAM_EMISSIVE_P1.clone(),
+      emissiveMap: atlas.emissiveMap,
+      emissiveIntensity: 0.03,
+      metalness: 0.72,
+      roughness: 0.36,
       vertexColors: true,
     }),
   );
 
-  // 2. Exposed weathered smoky-ivory bone (ribs, dorsal spikes, horns, forearm spikes, claws, tail blade)
-  //    Clearly brighter than dark lava skin without blowing out under Saltline exposure 1.45;
-  //    Phase 2 (hpPct <= 0.35) heats bone spike/claw/blade tips!
-  const boneMat = trackMat(
+  // 2. Exposed Hydraulic Skeleton Frame & Gleaming Chrome/Brass Piston Rods
+  const frameMat = trackMat(
     new THREE.MeshStandardMaterial({
-      color: new THREE.Color('#C8BCA8'),
+      color: new THREE.Color('#C8D0DA'),
       map: atlas.albedoMap,
-      emissive: BONE_TIP_EMISSIVE.clone(),
-      emissiveMap: atlas.emissiveMap,
-      emissiveIntensity: 0.06,
       normalMap: atlas.normalMap,
-      normalScale: new THREE.Vector2(0.95, 0.95),
-      roughness: 0.74,
-      metalness: 0.04,
+      normalScale: new THREE.Vector2(0.80, 0.80),
+      metalness: 0.88,
+      roughness: 0.24,
       vertexColors: true,
     }),
   );
 
-  // 3. Exposed molten chest & dorsal core (purely self-emissive, deep cracked magma furnace, zero projectiles)
+  // 3. Recessed Reactor Core & 3D Cooling Heat-Sink Vents (self-emissive only, zero projectiles)
   const coreMat = trackMat(
     new THREE.MeshStandardMaterial({
-      color: new THREE.Color('#2B0904'),
+      color: new THREE.Color('#280E05'),
       map: atlas.albedoMap,
       emissive: CORE_EMISSIVE_P1.clone(),
       emissiveMap: atlas.emissiveMap,
-      emissiveIntensity: 1.15,
+      emissiveIntensity: 1.38,
       normalMap: atlas.normalMap,
-      normalScale: new THREE.Vector2(1.15, 1.15),
-      roughness: 0.48,
-      metalness: 0.05,
+      normalScale: new THREE.Vector2(0.75, 0.75),
+      metalness: 0.25,
+      roughness: 0.40,
+      vertexColors: true,
     }),
   );
 
-  // 4. Two fierce glowing orange-red eyes & narrow molten visor slit
+  // 4. Recessed Cyclops Mono-Eye Optical Sensor Lens
   const eyeMat = trackMat(
     new THREE.MeshStandardMaterial({
-      color: new THREE.Color('#2E0602'),
-      emissive: new THREE.Color('#FF5210'),
-      emissiveIntensity: 2.4,
-      roughness: 0.25,
-      metalness: 0.05,
+      color: new THREE.Color('#2A0503'),
+      emissive: EYE_EMISSIVE_P1.clone(),
+      emissiveIntensity: 2.55,
+      metalness: 0.12,
+      roughness: 0.18,
     }),
   );
 
-  const makeMesh = (geo: THREE.BufferGeometry, mat: THREE.Material, name: string): THREE.Mesh => {
+  // 5. Superheated Forearm Thermal Energy-Blade Plasma Edge
+  const bladeMat = trackMat(
+    new THREE.MeshStandardMaterial({
+      color: new THREE.Color('#381408'),
+      map: atlas.albedoMap,
+      emissive: BLADE_EMISSIVE_P1.clone(),
+      emissiveMap: atlas.emissiveMap,
+      emissiveIntensity: 1.65,
+      metalness: 0.15,
+      roughness: 0.22,
+      vertexColors: true,
+    }),
+  );
+
+  const makeMesh = (
+    geo: THREE.BufferGeometry,
+    mat: THREE.Material,
+    name: string,
+    castShadow = true,
+  ): THREE.Mesh => {
     const mesh = new THREE.Mesh(trackGeo(geo), mat);
     mesh.name = name;
-    mesh.castShadow = true;
+    mesh.castShadow = castShadow;
     mesh.receiveShadow = true;
     return mesh;
   };
 
-  // --- Articulated Skeleton Hierarchy ---
+  // --- Articulated Mechanical Skeleton Hierarchy ---
   const root = new THREE.Group();
   root.name = 'boss-root';
 
@@ -2394,122 +2101,120 @@ export function createBossModel(): BossModel {
   body.position.set(0, BASE_HIP_Y, 0);
   root.add(body);
 
-  // 1. Torso (trunk + exposed ivory ribs + massive swept-back dorsal bone-spike clusters)
+  // 1. Torso Chassis + Dorsal Twin Heat-Sink Towers + Overload Vent Assembly
   const torso = new THREE.Group();
   torso.name = 'boss-torso';
   body.add(torso);
 
-  const torsoGeo = buildTorsoGeometries();
-  torso.add(makeMesh(torsoGeo.skin, skinMat, 'boss-torso-skin'));
-  torso.add(makeMesh(torsoGeo.bone, boneMat, 'boss-torso-bone'));
+  const torsoParts = buildTorsoParts();
+  torso.add(makeMesh(torsoParts.armor, armorMat, 'boss-torso-armor'));
+  torso.add(makeMesh(torsoParts.frame, frameMat, 'boss-torso-frame'));
 
-  // 2. Recessed Molten Chest & Dorsal Core (self-emissive only, melee Boss)
-  const core = makeMesh(buildCoreGeometry(), coreMat, 'boss-core');
+  const ventGlow = new THREE.Group();
+  ventGlow.name = 'boss-vent-glow';
+  ventGlow.add(makeMesh(torsoParts.vent, coreMat, 'boss-torso-vents', false));
+  torso.add(ventGlow);
+
+  // 2. Recessed Front Chest & Rear Dorsal Reactor Core (weakpoint, purely self-emissive)
+  const core = makeMesh(torsoParts.core, coreMat, 'boss-core', false);
   core.position.set(0, 0.96, 0);
-  core.castShadow = false;
   torso.add(core);
 
-  // 3. Faceless Bone-Crowned Head (proudly visible above collar, world y ~3.50..4.02m)
+  // 3. Armored Mono-Eye Sensor Head (compact lethal proportions, world y ~3.43..4.10m!)
   const head = new THREE.Group();
   head.name = 'boss-head';
-  head.position.set(0, 1.56, -0.24);
+  head.position.set(0, 1.52, -0.12);
   torso.add(head);
 
-  const headGeo = buildHeadGeometries();
-  head.add(makeMesh(headGeo.skin, skinMat, 'boss-head-skin'));
-  head.add(makeMesh(headGeo.bone, boneMat, 'boss-head-bone'));
-  const eyesMesh = makeMesh(headGeo.eyes, eyeMat, 'boss-head-eyes');
-  eyesMesh.castShadow = false;
-  head.add(eyesMesh);
+  const headParts = buildHeadParts();
+  head.add(makeMesh(headParts.armor, armorMat, 'boss-head-armor'));
+  head.add(makeMesh(headParts.frame, frameMat, 'boss-head-frame'));
 
-  // 4. Broad-Shouldered Arms with Hypertrophied Spiked Forearms & 4-Digit Claws
-  const buildArmChain = (
-    side: -1 | 1,
-    tag: 'l' | 'r',
-    shoulderPos: Vec3Tuple,
-  ): { shoulder: THREE.Group; elbow: THREE.Group; hand: THREE.Group } => {
-    const shoulder = new THREE.Group();
-    shoulder.name = `boss-shoulder-${tag}`;
-    shoulder.position.set(shoulderPos[0], shoulderPos[1], shoulderPos[2]);
-    torso.add(shoulder);
+  const monoEye = new THREE.Group();
+  monoEye.name = 'boss-mono-eye';
+  monoEye.position.set(0, 0.26, -0.03);
+  monoEye.add(makeMesh(headParts.monoEyeBezel, frameMat, 'boss-mono-eye-bezel', false));
+  monoEye.add(makeMesh(headParts.monoEye, eyeMat, 'boss-mono-eye-lens', false));
+  head.add(monoEye);
 
-    const upperGeo = buildUpperArmGeometries(side);
-    shoulder.add(makeMesh(upperGeo.skin, skinMat, `boss-upper-arm-skin-${tag}`));
-    shoulder.add(makeMesh(upperGeo.bone, boneMat, `boss-upper-arm-bone-${tag}`));
+  // 4. Asymmetric Articulated Heavy Shoulder Pauldrons (tightly nested over shoulder drums!)
+  const leftShoulder = new THREE.Group();
+  leftShoulder.name = 'boss-pauldron-l';
+  leftShoulder.position.set(-0.82, 1.28, 0);
+  torso.add(leftShoulder);
+  const pauldronL = buildShoulderPauldron(-1);
+  leftShoulder.add(makeMesh(pauldronL.armor, armorMat, 'boss-pauldron-armor-l'));
+  leftShoulder.add(makeMesh(pauldronL.frame, frameMat, 'boss-pauldron-frame-l'));
+  leftShoulder.add(makeMesh(pauldronL.vent, coreMat, 'boss-pauldron-vent-l', false));
 
-    const elbow = new THREE.Group();
-    elbow.name = `boss-elbow-${tag}`;
-    elbow.position.set(side * 0.06, -0.76, 0.02);
-    shoulder.add(elbow);
+  const rightShoulder = new THREE.Group();
+  rightShoulder.name = 'boss-pauldron-r';
+  rightShoulder.position.set(0.82, 1.28, 0);
+  torso.add(rightShoulder);
+  const pauldronR = buildShoulderPauldron(1);
+  rightShoulder.add(makeMesh(pauldronR.armor, armorMat, 'boss-pauldron-armor-r'));
+  rightShoulder.add(makeMesh(pauldronR.frame, frameMat, 'boss-pauldron-frame-r'));
+  rightShoulder.add(makeMesh(pauldronR.vent, coreMat, 'boss-pauldron-vent-r', false));
 
-    const foreGeo = buildForearmGeometries(side);
-    elbow.add(makeMesh(foreGeo.skin, skinMat, `boss-forearm-skin-${tag}`));
-    elbow.add(makeMesh(foreGeo.bone, boneMat, `boss-forearm-bone-${tag}`));
+  // 5. Left Arm: Heavy Hydraulic Siege Buckler-Gauntlet
+  const leftArm = new THREE.Group();
+  leftArm.name = 'boss-shoulder-l';
+  leftArm.position.set(-0.92, 1.28, 0);
+  torso.add(leftArm);
 
-    const hand = new THREE.Group();
-    hand.name = `boss-hand-${tag}`;
-    hand.position.set(side * 0.04, -0.82, -0.04);
-    elbow.add(hand);
+  const upperArmL = buildUpperArmParts(-1);
+  leftArm.add(makeMesh(upperArmL.armor, armorMat, 'boss-upper-arm-armor-l'));
+  leftArm.add(makeMesh(upperArmL.frame, frameMat, 'boss-upper-arm-frame-l'));
 
-    const handGeo = buildHandGeometries(side);
-    hand.add(makeMesh(handGeo.skin, skinMat, `boss-hand-skin-${tag}`));
-    hand.add(makeMesh(handGeo.bone, boneMat, `boss-hand-bone-${tag}`));
+  const elbowL = new THREE.Group();
+  elbowL.name = 'boss-elbow-l';
+  elbowL.position.set(-0.08, -0.78, 0);
+  elbowL.rotation.set(0.32, 0, 0);
+  leftArm.add(elbowL);
 
-    return { shoulder, elbow, hand };
-  };
+  const foreArmL = buildLeftForearmParts();
+  elbowL.add(makeMesh(foreArmL.armor, armorMat, 'boss-forearm-armor-l'));
+  elbowL.add(makeMesh(foreArmL.frame, frameMat, 'boss-forearm-frame-l'));
+  elbowL.add(makeMesh(foreArmL.vent, coreMat, 'boss-forearm-vent-l', false));
 
-  const armL = buildArmChain(-1, 'l', [-0.88, 1.32, -0.02]);
-  const armR = buildArmChain(1, 'r', [0.88, 1.32, -0.02]);
+  // 6. Right Arm: Twin-Rail Emitter + Razor-Edged 1.50m Thermal Energy Blade
+  const rightArm = new THREE.Group();
+  rightArm.name = 'boss-shoulder-r';
+  rightArm.position.set(0.92, 1.28, 0);
+  torso.add(rightArm);
 
-  // 5. Hips, Seamless Articulated 6-Segment Bladed Tail, & Muscular Grounded Legs
+  const upperArmR = buildUpperArmParts(1);
+  rightArm.add(makeMesh(upperArmR.armor, armorMat, 'boss-upper-arm-armor-r'));
+  rightArm.add(makeMesh(upperArmR.frame, frameMat, 'boss-upper-arm-frame-r'));
+
+  const elbowR = new THREE.Group();
+  elbowR.name = 'boss-elbow-r';
+  elbowR.position.set(0.08, -0.78, 0);
+  elbowR.rotation.set(0.38, 0, 0);
+  rightArm.add(elbowR);
+
+  const foreArmR = buildRightForearmAndBladeParts();
+  elbowR.add(makeMesh(foreArmR.armor, armorMat, 'boss-forearm-armor-r'));
+  elbowR.add(makeMesh(foreArmR.frame, frameMat, 'boss-forearm-frame-r'));
+  elbowR.add(makeMesh(foreArmR.vent, coreMat, 'boss-forearm-vent-r', false));
+
+  const rightBlade = new THREE.Group();
+  rightBlade.name = 'boss-right-blade';
+  rightBlade.position.set(0.04, -0.68, -0.06);
+  // Sleek inline wrist-mounted forward-downward blade angle (clears deck >0.95m, slashes edge-first!)
+  rightBlade.rotation.set(0.34, 0, 0);
+  rightBlade.add(makeMesh(foreArmR.bladeSpine, armorMat, 'boss-blade-spine'));
+  rightBlade.add(makeMesh(foreArmR.bladePlasma, bladeMat, 'boss-blade-plasma', false));
+  elbowR.add(rightBlade);
+
+  // 7. Hips & Wide Planted Grounded Heavy Siege Legs
   const hips = new THREE.Group();
   hips.name = 'boss-hips';
   body.add(hips);
 
-  const pelvisGeo = buildPelvisGeometries();
-  hips.add(makeMesh(pelvisGeo.skin, skinMat, 'boss-pelvis-skin'));
-  hips.add(makeMesh(pelvisGeo.bone, boneMat, 'boss-pelvis-bone'));
-
-  // Articulated 6-segment tail hierarchy (tailRoot -> tailSeg[0] -> ... -> tailSeg[5])
-  const tailRoot = new THREE.Group();
-  tailRoot.name = 'boss-tail';
-  tailRoot.position.set(0, 0.08, 0.28);
-  hips.add(tailRoot);
-
-  const tailSegLengths = [0.38, 0.36, 0.35, 0.33, 0.31, 0.34];
-  const tailSegRadii: Array<[number, number]> = [
-    [0.145, 0.118],
-    [0.118, 0.098],
-    [0.098, 0.082],
-    [0.082, 0.068],
-    [0.068, 0.054],
-    [0.054, 0.036],
-  ];
-  const tailSegs: THREE.Group[] = [];
-  let tailParent: THREE.Object3D = tailRoot;
-  for (let i = 0; i < TAIL_SEG_COUNT; i++) {
-    const seg = new THREE.Group();
-    seg.name = `boss-tail-seg-${i}`;
-    if (i > 0) {
-      seg.position.set(0, 0, tailSegLengths[i - 1]);
-    }
-    seg.rotation.set(TAIL_BASE_PITCH[i], 0, 0);
-    const isTip = i === TAIL_SEG_COUNT - 1;
-    const segGeos = buildTailSegmentGeometries(
-      i,
-      tailSegLengths[i],
-      tailSegRadii[i][0],
-      tailSegRadii[i][1],
-      isTip,
-    );
-    if (segGeos.skin) {
-      seg.add(makeMesh(segGeos.skin, skinMat, `boss-tail-skin-${i}`));
-    }
-    seg.add(makeMesh(segGeos.bone, boneMat, `boss-tail-bone-${i}`));
-    tailParent.add(seg);
-    tailSegs.push(seg);
-    tailParent = seg;
-  }
+  const pelvisParts = buildPelvisParts();
+  hips.add(makeMesh(pelvisParts.armor, armorMat, 'boss-pelvis-armor'));
+  hips.add(makeMesh(pelvisParts.frame, frameMat, 'boss-pelvis-frame'));
 
   const buildLegChain = (
     side: -1 | 1,
@@ -2517,30 +2222,31 @@ export function createBossModel(): BossModel {
   ): { thigh: THREE.Group; shin: THREE.Group; foot: THREE.Group } => {
     const thigh = new THREE.Group();
     thigh.name = `boss-thigh-${tag}`;
-    thigh.position.set(side * 0.29, 0.02, 0.02);
+    thigh.position.set(side * 0.50, -0.04, 0);
     hips.add(thigh);
 
-    const thighGeo = buildThighGeometries(side);
-    thigh.add(makeMesh(thighGeo.skin, skinMat, `boss-thigh-skin-${tag}`));
-    thigh.add(makeMesh(thighGeo.bone, boneMat, `boss-thigh-bone-${tag}`));
+    const thighParts = buildThighParts(side);
+    thigh.add(makeMesh(thighParts.armor, armorMat, `boss-thigh-armor-${tag}`));
+    thigh.add(makeMesh(thighParts.frame, frameMat, `boss-thigh-frame-${tag}`));
 
     const shin = new THREE.Group();
     shin.name = `boss-shin-${tag}`;
-    shin.position.set(side * 0.02, -0.86, -0.06);
+    shin.position.set(0, -THIGH_LEN, 0);
     thigh.add(shin);
 
-    const shinGeo = buildShinGeometries(side);
-    shin.add(makeMesh(shinGeo.skin, skinMat, `boss-shin-skin-${tag}`));
-    shin.add(makeMesh(shinGeo.bone, boneMat, `boss-shin-bone-${tag}`));
+    const shinParts = buildShinParts(side);
+    shin.add(makeMesh(shinParts.armor, armorMat, `boss-shin-armor-${tag}`));
+    shin.add(makeMesh(shinParts.frame, frameMat, `boss-shin-frame-${tag}`));
+    shin.add(makeMesh(shinParts.vent, coreMat, `boss-shin-vent-${tag}`, false));
 
     const foot = new THREE.Group();
     foot.name = `boss-foot-${tag}`;
-    foot.position.set(0, -0.86, 0.06);
+    foot.position.set(0, -SHIN_LEN, 0);
     shin.add(foot);
 
-    const footGeo = buildFootGeometries(side);
-    foot.add(makeMesh(footGeo.skin, skinMat, `boss-foot-skin-${tag}`));
-    foot.add(makeMesh(footGeo.bone, boneMat, `boss-foot-bone-${tag}`));
+    const footParts = buildFootParts(side);
+    foot.add(makeMesh(footParts.armor, armorMat, `boss-foot-armor-${tag}`));
+    foot.add(makeMesh(footParts.frame, frameMat, `boss-foot-frame-${tag}`));
 
     return { thigh, shin, foot };
   };
@@ -2548,16 +2254,22 @@ export function createBossModel(): BossModel {
   const legL = buildLegChain(-1, 'l');
   const legR = buildLegChain(1, 'r');
 
-  // --- Runtime Animation State (zero per-frame allocations) ---
+  // Verify neutral soles sit flush at y = 0.000
+  root.updateMatrixWorld(true);
+  const initBox = new THREE.Box3().setFromObject(root);
+  const baseHipOffsetY = Number.isFinite(initBox.min.y) ? BASE_HIP_Y - initBox.min.y : BASE_HIP_Y;
+  body.position.y = baseHipOffsetY;
+
+  // --- Runtime Heavy Mechanical Kinematics State (zero per-frame allocations) ---
   const jointNodes: Record<keyof JointPose, THREE.Object3D> = {
     torso,
     head,
-    leftArm: armL.shoulder,
-    elbowL: armL.elbow,
-    handL: armL.hand,
-    rightArm: armR.shoulder,
-    elbowR: armR.elbow,
-    handR: armR.hand,
+    leftShoulder,
+    rightShoulder,
+    leftArm,
+    elbowL,
+    rightArm,
+    elbowR,
     hips,
     thighL: legL.thigh,
     shinL: legL.shin,
@@ -2568,18 +2280,16 @@ export function createBossModel(): BossModel {
   };
   const jointKeys = Object.keys(jointNodes) as (keyof JointPose)[];
   const targetPose = makeNeutralPose();
-  const tailTargetPitch = new Float32Array(TAIL_SEG_COUNT);
-  const tailTargetYaw = new Float32Array(TAIL_SEG_COUNT);
   const tmpEuler = new THREE.Euler(0, 0, 0, 'XYZ');
   const tmpQuat = new THREE.Quaternion();
 
   let elapsed = 0;
   let animElapsed = 0;
   let lastAnim: BossAnim | null = null;
-  let moltenHeat = 0;
+  let overloadHeat = 0;
   let bodyDropCur = 0;
-  let torsoScaleYCur = 1;
-  let coreScaleCur = 1;
+  let bladeSurgeCur = 0;
+  let monoEyeYawCur = 0;
   let disposed = false;
 
   const setPose = (key: keyof JointPose, x: number, y: number, z: number): void => {
@@ -2592,8 +2302,8 @@ export function createBossModel(): BossModel {
     if (disposed) return;
     const step = Math.max(0, Math.min(dt, 0.25));
     const hpPct = clamp01(state.hpPct);
-    const isMoltenEnraged = hpPct <= 0.35;
-    const heatTarget = isMoltenEnraged ? 1.0 : state.phase === 2 ? 0.38 : 0.0;
+    const isOverload = hpPct <= 0.35;
+    const heatTarget = isOverload ? 1.0 : state.phase === 2 ? 0.32 : 0.0;
 
     if (state.anim !== lastAnim) {
       lastAnim = state.anim;
@@ -2602,221 +2312,223 @@ export function createBossModel(): BossModel {
     elapsed += step;
     animElapsed += step;
 
-    const heatAlpha = step > 0 ? 1 - Math.exp(-7 * step) : 1;
-    moltenHeat += (heatTarget - moltenHeat) * heatAlpha;
+    const heatAlpha = step > 0 ? 1 - Math.exp(-6.5 * step) : 1;
+    overloadHeat += (heatTarget - overloadHeat) * heatAlpha;
 
     let targetBodyDrop = 0;
-    let targetTorsoScaleY = 1.0;
-    let slerpRate = 10;
+    let slerpRate = 18;
+    let targetBladeSurge = 0;
     let coreWarnMult = 1.0;
+    let targetMonoEyeYaw = 0;
 
-    // Grounded predatory combat stance
+    // Heroic wide-planted 20-ton mech combat stance (broad braced feet, slight aggressive toe-out!)
     setPose('hips', 0, 0, 0);
-    setPose('thighL', 0.05, 0.06, 0.04);
-    setPose('shinL', -0.09, 0, 0);
-    setPose('footL', 0.04, 0, -0.04);
-    setPose('thighR', -0.04, -0.06, -0.04);
-    setPose('shinR', -0.07, 0, 0);
-    setPose('footR', 0.11, 0, 0.04);
+    setPose('thighL', 0.08, 0.11, 0.095);
+    setPose('shinL', -0.14, 0, 0);
+    setPose('footL', 0.06, 0.04, -0.095);
+    setPose('thighR', -0.06, -0.11, -0.095);
+    setPose('shinR', -0.10, 0, 0);
+    setPose('footR', 0.16, -0.04, 0.095);
 
-    for (let i = 0; i < TAIL_SEG_COUNT; i++) {
-      tailTargetPitch[i] = TAIL_BASE_PITCH[i];
-      tailTargetYaw[i] = 0;
-    }
-
-    const rageRate = 1 + (1 - hpPct) * 0.30 + moltenHeat * 0.25;
+    const ventFlare = overloadHeat * 0.11;
+    setPose('leftShoulder', 0, 0, ventFlare);
+    setPose('rightShoulder', 0, 0, -ventFlare);
 
     if (state.anim === 'idle') {
-      const breath = 0.5 + 0.5 * Math.sin(elapsed * 2.1 * rageRate);
-      const sway = Math.sin(elapsed * 1.1 * rageRate);
-      targetTorsoScaleY = 1.0 + 0.018 * breath;
-      targetBodyDrop = 0.010 * (1 - breath);
+      // Rigid stepped servo scan + periodic pneumatic hydraulic pressure cycle
+      const scanWave = steppedServoWave(elapsed * 0.32, 0.64);
+      const hydroCycle = steppedServoWave(elapsed * 0.55 + 0.15, 0.52);
+      const microServo = steppedServoWave(elapsed * 0.85, 0.72);
 
-      setPose('hips', 0, sway * 0.035, sway * 0.025);
-      setPose('torso', -0.06 - breath * 0.02, sway * 0.05, -sway * 0.03);
-      setPose('head', 0.05 - breath * 0.03, -sway * 0.08 + Math.sin(elapsed * 0.65) * 0.06, sway * 0.03);
+      targetBodyDrop = 0.018 * (0.5 + 0.5 * hydroCycle);
+      targetMonoEyeYaw = scanWave * 0.36;
 
-      setPose('leftArm', 0.12 + breath * 0.05, -0.08, 0.16 + breath * 0.03);
-      setPose('elbowL', 0.36 + breath * 0.05, 0, -0.05);
-      setPose('handL', 0.14, 0, -0.06);
+      setPose('hips', 0, scanWave * 0.02, 0);
+      setPose('torso', -0.05 - 0.015 * hydroCycle, scanWave * 0.04, 0);
+      setPose('head', 0.03, scanWave * 0.14, 0);
 
-      setPose('rightArm', 0.14 - breath * 0.04 + sway * 0.04, 0.08, -0.17 - breath * 0.03);
-      setPose('elbowR', 0.40 + breath * 0.05, 0, 0.06);
-      setPose('handR', 0.16, 0, 0.06);
+      setPose('leftShoulder', 0, 0, ventFlare + 0.02 * hydroCycle);
+      setPose('rightShoulder', 0, 0, -ventFlare - 0.02 * hydroCycle);
 
-      for (let i = 0; i < TAIL_SEG_COUNT; i++) {
-        const w = elapsed * 1.85 * rageRate - i * 0.52;
-        tailTargetYaw[i] = Math.sin(w) * (0.09 + i * 0.026);
-        tailTargetPitch[i] = TAIL_BASE_PITCH[i] + Math.cos(w * 0.7) * 0.03;
-      }
-      slerpRate = 8;
-    } else if (state.anim === 'walk') {
-      const walkFreq = 3.5 * (1 + moltenHeat * 0.15);
-      const w = animElapsed * walkFreq + 0.45;
-      const s = Math.sin(w);
-      const c = Math.cos(w);
-      const footStrike = Math.pow(Math.max(0, -Math.cos(w * 2)), 2);
+      setPose('leftArm', 0.18 + microServo * 0.03, -0.08, 0.14);
+      setPose('elbowL', 0.52 + hydroCycle * 0.04, 0, -0.06);
 
-      targetBodyDrop = 0.04 * footStrike;
-      targetTorsoScaleY = 1.008 + 0.008 * Math.abs(s);
-
-      setPose('hips', 0.04 * footStrike, -s * 0.10, s * 0.05);
-      setPose('torso', -0.15 - 0.04 * footStrike, s * 0.14, -s * 0.07);
-      setPose('head', 0.10 + 0.04 * footStrike, -s * 0.10, s * 0.04);
-
-      setPose('thighL', s * 0.48 + 0.05, 0.04, 0.04);
-      setPose('shinL', -Math.max(0.08, -c * 0.56 + 0.15), 0, 0);
-      setPose('footL', -s * 0.22 + 0.07, 0, -0.04);
-
-      setPose('thighR', -s * 0.48 + 0.05, -0.04, -0.04);
-      setPose('shinR', -Math.max(0.08, c * 0.56 + 0.15), 0, 0);
-      setPose('footR', s * 0.22 + 0.07, 0, 0.04);
-
-      setPose('leftArm', -s * 0.46 + 0.14, -0.08, 0.18 + Math.abs(s) * 0.05);
-      setPose('elbowL', 0.36 + Math.max(0, -s) * 0.22, 0, -0.05);
-      setPose('handL', 0.15, 0, -0.05);
-
-      setPose('rightArm', s * 0.48 + 0.16, 0.08, -0.19 - Math.abs(s) * 0.05);
-      setPose('elbowR', 0.40 + Math.max(0, s) * 0.24, 0, 0.06);
-      setPose('handR', 0.18, 0, 0.06);
-
-      // Articulated tail sways counter-phase to arm swing with natural traveling wave
-      for (let i = 0; i < TAIL_SEG_COUNT; i++) {
-        const lagPhase = w - i * 0.42;
-        tailTargetYaw[i] = -Math.sin(lagPhase) * (0.14 + i * 0.034);
-        tailTargetPitch[i] = TAIL_BASE_PITCH[i] + Math.cos(lagPhase * 2) * 0.032;
-      }
-      slerpRate = 12;
-    } else if (state.anim === 'windup') {
-      const backPitch = 16 * DEG2RAD;
-      const tremor = Math.sin(animElapsed * 24) * 0.025;
-      coreWarnMult = 1.38;
-      targetTorsoScaleY = 1.022;
-      targetBodyDrop = 0.02;
-
-      setPose('hips', 0.06, -0.14, 0.04);
-      setPose('torso', backPitch, -0.26, 0.08);
-      setPose('head', -0.14, 0.22, -0.05);
-
-      setPose('leftArm', 0.56, -0.20, 0.32);
-      setPose('elbowL', 0.68, 0, -0.10);
-      setPose('handL', 0.24, 0, -0.08);
-
-      setPose('rightArm', -1.32 + tremor, 0.18, -0.66);
-      setPose('elbowR', 0.82, 0, 0.22);
-      setPose('handR', 0.34, 0, 0.14);
-
-      setPose('thighL', 0.24, 0.12, 0.06);
-      setPose('shinL', -0.34, 0, 0);
-      setPose('footL', 0.10, 0, -0.06);
-      setPose('thighR', -0.20, -0.10, -0.06);
-      setPose('shinR', -0.24, 0, 0);
-      setPose('footR', 0.38, 0, 0.06);
-
-      for (let i = 0; i < TAIL_SEG_COUNT; i++) {
-        tailTargetPitch[i] = TAIL_BASE_PITCH[i] - 0.12 - i * 0.028;
-        tailTargetYaw[i] = -0.14 - i * 0.032;
-      }
-      slerpRate = 14;
-    } else if (state.anim === 'attack') {
-      const u = clamp01(animElapsed / ATTACK_DURATION);
-      const smashEase = 1 - Math.pow(1 - u, 3);
-      const armSwingX = lerp(-0.32, 1.38, smashEase);
-      const torsoPitchX = lerp(0.08, -0.36, smashEase);
-
-      coreWarnMult = lerp(1.36, 1.12, smashEase);
-      targetBodyDrop = 0.07 * smashEase;
-      targetTorsoScaleY = lerp(1.02, 0.99, smashEase);
-
-      setPose('hips', -0.07 * smashEase, 0.20 * smashEase, -0.04);
-      setPose('torso', torsoPitchX, lerp(-0.20, 0.36, smashEase), -0.10 * smashEase);
-      setPose('head', lerp(-0.10, 0.22, smashEase), lerp(0.16, -0.26, smashEase), 0.06);
-
-      setPose('leftArm', lerp(0.38, -0.58, smashEase), -0.16, 0.34);
-      setPose('elbowL', lerp(0.56, 0.30, smashEase), 0, -0.08);
-      setPose('handL', 0.18, 0, -0.08);
-
-      setPose('rightArm', armSwingX, lerp(0.14, -0.24, smashEase), lerp(-0.44, -0.08, smashEase));
-      setPose('elbowR', lerp(0.66, 0.22, smashEase), 0, 0.06);
-      setPose('handR', 0.36, 0, 0.08);
-
-      setPose('thighL', 0.34 * smashEase + 0.10, 0.08, 0.06);
-      setPose('shinL', -0.44 * smashEase - 0.14, 0, 0);
-      setPose('footL', 0.14, 0, -0.06);
-      setPose('thighR', -0.26 * smashEase, -0.08, -0.06);
-      setPose('shinR', -0.22, 0, 0);
-      setPose('footR', 0.40 * smashEase + 0.10, 0, 0.06);
-
-      for (let i = 0; i < TAIL_SEG_COUNT; i++) {
-        tailTargetPitch[i] = TAIL_BASE_PITCH[i] - 0.09 * smashEase;
-        tailTargetYaw[i] = lerp(-0.10, 0.20 + i * 0.036, smashEase);
-      }
-      slerpRate = 34;
-    } else if (state.anim === 'recover') {
-      const u = smoothstep(animElapsed / RECOVER_DURATION);
-      targetBodyDrop = lerp(0.06, 0.010, u);
-      targetTorsoScaleY = lerp(0.992, 1.01, u);
-
-      setPose('hips', lerp(-0.05, 0, u), lerp(0.14, 0, u), lerp(-0.03, 0, u));
-      setPose('torso', lerp(-0.28, -0.06, u), lerp(0.24, 0, u), lerp(-0.07, 0, u));
-      setPose('head', lerp(0.18, 0.05, u), lerp(-0.18, 0, u), 0);
-
-      setPose('leftArm', lerp(-0.36, 0.12, u), -0.08, lerp(0.26, 0.16, u));
-      setPose('elbowL', lerp(0.26, 0.36, u), 0, -0.05);
-      setPose('handL', 0.12, 0, -0.05);
-
-      setPose('rightArm', lerp(0.96, 0.16, u), lerp(-0.14, 0.06, u), lerp(-0.10, -0.17, u));
-      setPose('elbowR', lerp(0.24, 0.40, u), 0, 0.06);
-      setPose('handR', lerp(0.28, 0.16, u), 0, 0.06);
-
-      setPose('thighL', lerp(0.30, 0.06, u), 0.06, 0.04);
-      setPose('shinL', lerp(-0.40, -0.10, u), 0, 0);
-      setPose('footL', lerp(0.12, 0.04, u), 0, -0.04);
-      setPose('thighR', lerp(-0.20, -0.04, u), -0.06, -0.04);
-      setPose('shinR', lerp(-0.20, -0.07, u), 0, 0);
-      setPose('footR', lerp(0.36, 0.11, u), 0, 0.04);
-
-      for (let i = 0; i < TAIL_SEG_COUNT; i++) {
-        tailTargetYaw[i] = lerp(0.16, 0, u);
-        tailTargetPitch[i] = TAIL_BASE_PITCH[i] + lerp(0.08, 0, u);
-      }
-      slerpRate = 5.5;
-    } else if (state.anim === 'charge') {
-      const fwdPitch = -28 * DEG2RAD;
-      const runW = animElapsed * 6.5 + 0.5;
-      const s = Math.sin(runW);
-      const c = Math.cos(runW);
-      const stomp = Math.pow(Math.max(0, -Math.cos(runW * 2)), 2);
-
-      coreWarnMult = 1.28;
-      targetBodyDrop = 0.05 * stomp + 0.04;
-      targetTorsoScaleY = 1.015;
-
-      setPose('hips', -0.10, -s * 0.14, s * 0.06);
-      setPose('torso', fwdPitch - 0.04 * stomp, s * 0.12, -s * 0.07);
-      setPose('head', -0.42, -s * 0.08, 0);
-
-      setPose('leftArm', -0.86 - s * 0.16, -0.16, 0.34);
-      setPose('elbowL', 0.34, 0, -0.08);
-      setPose('handL', 0.24, 0, -0.08);
-
-      setPose('rightArm', -0.90 + s * 0.16, 0.16, -0.36);
-      setPose('elbowR', 0.38, 0, 0.08);
-      setPose('handR', 0.26, 0, 0.08);
-
-      setPose('thighL', s * 0.62 + 0.12, 0.04, 0.04);
-      setPose('shinL', -Math.max(0.14, -c * 0.72 + 0.20), 0, 0);
-      setPose('footL', -s * 0.26 + 0.12, 0, -0.04);
-
-      setPose('thighR', -s * 0.62 + 0.12, -0.04, -0.04);
-      setPose('shinR', -Math.max(0.14, c * 0.72 + 0.20), 0, 0);
-      setPose('footR', s * 0.26 + 0.12, 0, 0.04);
-
-      for (let i = 0; i < TAIL_SEG_COUNT; i++) {
-        tailTargetPitch[i] = TAIL_BASE_PITCH[i] * 0.45 - 0.06;
-        tailTargetYaw[i] = -Math.sin(runW - i * 0.38) * (0.08 + i * 0.024);
-      }
+      // Combat-ready blade guard: forearm slightly raised & angled out so glowing blade silhouette pops!
+      setPose('rightArm', 0.18 - microServo * 0.04, 0.10, -0.22);
+      setPose('elbowR', 0.50 + microServo * 0.05, 0, 0.08);
       slerpRate = 16;
+    } else if (state.anim === 'walk') {
+      const walkFreq = 2.9 * (1 + overloadHeat * 0.14);
+      const w = animElapsed * walkFreq + 0.35;
+      const rawS = Math.sin(w);
+      const s = Math.sign(rawS) * Math.pow(Math.abs(rawS), 0.78);
+      const c = Math.cos(w);
+
+      const impact = Math.pow(Math.max(0, -Math.cos(w * 2)), 3.2);
+      const midLift = Math.max(0, Math.cos(w * 2)) * 0.018;
+      // Pronounced heavy mechanical center-of-mass drop on impact (0.115m!)
+      targetBodyDrop = 0.115 * impact - midLift;
+
+      setPose('hips', 0.05 * impact, -s * 0.11, s * 0.055);
+      setPose('torso', -0.12 - 0.06 * impact, s * 0.16, -s * 0.07);
+      setPose('head', 0.08 + 0.05 * impact, -s * 0.12, s * 0.03);
+      targetMonoEyeYaw = -s * 0.08;
+
+      setPose('leftShoulder', -s * 0.16 - 0.06 * impact, 0, ventFlare + 0.05 * impact);
+      setPose('rightShoulder', s * 0.16 - 0.06 * impact, 0, -ventFlare - 0.05 * impact);
+
+      const kneeLiftL = Math.pow(Math.max(0, -c), 0.75);
+      const kneeLiftR = Math.pow(Math.max(0, c), 0.75);
+
+      setPose('thighL', s * 0.48 + 0.06, 0.05, 0.07);
+      setPose('shinL', -0.14 - kneeLiftL * 0.56 - impact * 0.14, 0, 0);
+      setPose('footL', -s * 0.24 + 0.08 + impact * 0.08, 0, -0.07);
+
+      setPose('thighR', -s * 0.48 + 0.06, -0.05, -0.07);
+      setPose('shinR', -0.14 - kneeLiftR * 0.56 - impact * 0.14, 0, 0);
+      setPose('footR', s * 0.24 + 0.08 + impact * 0.08, 0, 0.07);
+
+      setPose('leftArm', -s * 0.44 + 0.18, -0.08, 0.18);
+      setPose('elbowL', 0.52 + Math.max(0, -s) * 0.18, 0, -0.05);
+
+      setPose('rightArm', s * 0.46 + 0.16, 0.08, -0.24);
+      setPose('elbowR', 0.46 + Math.max(0, s) * 0.18, 0, 0.06);
+      slerpRate = 20;
+    } else if (state.anim === 'windup') {
+      // Crisp hydraulic cock-back into rigid clamp lock
+      const cock = mechSnap(animElapsed / 0.28, 3.0);
+      const clampShudder = animElapsed > 0.28 ? Math.sin(animElapsed * 44) * 0.008 : 0;
+
+      coreWarnMult = 1.44;
+      targetBladeSurge = 0.76 * cock;
+      targetBodyDrop = 0.048 * cock;
+      targetMonoEyeYaw = 0.16 * cock;
+
+      setPose('hips', 0.06 * cock, -0.18 * cock, 0.04 * cock);
+      setPose('torso', 0.24 * cock, -0.38 * cock, 0.08 * cock);
+      setPose('head', -0.14 * cock, 0.32 * cock, -0.04 * cock);
+
+      setPose('leftShoulder', 0.16 * cock, 0, ventFlare + 0.08 * cock);
+      setPose('rightShoulder', -0.26 * cock, 0, -ventFlare - 0.18 * cock);
+
+      setPose('leftArm', lerp(0.18, 0.64, cock), -0.18 * cock, lerp(0.14, 0.32, cock));
+      setPose('elbowL', lerp(0.52, 0.86, cock), 0, -0.10);
+
+      // High-wide right thermal blade windup
+      setPose('rightArm', lerp(0.18, -1.58, cock) + clampShudder, 0.26 * cock, lerp(-0.22, -0.78, cock));
+      setPose('elbowR', lerp(0.50, 0.96, cock), 0, 0.18 * cock);
+
+      setPose('thighL', 0.26 * cock + 0.08, 0.10, 0.075);
+      setPose('shinL', -0.38 * cock - 0.12, 0, 0);
+      setPose('footL', 0.12 * cock + 0.04, 0, -0.075);
+      setPose('thighR', -0.22 * cock - 0.06, -0.10, -0.075);
+      setPose('shinR', -0.24 * cock - 0.10, 0, 0);
+      setPose('footR', 0.36 * cock + 0.12, 0, 0.075);
+      slerpRate = 24;
+    } else if (state.anim === 'attack') {
+      // Phase A (0..75ms): SHORT RIGID HYDRAULIC LOCK (coiled tension!)
+      // Phase B (75..170ms): EXPLOSIVE HYDRAULIC RELEASE & DIAGONAL-HORIZONTAL CLEAVE!
+      // Phase C (>170ms): HARD MECHANICAL BRAKE DETENT!
+      const inLock = animElapsed < ATTACK_LOCK_SEC;
+      const sweepU = inLock
+        ? 0
+        : mechSnap((animElapsed - ATTACK_LOCK_SEC) / ATTACK_SWEEP_SEC, 3.8);
+      const lockTremor = inLock ? Math.sin(animElapsed * 95) * 0.010 : 0;
+
+      coreWarnMult = inLock ? 1.65 : lerp(1.60, 1.20, sweepU);
+      targetBladeSurge = inLock ? 1.0 : lerp(1.0, 0.78, sweepU);
+      targetBodyDrop = inLock ? 0.055 : lerp(0.055, 0.13, sweepU);
+      targetMonoEyeYaw = lerp(0.16, -0.22, sweepU);
+
+      setPose('hips', lerp(0.06, -0.10, sweepU), lerp(-0.18, 0.28, sweepU), lerp(0.04, -0.06, sweepU));
+      setPose('torso', lerp(0.25, -0.34, sweepU), lerp(-0.38, 0.48, sweepU), lerp(0.08, -0.11, sweepU));
+      setPose('head', lerp(-0.14, 0.24, sweepU), lerp(0.32, -0.38, sweepU), lerp(-0.04, 0.06, sweepU));
+
+      setPose('leftShoulder', lerp(0.16, -0.20, sweepU), 0, ventFlare + 0.10);
+      setPose('rightShoulder', lerp(-0.28, 0.24, sweepU), 0, -ventFlare - lerp(0.20, 0.04, sweepU));
+
+      // Left siege buckler arm whips back as mechanical counterweight
+      setPose('leftArm', lerp(0.64, -0.62, sweepU), -0.18, lerp(0.32, 0.36, sweepU));
+      setPose('elbowL', lerp(0.86, 0.36, sweepU), 0, -0.08);
+
+      // Right blade arm: LOCKED at -1.58 for 75ms, then explodes forward/across with razor plasma edge leading!
+      setPose(
+        'rightArm',
+        lerp(-1.58, 1.15, sweepU) + lockTremor,
+        lerp(0.26, -0.34, sweepU),
+        lerp(-0.78, -0.44, sweepU),
+      );
+      setPose('elbowR', lerp(0.96, 0.32, sweepU), lerp(0.0, -0.42, sweepU), lerp(0.18, 0.82, sweepU));
+
+      setPose('thighL', lerp(0.32, 0.48, sweepU), 0.10, 0.075);
+      setPose('shinL', lerp(-0.48, -0.64, sweepU), 0, 0);
+      setPose('footL', lerp(0.16, 0.18, sweepU), 0, -0.075);
+      setPose('thighR', lerp(-0.26, -0.34, sweepU), -0.10, -0.075);
+      setPose('shinR', -0.32, 0, 0);
+      setPose('footR', lerp(0.46, 0.56, sweepU), 0, 0.075);
+
+      slerpRate = inLock ? 42 : 48;
+    } else if (state.anim === 'recover') {
+      const u = animElapsed < 0.14 ? 0 : mechSnap((animElapsed - 0.14) / (RECOVER_DURATION - 0.14), 2.2);
+      targetBodyDrop = lerp(0.12, 0.018, u);
+      targetBladeSurge = lerp(0.55, 0, u);
+      targetMonoEyeYaw = lerp(-0.20, 0, u);
+
+      setPose('hips', lerp(-0.08, 0, u), lerp(0.22, 0, u), lerp(-0.04, 0, u));
+      setPose('torso', lerp(-0.30, -0.05, u), lerp(0.40, 0, u), lerp(-0.09, 0, u));
+      setPose('head', lerp(0.20, 0.03, u), lerp(-0.30, 0, u), 0);
+
+      setPose('leftShoulder', lerp(-0.16, 0, u), 0, ventFlare);
+      setPose('rightShoulder', lerp(0.18, 0, u), 0, -ventFlare);
+
+      setPose('leftArm', lerp(-0.46, 0.18, u), -0.08, lerp(0.30, 0.14, u));
+      setPose('elbowL', lerp(0.36, 0.52, u), 0, -0.06);
+
+      setPose('rightArm', lerp(0.98, 0.18, u), lerp(0.30, 0.10, u), lerp(-0.30, -0.22, u));
+      setPose('elbowR', lerp(0.24, 0.50, u), lerp(0.32, 0, u), lerp(-0.20, 0.08, u));
+
+      setPose('thighL', lerp(0.42, 0.08, u), 0.08, 0.075);
+      setPose('shinL', lerp(-0.56, -0.14, u), 0, 0);
+      setPose('footL', lerp(0.18, 0.06, u), 0, -0.075);
+      setPose('thighR', lerp(-0.28, -0.06, u), -0.08, -0.075);
+      setPose('shinR', lerp(-0.28, -0.10, u), 0, 0);
+      setPose('footR', lerp(0.48, 0.16, u), 0, 0.075);
+      slerpRate = 12;
+    } else if (state.anim === 'charge') {
+      const fwdPitch = -27 * DEG2RAD;
+      const runW = animElapsed * 6.0 + 0.4;
+      const rawS = Math.sin(runW);
+      const s = Math.sign(rawS) * Math.pow(Math.abs(rawS), 0.78);
+      const c = Math.cos(runW);
+      const stomp = Math.pow(Math.max(0, -Math.cos(runW * 2)), 2.8);
+
+      coreWarnMult = 1.38;
+      targetBladeSurge = 0.68;
+      targetBodyDrop = 0.055 + 0.095 * stomp;
+      targetMonoEyeYaw = -s * 0.06;
+
+      setPose('hips', -0.12, -s * 0.14, s * 0.06);
+      setPose('torso', fwdPitch - 0.05 * stomp, s * 0.14 + 0.18, -s * 0.07);
+      setPose('head', -0.34, -0.16 - s * 0.08, 0);
+
+      setPose('leftShoulder', 0.20, 0, ventFlare + 0.08);
+      setPose('rightShoulder', -0.24, 0, -ventFlare - 0.14);
+
+      // Left buckler-gauntlet locked ahead as a battering ram; right thermal blade trailed back
+      setPose('leftArm', 0.68 - s * 0.12, -0.24, 0.22);
+      setPose('elbowL', 0.96, 0, -0.12);
+
+      setPose('rightArm', -0.96 + s * 0.14, 0.22, -0.44);
+      setPose('elbowR', 0.34, 0, 0.08);
+
+      setPose('thighL', s * 0.62 + 0.14, 0.06, 0.07);
+      setPose('shinL', -0.16 - Math.max(0, -c) * 0.70 - stomp * 0.14, 0, 0);
+      setPose('footL', -s * 0.28 + 0.14, 0, -0.07);
+
+      setPose('thighR', -s * 0.62 + 0.14, -0.06, -0.07);
+      setPose('shinR', -0.16 - Math.max(0, c) * 0.70 - stomp * 0.14, 0, 0);
+      setPose('footR', s * 0.28 + 0.14, 0, 0.07);
+      slerpRate = 24;
     }
 
     const qAlpha = step > 0 ? 1 - Math.exp(-slerpRate * step) : 1;
@@ -2828,40 +2540,35 @@ export function createBossModel(): BossModel {
       jointNodes[key].quaternion.slerp(tmpQuat, qAlpha);
     }
 
-    const tailAlpha = step > 0 ? 1 - Math.exp(-12 * step) : 1;
-    for (let i = 0; i < TAIL_SEG_COUNT; i++) {
-      tmpEuler.set(tailTargetPitch[i], tailTargetYaw[i], 0, 'XYZ');
-      tmpQuat.setFromEuler(tmpEuler);
-      tailSegs[i].quaternion.slerp(tmpQuat, tailAlpha);
-    }
-
-    const scalarAlpha = step > 0 ? 1 - Math.exp(-14 * step) : 1;
+    const scalarAlpha = step > 0 ? 1 - Math.exp(-22 * step) : 1;
     bodyDropCur += (targetBodyDrop - bodyDropCur) * scalarAlpha;
-    body.position.y = BASE_HIP_Y - bodyDropCur;
+    body.position.y = baseHipOffsetY - bodyDropCur;
 
-    torsoScaleYCur += (targetTorsoScaleY - torsoScaleYCur) * scalarAlpha;
-    torso.scale.set(1, torsoScaleYCur, 1);
+    bladeSurgeCur += (targetBladeSurge - bladeSurgeCur) * scalarAlpha;
+    monoEyeYawCur += (targetMonoEyeYaw - monoEyeYawCur) * scalarAlpha;
+    monoEye.rotation.y = monoEyeYawCur;
 
-    // Organic lava heating (Phase 2 / hpPct <= 0.35):
-    //   - Magma fissures & chest core self-emissive intensify strongly like heating lava
-    //   - Bone spike / horn / claw / tail-blade tips glow translucently amber-orange
-    //   - ZERO whole-body red alarm flashing (skinMat.color never flashes!)
-    const pulseFreq = 2.6 + (1 - hpPct) * 1.6 + moltenHeat * 1.2;
-    const pulse = 0.5 + 0.5 * Math.sin(elapsed * pulseFreq);
+    // --- Thermal Reactor & Phase 2 Overload (hpPct <= 0.35) ---
+    // Armor base albedo NEVER flashes red! Only plate perimeter heat seams, 3D cooling vents,
+    // recessed reactor core, mono-eye, and thermal plasma blade surge like an overheating machine.
+    const humFreq = 3.2 + (1 - hpPct) * 1.8 + overloadHeat * 2.4;
+    const hum = 0.5 + 0.5 * Math.sin(elapsed * humFreq);
 
-    skinMat.emissive.copy(LAVA_EMISSIVE_P1).lerp(LAVA_EMISSIVE_P2, moltenHeat);
-    skinMat.emissiveIntensity = (0.76 + moltenHeat * 1.15 + pulse * (0.09 + moltenHeat * 0.16)) * (coreWarnMult > 1.2 ? 1.08 : 1.0);
+    armorMat.emissive.copy(SEAM_EMISSIVE_P1).lerp(SEAM_EMISSIVE_P2, overloadHeat);
+    armorMat.emissiveIntensity = 0.03 + overloadHeat * (0.92 + hum * 0.16);
 
-    coreMat.emissive.copy(CORE_EMISSIVE_P1).lerp(CORE_EMISSIVE_P2, moltenHeat);
-    coreMat.emissiveIntensity = (1.15 + moltenHeat * 1.15 + pulse * (0.10 + moltenHeat * 0.18)) * coreWarnMult;
+    coreMat.emissive.copy(CORE_EMISSIVE_P1).lerp(CORE_EMISSIVE_P2, overloadHeat);
+    coreMat.emissiveIntensity =
+      (1.38 + overloadHeat * 1.45 + hum * (0.08 + overloadHeat * 0.18)) * coreWarnMult;
 
-    boneMat.emissiveIntensity = 0.06 + moltenHeat * (1.05 + pulse * 0.14);
+    eyeMat.emissive.copy(EYE_EMISSIVE_P1).lerp(EYE_EMISSIVE_P2, overloadHeat);
+    eyeMat.emissiveIntensity =
+      (2.55 + overloadHeat * 1.75 + hum * (0.10 + overloadHeat * 0.22)) *
+      (coreWarnMult > 1.25 ? 1.18 : 1.0);
 
-    const targetCoreScale = 1.0 + moltenHeat * 0.14 + pulse * (0.022 + moltenHeat * 0.028);
-    coreScaleCur += (targetCoreScale - coreScaleCur) * scalarAlpha;
-    core.scale.setScalar(coreScaleCur);
-
-    eyeMat.emissiveIntensity = (2.4 + moltenHeat * 1.4 + pulse * 0.22) * (coreWarnMult > 1.2 ? 1.12 : 1.0);
+    bladeMat.emissive.copy(BLADE_EMISSIVE_P1).lerp(BLADE_EMISSIVE_P2, clamp01(overloadHeat + bladeSurgeCur * 0.45));
+    bladeMat.emissiveIntensity =
+      1.65 + overloadHeat * 1.65 + bladeSurgeCur * 1.15 + hum * (0.08 + overloadHeat * 0.16);
   };
 
   const dispose = (): void => {
@@ -2892,9 +2599,13 @@ export function createBossModel(): BossModel {
       torso,
       head,
       core,
-      leftArm: armL.shoulder,
-      rightArm: armR.shoulder,
-      tail: tailRoot,
+      leftArm,
+      rightArm,
+      leftShoulder,
+      rightShoulder,
+      rightBlade,
+      ventGlow,
+      monoEye,
     },
     update,
     dispose,
