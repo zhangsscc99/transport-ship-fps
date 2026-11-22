@@ -10,7 +10,12 @@ import { setAnisotropyCap } from './render/textures';
 import { buildMap } from './render/map';
 import { updateWater } from './render/materials';
 import { PlayerCamera } from './render/camera';
-import { WeaponView, type HandsTelemetry, type ViewmodelScreenRect } from './render/weapon';
+import {
+  WeaponView,
+  type HandsTelemetry,
+  type ViewmodelCoverage,
+  type ViewmodelScreenRect,
+} from './render/weapon';
 import { WorldVfx, type VfxTelemetry } from './render/vfx';
 import { easeInOutCubic } from './render/tween';
 import { Hud } from './render/hud';
@@ -118,6 +123,7 @@ declare global {
       gap: number;
     }[];
     __vmRect: () => ViewmodelScreenRect;
+    __vmCoverage: (rect: { x: number; y: number; w: number; h: number }) => ViewmodelCoverage;
     __test: {
       hurt(dmg: number): void;
       teleport(x: number, z: number, yawDeg: number, pitchDeg: number, y?: number): void;
@@ -887,6 +893,8 @@ window.__enemiesFeet = () => {
   return out;
 };
 window.__vmRect = () => weaponView.screenRect(view.camera, window.innerWidth, window.innerHeight);
+window.__vmCoverage = (rect) =>
+  weaponView.screenCoverage(view.camera, window.innerWidth, window.innerHeight, rect);
 window.__enemyTags = enemyTags.telemetry;
 window.__test = {
   hurt: (dmg: number) => hurtPlayer(dmg),

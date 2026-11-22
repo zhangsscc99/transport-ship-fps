@@ -1,11 +1,10 @@
-// Touch control layer (F108 / HUD v2):
-//   - Left thumb natural zone: virtual joystick ONLY (r=56px dashed ring + solid
-//     nub, deadzone 8px). No sprint button.
-//   - Right thumb arc zone: ALL action keys (FIRE 76px circle at right/bottom 24px,
-//     RELOAD 52px upper-left of FIRE, SWAP 52px above RELOAD, JUMP 52px directly
-//     above FIRE, CROUCH 48px above JUMP).
-//   - Dedicated portrait (390×844) & landscape (844×390) anchor sets: landscape
-//     shifts the right cluster right and scales right buttons down 8% (0.92×).
+// Touch control layer (F108 / HUD v2 / F217b portrait composition):
+//   - Portrait (390×844): virtual joystick bottom-left (left:20, bottom:82, r=56),
+//     RELOAD/SWAP/JUMP/CROUCH in a 2×2 grid strictly above the joystick ring on
+//     the left so the bottom-right stays open for the natural FPS viewmodel;
+//     FIRE stays at bottom-right 24/24px.
+//   - Landscape (844×390): unchanged right thumb arc (FIRE/RELOAD/SWAP/JUMP/CROUCH)
+//     with left joystick only.
 //   - Input判定 logic (stick/look/aim-while-firing/edge/toggle) is unchanged.
 
 import type { InputState } from '../game/player';
@@ -15,7 +14,7 @@ import { PALETTE } from '../render/palette';
 import { buildHudButton, HUD_ICONS } from '../render/hud';
 
 /** SPEC: joystick radius 56 CSS px, dead-zone 8px, look 0.35°/px. */
-const STICK_R = 56;
+export const STICK_R = 56;
 const STICK_DZ = 8;
 
 export type TouchBtnId = 'fire' | 'reload' | 'swap' | 'jump' | 'crouch';
@@ -32,18 +31,20 @@ export interface LayoutSpec {
   btns: Record<TouchBtnId, BtnAnchor>;
 }
 
-/** Portrait 390×844 anchors: right cluster sits in the lower-right thumb arc,
- *  all 5 buttons stay non-overlapping with ≥8px pairwise spacing (≥6px spec),
- *  ≥24px safe margin from screen edges, FIRE at 24/24px, and strictly outside
- *  the 120px center crosshair clear radius. */
+/** Portrait 390×844 anchors (F217b):
+ *  - FIRE stays anchored at bottom-right 24/24px (76px circle).
+ *  - RELOAD/SWAP/JUMP/CROUCH form a 2×2 grid on the left (x=16/76, bottom=202/262,
+ *    52px plates, 8px pairwise spacing, 8px clear above the r=56 joystick ring at
+ *    left:20/bottom:82, right edge 128px clear of the bottom-right viewmodel, and
+ *    strictly outside the 120px center crosshair circle). */
 export const PORTRAIT_LAYOUT: LayoutSpec = {
   stick: { left: 20, bottom: 82 },
   btns: {
     fire: { size: 76, side: 'right', x: 24, bottom: 24 },
-    reload: { size: 52, side: 'right', x: 108, bottom: 36 },
-    swap: { size: 52, side: 'right', x: 92, bottom: 108 },
-    jump: { size: 52, side: 'right', x: 28, bottom: 108 },
-    crouch: { size: 48, side: 'right', x: 30, bottom: 168 },
+    reload: { size: 52, side: 'left', x: 16, bottom: 202 },
+    jump: { size: 52, side: 'left', x: 76, bottom: 202 },
+    swap: { size: 52, side: 'left', x: 16, bottom: 262 },
+    crouch: { size: 52, side: 'left', x: 76, bottom: 262 },
   },
 };
 

@@ -21,6 +21,8 @@ const URL = process.env.TSF_URL ?? 'http://127.0.0.1:3028/transport/';
 const OUT = process.env.OUT ?? 'e2e/shots';
 const SHOT_TIMEOUT = 150000;
 const ACTION_BTNS = ['fire', 'reload', 'swap', 'jump', 'crouch'];
+const SECONDARY_BTNS = ['reload', 'swap', 'jump', 'crouch'];
+const STICK_R = 56;
 
 // Recorded pre-F217 landscape rifle viewmodel baseline (docs/HUD-BASELINE.md,
 // rest midpoint across the ±1.5px idle breathe/sway cycle)
@@ -46,6 +48,18 @@ function parseRgba(str) {
   const m = String(str).match(/rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)(?:\s*,\s*([\d.]+))?\s*\)/i);
   if (!m) return null;
   return { r: Number(m[1]), g: Number(m[2]), b: Number(m[3]), a: m[4] === undefined ? 1 : Number(m[4]) };
+}
+
+function rectInterArea(a, b) {
+  const ix = Math.max(0, Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x));
+  const iy = Math.max(0, Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y));
+  return Number((ix * iy).toFixed(2));
+}
+
+function circleRectDist(cx, cy, r) {
+  const dx = Math.max(r.x - cx, 0, cx - (r.x + r.w));
+  const dy = Math.max(r.y - cy, 0, cy - (r.y + r.h));
+  return Math.hypot(dx, dy);
 }
 
 async function runViewport(vp) {
@@ -106,7 +120,28 @@ async function runViewport(vp) {
             labelOverflow: lr ? lr.width > el.clientWidth + 1 : false,
           });
         }
-        return { vm, btns };
+        const stickEl = document.querySelector('#touch-ui [data-stick="idle"]');
+        const sr = stickEl ? stickEl.getBoundingClientRect() : null;
+        const stick = sr
+          ? {
+              x: +sr.x.toFixed(1),
+              y: +sr.y.toFixed(1),
+              w: +sr.width.toFixed(1),
+              h: +sr.height.toFixed(1),
+              cx: +(sr.x + sr.width / 2).toFixed(1),
+              cy: +(sr.y + sr.height / 2).toFixed(1),
+              r: +(sr.width / 2).toFixed(1),
+            }
+          : null;
+        const hpEl = document.querySelector('[data-hud="hp"]');
+        const hr = hpEl ? hpEl.getBoundingClientRect() : null;
+        const hp = hr
+          ? { x: +hr.x.toFixed(1), y: +hr.y.toFixed(1), w: +hr.width.toFixed(1), h: +hr.height.toFixed(1) }
+          : null;
+        const fireBtn = btns.find((b) => b.id === 'fire');
+        const fireVmCoverage =
+          fireBtn && typeof window.__vmCoverage === 'function' ? window.__vmCoverage(fireBtn.rect) : null;
+        return { vm, btns, stick, hp, fireVmCoverage };
       }, ACTION_BTNS);
 
       // 1. Capture normal screenshot
@@ -141,7 +176,81 @@ async function runViewport(vp) {
       });
       const contrast = await analyzeContrast(page, pngOn.toString('base64'), pngOff.toString('base64'), specs);
       log(`contrast analyzed`);
-      return { dom, contrast, errors, shotPath };
+
+      // 3. For portrait, also capture a live "moving + firing" action frame
+      let actionShot = null;
+      if (vp.name === 'portrait') {
+        const fireRect = dom.btns.find((b) => b.id === 'fire')?.rect;
+        const stickCx = dom.stick ? dom.stick.cx : 76;
+        const stickCy = dom.stick ? dom.stick.cy : 706;
+        const fireCx = fireRect ? fireRect.x + fireRect.w / 2 : 328;
+        const fireCy = fireRect ? fireRect.y + fireRect.h / 2 : 782;
+
+        const pos0 = await page.evaluate(() => ({
+          x: window.__state.x,
+          z: window.__state.z,
+          ammo: window.__state.ammo,
+        }));
+        await page.evaluate(() => window.__test.setPaused(false));
+        await page.evaluate(
+          ({ scx, scy, fcx, fcy }) => {
+            const stickZone = document.querySelector('#touch-ui [data-zone="stick"]');
+            const fireBtn = document.querySelector('#touch-ui [data-btn="fire"]');
+            const mkEv = (type, id, x, y) =>
+              new PointerEvent(type, {
+                pointerId: id,
+                clientX: x,
+                clientY: y,
+                bubbles: true,
+                cancelable: true,
+                pointerType: 'touch',
+                isPrimary: id === 1,
+              });
+            stickZone?.dispatchEvent(mkEv('pointerdown', 1, scx, scy));
+            window.dispatchEvent(mkEv('pointermove', 1, scx + 12, scy - 46));
+            fireBtn?.dispatchEvent(mkEv('pointerdown', 2, fcx, fcy));
+          },
+          { scx: stickCx, scy: stickCy, fcx: fireCx, fcy: fireCy },
+        );
+
+        // Wait until player has moved and fired at least 2 rounds (live motion + recoil/flash)
+        await page.waitForFunction(
+          (p0) => {
+            const s = window.__state;
+            if (!s) return false;
+            const moved = Math.hypot(s.x - p0.x, s.z - p0.z);
+            return s.firing && s.ammo <= p0.ammo - 2 && moved > 0.15;
+          },
+          pos0,
+          { timeout: 60000 },
+        );
+        await page.evaluate(() => window.__test.setPaused(true));
+        const actionPath = `${OUT}/hud217-portrait-action.png`;
+        await page.screenshot({ path: actionPath, timeout: SHOT_TIMEOUT });
+        const actState = await page.evaluate(() => ({
+          ammo: window.__state.ammo,
+          firing: window.__state.firing,
+          x: +window.__state.x.toFixed(2),
+          z: +window.__state.z.toFixed(2),
+          vm: window.__vmRect(),
+          muzzleFlashSlots: window.__vfx?.muzzleFlashSlots ?? 0,
+        }));
+        // Release synthetic pointers cleanly
+        await page.evaluate(() => {
+          for (const id of [1, 2]) {
+            window.dispatchEvent(new PointerEvent('pointerup', { pointerId: id, bubbles: true, pointerType: 'touch' }));
+          }
+        });
+        actionShot = {
+          path: actionPath,
+          movedDist: Number(Math.hypot(actState.x - pos0.x, actState.z - pos0.z).toFixed(2)),
+          shotsFired: pos0.ammo - actState.ammo,
+          ...actState,
+        };
+        log(`captured action frame ${actionPath} (moved=${actionShot.movedDist}m, shots=${actionShot.shotsFired})`);
+      }
+
+      return { dom, contrast, errors, shotPath, actionShot };
     } catch (e) {
       lastErr = e;
       log(`FAILED attempt ${attempt}: ${String(e).split('\n')[0]}`);
@@ -256,7 +365,7 @@ for (const vp of [
   { name: 'portrait', vw: 390, vh: 844 },
   { name: 'landscape', vw: 844, vh: 390 },
 ]) {
-  const { dom, contrast, errors, shotPath } = await runViewport(vp);
+  const { dom, contrast, errors, shotPath, actionShot } = await runViewport(vp);
 
   if (dom.btns.length !== ACTION_BTNS.length) {
     failures.push(`${vp.name}: expected ${ACTION_BTNS.length} action buttons, found ${dom.btns.length}`);
@@ -287,32 +396,41 @@ for (const vp of [
     }
   }
 
-  // Assert viewmodel & layout
+  // Assert viewmodel & composition layout
   const vm = dom.vm;
+  let composition = null;
   if (vp.name === 'portrait') {
     const rightEdge = Number((vm.x + vm.w).toFixed(1));
+    const bottomEdge = Number((vm.y + vm.h).toFixed(1));
+    const minBottom = Number((0.98 * vp.vh).toFixed(2));
+
+    // 5 portrait __vmRect composition gates (F217b: natural bottom-right hold)
+    if (vm.x < 110) {
+      failures.push(`portrait vm.x ${vm.x} < 110`);
+    }
+    if (rightEdge < 355) {
+      failures.push(`portrait vm right edge (x+w) ${rightEdge} < 355`);
+    }
+    if (bottomEdge < minBottom) {
+      failures.push(`portrait vm bottom edge (y+h) ${bottomEdge} < ${minBottom} (0.98*vh)`);
+    }
+    if (vm.h < 186 || vm.h > 354) {
+      failures.push(`portrait vm.h ${vm.h} outside [186, 354]`);
+    }
     if (vm.scale < 0.74 || vm.scale > 0.80) {
-      failures.push(`portrait vm scale ${vm.scale} outside [0.74, 0.80]`);
+      failures.push(`portrait vm.scale ${vm.scale} outside [0.74, 0.80]`);
     }
-    if (vm.h > 354) {
-      failures.push(`portrait vm height ${vm.h} > 354`);
-    }
-    if (vm.h < vp.vh * 0.22) {
-      failures.push(`portrait vm height ${vm.h} < ${(vp.vh * 0.22).toFixed(1)} (0.22*vh)`);
-    }
-    if (rightEdge > 340) {
-      failures.push(`portrait vm right edge ${rightEdge} > 340`);
-    }
-    // Crosshair 120px circle clearance
+
+    // Crosshair 120px circle clearance for viewmodel
     const cx = vp.vw / 2;
     const cy = vp.vh / 2;
-    const cdx = Math.max(vm.x - cx, 0, cx - (vm.x + vm.w));
-    const cdy = Math.max(vm.y - cy, 0, cy - (vm.y + vm.h));
-    const crossDist = Math.hypot(cdx, cdy);
-    if (crossDist < 120) {
-      failures.push(`portrait vm overlaps center crosshair 120px circle (dist=${crossDist.toFixed(1)}px)`);
+    const vmCrossDist = Number(circleRectDist(cx, cy, vm).toFixed(1));
+    if (vmCrossDist < 120) {
+      failures.push(`portrait vm overlaps center crosshair 120px circle (dist=${vmCrossDist}px)`);
     }
-    // Portrait 5-button layout checks
+
+    // Portrait 5-button edge margins & pairwise spacing
+    let minPairGap = Infinity;
     for (let i = 0; i < dom.btns.length; i++) {
       const a = dom.btns[i].rect;
       if (a.x < 8 || a.y < 8 || vp.vw - (a.x + a.w) < 8 || vp.vh - (a.y + a.h) < 8) {
@@ -324,19 +442,85 @@ for (const vp of [
         const dx = Math.max(0, a.x - (b.x + b.w), b.x - (a.x + a.w));
         const dy = Math.max(0, a.y - (b.y + b.h), b.y - (a.y + a.h));
         const gap = Math.hypot(dx, dy);
+        if (gap < minPairGap) minPairGap = gap;
         if (overlap || gap < 6) {
           failures.push(`portrait ${dom.btns[i].id}<->${dom.btns[j].id} gap=${gap.toFixed(1)}px (<6)`);
         }
       }
     }
+
+    // 4 secondary buttons: 0 intersection with vm bbox, non-intersecting with r=56 joystick circle,
+    // clear of HP bar, below screen midline, and outside 120px center crosshair circle
+    const stickCenter = dom.stick ? { cx: dom.stick.cx, cy: dom.stick.cy } : { cx: 20 + STICK_R, cy: vp.vh - 82 - STICK_R };
+    const secondaryVmBboxInter = {};
+    const secondaryStickClearance = {};
+    const secondaryCrossDist = {};
+    for (const id of SECONDARY_BTNS) {
+      const btn = dom.btns.find((b) => b.id === id);
+      if (!btn) continue;
+      const r = btn.rect;
+      const vmInter = rectInterArea(r, vm);
+      secondaryVmBboxInter[id] = vmInter;
+      if (vmInter > 0) {
+        failures.push(`portrait secondary ${id} intersects vm bbox (area=${vmInter}px^2 > 0)`);
+      }
+      const sDist = circleRectDist(stickCenter.cx, stickCenter.cy, r);
+      secondaryStickClearance[id] = Number((sDist - STICK_R).toFixed(1));
+      if (sDist < STICK_R) {
+        failures.push(`portrait secondary ${id} intersects r=${STICK_R} joystick circle (dist=${sDist.toFixed(1)}px)`);
+      }
+      if (dom.hp) {
+        const hpInter = rectInterArea(r, dom.hp);
+        if (hpInter > 0) {
+          failures.push(`portrait secondary ${id} overlaps HP bar (area=${hpInter}px^2)`);
+        }
+      }
+      const cDist = Number(circleRectDist(cx, cy, r).toFixed(1));
+      secondaryCrossDist[id] = cDist;
+      if (cDist < 120) {
+        failures.push(`portrait secondary ${id} intrudes 120px crosshair circle (dist=${cDist}px)`);
+      }
+      if (r.y < vp.vh / 2) {
+        failures.push(`portrait secondary ${id} top y=${r.y} above screen midline ${vp.vh / 2}`);
+      }
+    }
+
+    // FIRE button margins 24+-2 and viewmodel silhouette overlap <= 40% of FIRE area
     const fire = dom.btns.find((b) => b.id === 'fire')?.rect;
+    let fireMargins = null;
     if (fire) {
-      const rm = vp.vw - (fire.x + fire.w);
-      const bm = vp.vh - (fire.y + fire.h);
+      const rm = Number((vp.vw - (fire.x + fire.w)).toFixed(1));
+      const bm = Number((vp.vh - (fire.y + fire.h)).toFixed(1));
+      fireMargins = { right: rm, bottom: bm };
       if (Math.abs(rm - 24) > 2 || Math.abs(bm - 24) > 2) {
         failures.push(`portrait FIRE margins right=${rm}, bottom=${bm} outside 24+-2px`);
       }
     }
+    const cov = dom.fireVmCoverage;
+    if (!cov) {
+      failures.push('portrait missing window.__vmCoverage(fire) measurement');
+    } else {
+      if (cov.rectRatio > 0.40) {
+        failures.push(`portrait FIRE rect vs vm overlap ${(cov.rectRatio * 100).toFixed(2)}% > 40%`);
+      }
+      if (cov.circleRatio > 0.40) {
+        failures.push(`portrait FIRE circle vs vm overlap ${(cov.circleRatio * 100).toFixed(2)}% > 40%`);
+      }
+    }
+
+    composition = {
+      vmRight: rightEdge,
+      vmBottom: bottomEdge,
+      vmCrossDist,
+      minPairGap: Number(minPairGap.toFixed(1)),
+      stick: dom.stick,
+      hp: dom.hp,
+      fireMargins,
+      secondaryVmBboxInter,
+      secondaryStickClearance,
+      secondaryCrossDist,
+      fireVmCoverage: cov,
+    };
   } else {
     if (vm.scale !== 1) failures.push(`landscape vm scale ${vm.scale} !== 1`);
     for (const k of ['x', 'y', 'w', 'h']) {
@@ -359,8 +543,11 @@ for (const vp of [
 
   report[vp.name] = {
     shot: shotPath,
+    ...(actionShot ? { actionShot } : {}),
     vm,
     vmRight: Number((vm.x + vm.w).toFixed(1)),
+    vmBottom: Number((vm.y + vm.h).toFixed(1)),
+    ...(composition ? { composition } : {}),
     minAlpha: Number(minAlpha.toFixed(4)),
     maxAlpha: Number(maxAlpha.toFixed(4)),
     buttons: dom.btns.map((b, i) => ({

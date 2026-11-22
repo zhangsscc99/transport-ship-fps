@@ -189,14 +189,15 @@ var PALETTE = {
 var HURT_BG = `radial-gradient(ellipse 115% 90% at 50% 50%, transparent 55%, ${PALETTE.hurtVeil} 100%)`;
 
 // src/input/touch.ts
+var STICK_R = 56;
 var PORTRAIT_LAYOUT = {
   stick: { left: 20, bottom: 82 },
   btns: {
     fire: { size: 76, side: "right", x: 24, bottom: 24 },
-    reload: { size: 52, side: "right", x: 108, bottom: 36 },
-    swap: { size: 52, side: "right", x: 92, bottom: 108 },
-    jump: { size: 52, side: "right", x: 28, bottom: 108 },
-    crouch: { size: 48, side: "right", x: 30, bottom: 168 }
+    reload: { size: 52, side: "left", x: 16, bottom: 202 },
+    jump: { size: 52, side: "left", x: 76, bottom: 202 },
+    swap: { size: 52, side: "left", x: 16, bottom: 262 },
+    crouch: { size: 52, side: "left", x: 76, bottom: 262 }
   }
 };
 var LANDSCAPE_LAYOUT = {
@@ -293,4 +294,42 @@ test("landscape 844x390: all 5 action button rects match baseline anchors pixel-
       `landscape ${id} rect drifted from baseline`
     );
   }
+});
+test("portrait 390x844 (F217b): secondary 2x2 grid sits on left above r=56 joystick ring, clear of HP bar, crosshair circle, and right viewmodel zone", () => {
+  const VW = 390;
+  const VH = 844;
+  const rects = layoutRects(PORTRAIT_LAYOUT, VW, VH);
+  const secondaryIds = ["reload", "swap", "jump", "crouch"];
+  const stickCx = PORTRAIT_LAYOUT.stick.left + STICK_R;
+  const stickCy = VH - PORTRAIT_LAYOUT.stick.bottom - STICK_R;
+  const stickTop = stickCy - STICK_R;
+  const hpRect = { x: 16, y: VH - 80, right: 16 + 206, bottom: VH - 18 };
+  assert.equal(PORTRAIT_LAYOUT.btns.fire.side, "right");
+  assert.equal(PORTRAIT_LAYOUT.btns.fire.x, 24);
+  assert.equal(PORTRAIT_LAYOUT.btns.fire.bottom, 24);
+  assert.equal(PORTRAIT_LAYOUT.btns.fire.size, 76);
+  const uniqueXs = /* @__PURE__ */ new Set();
+  const uniqueYs = /* @__PURE__ */ new Set();
+  for (const id of secondaryIds) {
+    const anchor = PORTRAIT_LAYOUT.btns[id];
+    const r = rects[id];
+    assert.equal(anchor.side, "left", `${id} must be anchored on the left side`);
+    assert.ok(r.right <= VW / 2, `${id} right edge ${r.right} crosses screen midline`);
+    assert.ok(r.y >= VH / 2, `${id} top ${r.y} crosses above screen midline ${VH / 2}`);
+    const cdx = Math.max(r.x - stickCx, 0, stickCx - r.right);
+    const cdy = Math.max(r.y - stickCy, 0, stickCy - r.bottom);
+    const stickDist = Math.hypot(cdx, cdy);
+    assert.ok(
+      stickDist >= STICK_R,
+      `${id} intersects joystick circle (dist=${stickDist.toFixed(1)}px < ${STICK_R}px)`
+    );
+    assert.ok(r.bottom <= stickTop, `${id} bottom ${r.bottom} intrudes below joystick top ${stickTop}`);
+    const hpOverlap = r.x < hpRect.right && hpRect.x < r.right && r.y < hpRect.bottom && hpRect.y < r.bottom;
+    assert.equal(hpOverlap, false, `${id} overlaps bottom-left HP bar`);
+    assert.ok(r.right <= 130, `${id} right edge ${r.right} > 130px (too close to viewmodel)`);
+    uniqueXs.add(r.x);
+    uniqueYs.add(r.y);
+  }
+  assert.equal(uniqueXs.size, 2, `expected 2 columns in left 2x2 grid, got ${uniqueXs.size}`);
+  assert.equal(uniqueYs.size, 2, `expected 2 rows in left 2x2 grid, got ${uniqueYs.size}`);
 });

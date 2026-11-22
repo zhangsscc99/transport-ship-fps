@@ -716,6 +716,15 @@ export interface ViewmodelScreenRect {
   scale: number;
 }
 
+export interface ViewmodelCoverage {
+  rectRatio: number;
+  circleRatio: number;
+  rectPixels: number;
+  rectTotal: number;
+  circlePixels: number;
+  circleTotal: number;
+}
+
 const BOX_FACES: readonly [number, number, number, number][] = [
   [0, 1, 2, 3],
   [4, 5, 6, 7],
@@ -816,13 +825,15 @@ export class WeaponView {
 
   private readonly basePos = new THREE.Vector3(0.27, -0.265, -0.5);
   private readonly baseRot = new THREE.Euler(0.11, 0.075, 0);
-  // Portrait (aspect < 1) viewmodel framing: scaled 0.76× (spec 0.74–0.80) and tucked
-  // slightly inward/down/forward so the projected Box3 clears the right action buttons
-  // (x+w ≤ 340), stays within 0.22–0.42× viewport height, and never intrudes on the
-  // 120px crosshair center circle. Landscape stays fixed at scale 1.0 / basePos.
+  // Portrait (aspect < 1) viewmodel framing (F217b): scaled 0.76× (spec 0.74–0.80)
+  // in a natural bottom-right hold angled toward the center crosshair so the
+  // projected Box3 stays on the right (x >= 135, x+w = 390, y+h = 844, h ~ 297),
+  // completely clear of the left 2×2 action buttons and 120px crosshair circle,
+  // with minimal actual silhouette overlap on the bottom-right FIRE button.
+  // Landscape stays fixed at scale 1.0 / basePos / baseRot.
   private readonly portraitScale = 0.76;
-  private readonly portraitBasePos = new THREE.Vector3(0.024, -0.326, -0.585);
-  private readonly portraitBaseRot = new THREE.Euler(0.095, 0.025, 0);
+  private readonly portraitBasePos = new THREE.Vector3(0.17, -0.25, -0.60);
+  private readonly portraitBaseRot = new THREE.Euler(0.0, 0.22, 0);
 
   constructor() {
     this.leftHand = new HumanHand('left');
@@ -1038,6 +1049,161 @@ export class WeaponView {
       w: Number(Math.max(0, cr - cx).toFixed(1)),
       h: Number(Math.max(0, cb - cy).toFixed(1)),
       scale,
+    };
+  }
+
+  /**
+   * Read-only telemetry: compute the exact fraction of a CSS-pixel screen rect
+   * (and its inscribed circle) covered by projected triangles of the active
+   * viewmodel (active gun + articulated hands, excluding muzzle VFX).
+   */
+  screenCoverage(
+    camera: THREE.PerspectiveCamera,
+    vw: number,
+    vh: number,
+    rect: { x: number; y: number; w: number; h: number },
+  ): ViewmodelCoverage {
+    const rx0 = Math.max(0, Math.floor(rect.x));
+    const ry0 = Math.max(0, Math.floor(rect.y));
+    const rx1 = Math.min(vw, Math.ceil(rect.x + rect.w));
+    const ry1 = Math.min(vh, Math.ceil(rect.y + rect.h));
+    const rw = Math.max(0, rx1 - rx0);
+    const rh = Math.max(0, ry1 - ry0);
+    if (!this.group.visible || rw <= 0 || rh <= 0 || vw <= 0 || vh <= 0) {
+      return { rectRatio: 0, circleRatio: 0, rectPixels: 0, rectTotal: rw * rh, circlePixels: 0, circleTotal: 0 };
+    }
+
+    camera.updateMatrixWorld(true);
+    camera.updateProjectionMatrix();
+    const viewProj = new THREE.Matrix4().multiplyMatrices(
+      camera.projectionMatrix,
+      camera.matrixWorldInverse,
+    );
+    const gun = this.guns.get(this.current);
+    const roots: THREE.Object3D[] = [this.leftHand.root, this.rightHand.root];
+    if (gun) roots.unshift(gun.root);
+
+    const mask = new Uint8Array(rw * rh);
+    const v0 = new THREE.Vector3();
+    const v1 = new THREE.Vector3();
+    const v2 = new THREE.Vector3();
+
+    const clipNear = (verts: THREE.Vector4[]): THREE.Vector4[] => {
+      const out: THREE.Vector4[] = [];
+      for (let i = 0; i < verts.length; i++) {
+        const a = verts[i];
+        const b = verts[(i + 1) % verts.length];
+        const da = a.z + a.w;
+        const db = b.z + b.w;
+        if (da >= 0) out.push(a);
+        if ((da >= 0) !== (db >= 0)) {
+          const t = da / (da - db);
+          out.push(
+            new THREE.Vector4(
+              a.x + (b.x - a.x) * t,
+              a.y + (b.y - a.y) * t,
+              a.z + (b.z - a.z) * t,
+              a.w + (b.w - a.w) * t,
+            ),
+          );
+        }
+      }
+      return out;
+    };
+
+    const rasterTri = (ax: number, ay: number, bx: number, by: number, cx: number, cy: number): void => {
+      const minX = Math.max(rx0, Math.floor(Math.min(ax, bx, cx)));
+      const maxX = Math.min(rx1 - 1, Math.ceil(Math.max(ax, bx, cx)));
+      const minY = Math.max(ry0, Math.floor(Math.min(ay, by, cy)));
+      const maxY = Math.min(ry1 - 1, Math.ceil(Math.max(ay, by, cy)));
+      if (minX > maxX || minY > maxY) return;
+      const area = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
+      if (Math.abs(area) < 1e-6) return;
+      const inv = 1 / area;
+      for (let y = minY; y <= maxY; y++) {
+        const py = y + 0.5;
+        for (let x = minX; x <= maxX; x++) {
+          const px = x + 0.5;
+          const w0 = ((bx - px) * (cy - py) - (by - py) * (cx - px)) * inv;
+          const w1 = ((cx - px) * (ay - py) - (cy - py) * (ax - px)) * inv;
+          if (w0 >= 0 && w1 >= 0 && 1 - w0 - w1 >= 0) {
+            mask[(y - ry0) * rw + (x - rx0)] = 1;
+          }
+        }
+      }
+    };
+
+    for (const r of roots) {
+      r.traverseVisible((obj) => {
+        const mesh = obj as THREE.Mesh;
+        if (!mesh.isMesh || !mesh.geometry) return;
+        const pos = mesh.geometry.getAttribute('position') as THREE.BufferAttribute | undefined;
+        if (!pos) return;
+        const skinned = mesh as unknown as THREE.SkinnedMesh;
+        const isSkinned = Boolean(skinned.isSkinnedMesh);
+        if (isSkinned) skinned.skeleton?.update();
+
+        const loadVert = (idx: number, out: THREE.Vector3): void => {
+          out.fromBufferAttribute(pos, idx);
+          if (isSkinned) skinned.applyBoneTransform(idx, out);
+          out.applyMatrix4(mesh.matrixWorld);
+        };
+
+        const index = mesh.geometry.getIndex();
+        const triCount = index ? index.count / 3 : pos.count / 3;
+        for (let t = 0; t < triCount; t++) {
+          const i0 = index ? index.getX(t * 3) : t * 3;
+          const i1 = index ? index.getX(t * 3 + 1) : t * 3 + 1;
+          const i2 = index ? index.getX(t * 3 + 2) : t * 3 + 2;
+          loadVert(i0, v0);
+          loadVert(i1, v1);
+          loadVert(i2, v2);
+          const clipped = clipNear([
+            new THREE.Vector4(v0.x, v0.y, v0.z, 1).applyMatrix4(viewProj),
+            new THREE.Vector4(v1.x, v1.y, v1.z, 1).applyMatrix4(viewProj),
+            new THREE.Vector4(v2.x, v2.y, v2.z, 1).applyMatrix4(viewProj),
+          ]);
+          for (let k = 1; k + 1 < clipped.length; k++) {
+            const a = clipped[0];
+            const b = clipped[k];
+            const c = clipped[k + 1];
+            rasterTri(
+              ((a.x / a.w) * 0.5 + 0.5) * vw,
+              (-(a.y / a.w) * 0.5 + 0.5) * vh,
+              ((b.x / b.w) * 0.5 + 0.5) * vw,
+              (-(b.y / b.w) * 0.5 + 0.5) * vh,
+              ((c.x / c.w) * 0.5 + 0.5) * vw,
+              (-(c.y / c.w) * 0.5 + 0.5) * vh,
+            );
+          }
+        }
+      });
+    }
+
+    const cx = rect.x + rect.w / 2;
+    const cy = rect.y + rect.h / 2;
+    const rad = Math.min(rect.w, rect.h) / 2;
+    let rectPixels = 0;
+    let circlePixels = 0;
+    let circleTotal = 0;
+    for (let y = ry0; y < ry1; y++) {
+      for (let x = rx0; x < rx1; x++) {
+        const hit = mask[(y - ry0) * rw + (x - rx0)];
+        if (hit) rectPixels++;
+        if (Math.hypot(x + 0.5 - cx, y + 0.5 - cy) <= rad) {
+          circleTotal++;
+          if (hit) circlePixels++;
+        }
+      }
+    }
+    const rectTotal = rw * rh;
+    return {
+      rectRatio: Number((rectTotal > 0 ? rectPixels / rectTotal : 0).toFixed(4)),
+      circleRatio: Number((circleTotal > 0 ? circlePixels / circleTotal : 0).toFixed(4)),
+      rectPixels,
+      rectTotal,
+      circlePixels,
+      circleTotal,
     };
   }
 

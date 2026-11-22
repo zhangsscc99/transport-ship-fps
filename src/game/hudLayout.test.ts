@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   PORTRAIT_LAYOUT,
   LANDSCAPE_LAYOUT,
+  STICK_R,
   type BtnAnchor,
   type LayoutSpec,
   type TouchBtnId,
@@ -119,4 +120,60 @@ test('landscape 844x390: all 5 action button rects match baseline anchors pixel-
       `landscape ${id} rect drifted from baseline`,
     );
   }
+});
+
+test('portrait 390x844 (F217b): secondary 2x2 grid sits on left above r=56 joystick ring, clear of HP bar, crosshair circle, and right viewmodel zone', () => {
+  const VW = 390;
+  const VH = 844;
+  const rects = layoutRects(PORTRAIT_LAYOUT, VW, VH);
+  const secondaryIds: readonly TouchBtnId[] = ['reload', 'swap', 'jump', 'crouch'];
+
+  // Joystick visual circle (left:20, bottom:82, r=56 -> center (76, 706))
+  const stickCx = PORTRAIT_LAYOUT.stick.left + STICK_R;
+  const stickCy = VH - PORTRAIT_LAYOUT.stick.bottom - STICK_R;
+  const stickTop = stickCy - STICK_R;
+
+  // HP bar sits at left:16, bottom:18, width:206, height ~60px (top >= VH - 80)
+  const hpRect = { x: 16, y: VH - 80, right: 16 + 206, bottom: VH - 18 };
+
+  // FIRE stays fixed at bottom-right 24/24
+  assert.equal(PORTRAIT_LAYOUT.btns.fire.side, 'right');
+  assert.equal(PORTRAIT_LAYOUT.btns.fire.x, 24);
+  assert.equal(PORTRAIT_LAYOUT.btns.fire.bottom, 24);
+  assert.equal(PORTRAIT_LAYOUT.btns.fire.size, 76);
+
+  const uniqueXs = new Set<number>();
+  const uniqueYs = new Set<number>();
+  for (const id of secondaryIds) {
+    const anchor = PORTRAIT_LAYOUT.btns[id];
+    const r = rects[id];
+    assert.equal(anchor.side, 'left', `${id} must be anchored on the left side`);
+    assert.ok(r.right <= VW / 2, `${id} right edge ${r.right} crosses screen midline`);
+    assert.ok(r.y >= VH / 2, `${id} top ${r.y} crosses above screen midline ${VH / 2}`);
+
+    // Strictly non-intersecting with r=56 joystick circle and above its top edge
+    const cdx = Math.max(r.x - stickCx, 0, stickCx - r.right);
+    const cdy = Math.max(r.y - stickCy, 0, stickCy - r.bottom);
+    const stickDist = Math.hypot(cdx, cdy);
+    assert.ok(
+      stickDist >= STICK_R,
+      `${id} intersects joystick circle (dist=${stickDist.toFixed(1)}px < ${STICK_R}px)`,
+    );
+    assert.ok(r.bottom <= stickTop, `${id} bottom ${r.bottom} intrudes below joystick top ${stickTop}`);
+
+    // Clear of HP panel
+    const hpOverlap =
+      r.x < hpRect.right && hpRect.x < r.right && r.y < hpRect.bottom && hpRect.y < r.bottom;
+    assert.equal(hpOverlap, false, `${id} overlaps bottom-left HP bar`);
+
+    // Strictly left of portrait viewmodel zone (keeps right edge <= 130px)
+    assert.ok(r.right <= 130, `${id} right edge ${r.right} > 130px (too close to viewmodel)`);
+
+    uniqueXs.add(r.x);
+    uniqueYs.add(r.y);
+  }
+
+  // Exact 2x2 grid structure (2 columns x 2 rows)
+  assert.equal(uniqueXs.size, 2, `expected 2 columns in left 2x2 grid, got ${uniqueXs.size}`);
+  assert.equal(uniqueYs.size, 2, `expected 2 rows in left 2x2 grid, got ${uniqueYs.size}`);
 });
