@@ -994,30 +994,30 @@ function createTerminatorAtlas() {
         const river2 = 1 - Math.abs(fbm2Tile(warpU + 0.31, warpV + 0.19, 13, 7, 307, 3) * 2 - 1);
         const cellEdge = voronoiEdgeTile(warpU, warpV, 7, 4, 401);
         const clusterMask = smoothstep((fbm2Tile(u, bv, 4, 2, 463, 3) - 0.32) * 2.1);
-        const cRiver = Math.pow(clamp01((river1 - 0.66) / 0.34), 1.55) * (0.65 + 0.35 * clusterMask);
-        const cBranch = Math.pow(clamp01((river2 - 0.74) / 0.26), 1.85) * 0.8;
-        const cFissure = smoothstep((0.115 - cellEdge) / 0.105) * (0.48 + 0.52 * clusterMask);
+        const cRiver = Math.pow(clamp01((river1 - 0.76) / 0.24), 1.75) * (0.62 + 0.38 * clusterMask);
+        const cBranch = Math.pow(clamp01((river2 - 0.82) / 0.18), 2) * 0.72;
+        const cFissure = smoothstep((0.078 - cellEdge) / 0.072) * (0.45 + 0.55 * clusterMask);
         const crack = clamp01(Math.max(cRiver, cBranch, cFissure));
         const hotCore = clamp01(
-          Math.pow(clamp01((river1 - 0.85) / 0.15), 1.4) + smoothstep((0.048 - cellEdge) / 0.046) * 0.55 * clusterMask
+          Math.pow(clamp01((river1 - 0.9) / 0.1), 1.5) + smoothstep((0.032 - cellEdge) / 0.03) * 0.48 * clusterMask
         );
         const crustMacro = fbm2Tile(u, bv, 10, 6, 509, 3);
         const muscleFibers = 0.5 + 0.5 * Math.sin((u * 18 + w1 * 5) * Math.PI * 2);
         height[idx] = (1 - crack) * (0.6 + crustMacro * 0.28 + muscleFibers * 0.12) + crack * 0.12;
-        const crustR = 46 + crustMacro * 38 + muscleFibers * 16;
-        const crustG = 14 + crustMacro * 13 + muscleFibers * 5;
-        const crustB = 13 + crustMacro * 10 + muscleFibers * 4;
-        const r = lerp(crustR, lerp(218, 255, hotCore), crack);
-        const g = lerp(crustG, lerp(58, 182, hotCore), crack);
-        const b = lerp(crustB, lerp(10, 48, hotCore), crack);
-        ad[p4] = Math.round(clamp2(r, 14, 255));
-        ad[p4 + 1] = Math.round(clamp2(g, 6, 255));
-        ad[p4 + 2] = Math.round(clamp2(b, 6, 255));
+        const crustR = 24 + crustMacro * 22 + muscleFibers * 9;
+        const crustG = 7 + crustMacro * 6 + muscleFibers * 3;
+        const crustB = 7 + crustMacro * 5 + muscleFibers * 3;
+        const r = lerp(crustR, lerp(148, 188, hotCore), crack);
+        const g = lerp(crustG, lerp(26, 80, hotCore), crack);
+        const b = lerp(crustB, lerp(6, 18, hotCore), crack);
+        ad[p4] = Math.round(clamp2(r, 12, 220));
+        ad[p4 + 1] = Math.round(clamp2(g, 5, 180));
+        ad[p4 + 2] = Math.round(clamp2(b, 5, 120));
         ad[p4 + 3] = 255;
-        const emMask = Math.pow(crack, 1.35);
-        ed[p4] = Math.round(clamp01(emMask * 1.12) * 255);
-        ed[p4 + 1] = Math.round(clamp01(emMask * 0.36 + hotCore * 0.56) * 255);
-        ed[p4 + 2] = Math.round(clamp01(emMask * 0.04 + hotCore * 0.24) * 255);
+        const emMask = Math.pow(crack, 1.55);
+        ed[p4] = Math.round(clamp01(emMask * 1.02) * 255);
+        ed[p4 + 1] = Math.round(clamp01(emMask * 0.26 + hotCore * 0.44) * 255);
+        ed[p4 + 2] = Math.round(clamp01(emMask * 0.03 + hotCore * 0.14) * 255);
         ed[p4 + 3] = 255;
       } else if (v >= 0.35) {
         const bv = clamp01((v - 0.35) / 0.28);
@@ -1027,23 +1027,23 @@ function createTerminatorAtlas() {
         const warpV = bv + w2 * 0.1;
         const sinew1 = 1 - Math.abs(fbm2Tile(warpU, warpV, 9, 2, 811, 3) * 2 - 1);
         const sinew2 = voronoiEdgeTile(warpU, warpV, 9, 2, 853);
-        const crack1 = Math.pow(clamp01((sinew1 - 0.72) / 0.28), 1.65);
-        const crack2 = smoothstep((0.1 - sinew2) / 0.09) * 0.72;
+        const crack1 = Math.pow(clamp01((sinew1 - 0.8) / 0.2), 1.85);
+        const crack2 = smoothstep((0.068 - sinew2) / 0.062) * 0.65;
         const crack = clamp01(Math.max(crack1, crack2));
-        const hotCore = Math.pow(clamp01((sinew1 - 0.87) / 0.13), 1.4);
+        const hotCore = Math.pow(clamp01((sinew1 - 0.91) / 0.09), 1.5);
         const crust = fbm2Tile(u, bv, 14, 4, 907, 3);
         height[idx] = (1 - crack) * (0.64 + crust * 0.3) + crack * 0.14;
-        const crustR = 44 + crust * 34;
-        const crustG = 13 + crust * 11;
-        const crustB = 12 + crust * 9;
-        ad[p4] = Math.round(clamp2(lerp(crustR, lerp(212, 255, hotCore), crack), 12, 255));
-        ad[p4 + 1] = Math.round(clamp2(lerp(crustG, lerp(52, 162, hotCore), crack), 6, 255));
-        ad[p4 + 2] = Math.round(clamp2(lerp(crustB, lerp(8, 38, hotCore), crack), 6, 255));
+        const crustR = 22 + crust * 20;
+        const crustG = 6 + crust * 6;
+        const crustB = 6 + crust * 5;
+        ad[p4] = Math.round(clamp2(lerp(crustR, lerp(142, 182, hotCore), crack), 10, 215));
+        ad[p4 + 1] = Math.round(clamp2(lerp(crustG, lerp(22, 74, hotCore), crack), 5, 175));
+        ad[p4 + 2] = Math.round(clamp2(lerp(crustB, lerp(5, 16, hotCore), crack), 5, 115));
         ad[p4 + 3] = 255;
-        const emMask = Math.pow(crack, 1.4) * 0.9;
-        ed[p4] = Math.round(clamp01(emMask * 1.1) * 255);
-        ed[p4 + 1] = Math.round(clamp01(emMask * 0.34 + hotCore * 0.48) * 255);
-        ed[p4 + 2] = Math.round(clamp01(emMask * 0.04 + hotCore * 0.18) * 255);
+        const emMask = Math.pow(crack, 1.6) * 0.85;
+        ed[p4] = Math.round(clamp01(emMask * 1) * 255);
+        ed[p4 + 1] = Math.round(clamp01(emMask * 0.24 + hotCore * 0.38) * 255);
+        ed[p4 + 2] = Math.round(clamp01(emMask * 0.03 + hotCore * 0.12) * 255);
         ed[p4 + 3] = 255;
       } else if (v >= 0.21) {
         const bv = clamp01((v - 0.21) / 0.14);
@@ -1053,16 +1053,16 @@ function createTerminatorAtlas() {
         const wv = bv + w2 * 0.14;
         const edge = voronoiEdgeTile(wu, wv, 8, 4, 967);
         const ridge = 1 - Math.abs(fbm2Tile(wu, wv, 10, 5, 977, 3) * 2 - 1);
-        const magma = clamp01(Math.max(smoothstep((0.26 - edge) / 0.2), Math.pow(clamp01((ridge - 0.52) / 0.48), 1.3)));
-        const superHot = clamp01(smoothstep((0.12 - edge) / 0.1) + Math.pow(clamp01((ridge - 0.78) / 0.22), 1.4) * 0.6);
+        const magma = clamp01(Math.max(smoothstep((0.22 - edge) / 0.17), Math.pow(clamp01((ridge - 0.58) / 0.42), 1.45)));
+        const superHot = clamp01(smoothstep((0.1 - edge) / 0.085) + Math.pow(clamp01((ridge - 0.82) / 0.18), 1.5) * 0.55);
         height[idx] = (1 - magma) * 0.78 + magma * 0.16;
-        ad[p4] = Math.round(lerp(36, lerp(225, 255, superHot), magma));
-        ad[p4 + 1] = Math.round(lerp(10, lerp(62, 168, superHot), magma));
-        ad[p4 + 2] = Math.round(lerp(8, lerp(10, 34, superHot), magma));
+        ad[p4] = Math.round(lerp(24, lerp(168, 206, superHot), magma));
+        ad[p4 + 1] = Math.round(lerp(6, lerp(34, 96, superHot), magma));
+        ad[p4 + 2] = Math.round(lerp(5, lerp(6, 18, superHot), magma));
         ad[p4 + 3] = 255;
-        ed[p4] = Math.round(clamp01(0.18 + magma * 0.82) * 255);
-        ed[p4 + 1] = Math.round(clamp01(0.04 + magma * 0.36 + superHot * 0.48) * 255);
-        ed[p4 + 2] = Math.round(clamp01(magma * 0.05 + superHot * 0.2) * 255);
+        ed[p4] = Math.round(clamp01(0.12 + magma * 0.84) * 255);
+        ed[p4 + 1] = Math.round(clamp01(0.03 + magma * 0.28 + superHot * 0.42) * 255);
+        ed[p4 + 2] = Math.round(clamp01(magma * 0.03 + superHot * 0.14) * 255);
         ed[p4 + 3] = 255;
       } else {
         const bv = clamp01(v / 0.21);
@@ -1071,16 +1071,16 @@ function createTerminatorAtlas() {
         const growthRings = 0.5 + 0.5 * Math.sin(u * Math.PI * 12 + grain * 2.5);
         const h = grain * 0.45 + flutes * 0.35 + growthRings * 0.2;
         height[idx] = h;
-        const rootBlend = smoothstep((u - 0.01) / 0.16);
-        const shade = lerp(0.78, 1.05, rootBlend) * (0.86 + h * 0.22);
-        ad[p4] = Math.round(clamp2(242 * shade, 135, 254));
-        ad[p4 + 1] = Math.round(clamp2(226 * shade, 118, 248));
-        ad[p4 + 2] = Math.round(clamp2(186 * shade, 88, 224));
+        const rootBlend = smoothstep((u - 0.02) / 0.22);
+        const shade = lerp(0.68, 0.98, rootBlend) * (0.82 + h * 0.2);
+        ad[p4] = Math.round(clamp2(198 * shade, 88, 204));
+        ad[p4 + 1] = Math.round(clamp2(178 * shade, 76, 184));
+        ad[p4 + 2] = Math.round(clamp2(144 * shade, 58, 150));
         ad[p4 + 3] = 255;
         const tipGlow = Math.pow(smoothstep((u - 0.58) / 0.4), 1.45) * (0.8 + 0.2 * flutes);
-        ed[p4] = Math.round(clamp01(tipGlow * 1.1) * 255);
-        ed[p4 + 1] = Math.round(clamp01(tipGlow * 0.52) * 255);
-        ed[p4 + 2] = Math.round(clamp01(tipGlow * 0.12) * 255);
+        ed[p4] = Math.round(clamp01(tipGlow * 1) * 255);
+        ed[p4 + 1] = Math.round(clamp01(tipGlow * 0.44) * 255);
+        ed[p4 + 2] = Math.round(clamp01(tipGlow * 0.1) * 255);
         ed[p4 + 3] = 255;
       }
     }
@@ -1282,9 +1282,9 @@ function sculptBoneSpike(opts) {
     const vMapped = lerp(UV_BAND_BONE[0], UV_BAND_BONE[1], clamp01(uv.getX(i)));
     uv.setXY(i, uMapped, vMapped);
     const k = smoothstep(t);
-    colors[i * 3] = lerp(baseCol[0], tipCol[0], k);
-    colors[i * 3 + 1] = lerp(baseCol[1], tipCol[1], k);
-    colors[i * 3 + 2] = lerp(baseCol[2], tipCol[2], k);
+    colors[i * 3] = clamp2(lerp(baseCol[0], tipCol[0], k) * 0.78, 0.22, 0.96);
+    colors[i * 3 + 1] = clamp2(lerp(baseCol[1], tipCol[1], k) * 0.78, 0.2, 0.94);
+    colors[i * 3 + 2] = clamp2(lerp(baseCol[2], tipCol[2], k) * 0.78, 0.16, 0.88);
   }
   uv.needsUpdate = true;
   geo.setAttribute("color", new THREE.BufferAttribute(colors, 3));
@@ -1361,9 +1361,9 @@ function sculptCurvedBoneBlade(opts) {
     }
     const uMapped = tipGlow ? t : lerp(0.08, 0.48, t);
     const colK = smoothstep(t);
-    const cr = lerp(baseCol[0], tipCol[0], colK);
-    const cg = lerp(baseCol[1], tipCol[1], colK);
-    const cb = lerp(baseCol[2], tipCol[2], colK);
+    const cr = clamp2(lerp(baseCol[0], tipCol[0], colK) * 0.78, 0.22, 0.96);
+    const cg = clamp2(lerp(baseCol[1], tipCol[1], colK) * 0.78, 0.2, 0.94);
+    const cb = clamp2(lerp(baseCol[2], tipCol[2], colK) * 0.78, 0.16, 0.88);
     for (let r = 0; r < ringVerts; r++) {
       const frac = r / radialSegs;
       const theta = frac * Math.PI * 2;
@@ -1402,17 +1402,17 @@ function sculptCurvedBoneBlade(opts) {
   positions[startCapIdx * 3 + 2] = pStart.z;
   uvs[startCapIdx * 2] = tipGlow ? 0 : 0.08;
   uvs[startCapIdx * 2 + 1] = (UV_BAND_BONE[0] + UV_BAND_BONE[1]) * 0.5;
-  colors[startCapIdx * 3] = baseCol[0];
-  colors[startCapIdx * 3 + 1] = baseCol[1];
-  colors[startCapIdx * 3 + 2] = baseCol[2];
+  colors[startCapIdx * 3] = clamp2(baseCol[0] * 0.78, 0.22, 0.96);
+  colors[startCapIdx * 3 + 1] = clamp2(baseCol[1] * 0.78, 0.2, 0.94);
+  colors[startCapIdx * 3 + 2] = clamp2(baseCol[2] * 0.78, 0.16, 0.88);
   positions[endCapIdx * 3] = pEnd.x;
   positions[endCapIdx * 3 + 1] = pEnd.y;
   positions[endCapIdx * 3 + 2] = pEnd.z;
   uvs[endCapIdx * 2] = tipGlow ? 1 : 0.48;
   uvs[endCapIdx * 2 + 1] = (UV_BAND_BONE[0] + UV_BAND_BONE[1]) * 0.5;
-  colors[endCapIdx * 3] = tipCol[0];
-  colors[endCapIdx * 3 + 1] = tipCol[1];
-  colors[endCapIdx * 3 + 2] = tipCol[2];
+  colors[endCapIdx * 3] = clamp2(tipCol[0] * 0.78, 0.22, 0.96);
+  colors[endCapIdx * 3 + 1] = clamp2(tipCol[1] * 0.78, 0.2, 0.94);
+  colors[endCapIdx * 3 + 2] = clamp2(tipCol[2] * 0.78, 0.16, 0.88);
   for (let r = 0; r < radialSegs; r++) {
     indices.push(startCapIdx, r, r + 1);
     const lastRing = tubularSegs * ringVerts;
@@ -2498,11 +2498,11 @@ var DEG2RAD = Math.PI / 180;
 var ATTACK_DURATION = 0.18;
 var RECOVER_DURATION = 0.8;
 var TAIL_SEG_COUNT = 6;
-var LAVA_EMISSIVE_P1 = new THREE.Color("#FF4B0C");
-var LAVA_EMISSIVE_P2 = new THREE.Color("#FF8420");
-var CORE_EMISSIVE_P1 = new THREE.Color("#FF6414");
-var CORE_EMISSIVE_P2 = new THREE.Color("#FFA02E");
-var BONE_TIP_EMISSIVE = new THREE.Color("#FF7214");
+var LAVA_EMISSIVE_P1 = new THREE.Color("#DE3608");
+var LAVA_EMISSIVE_P2 = new THREE.Color("#F26C18");
+var CORE_EMISSIVE_P1 = new THREE.Color("#E84E0E");
+var CORE_EMISSIVE_P2 = new THREE.Color("#FA8622");
+var BONE_TIP_EMISSIVE = new THREE.Color("#E66010");
 function makeNeutralPose() {
   return {
     torso: [0, 0, 0],
@@ -2537,42 +2537,42 @@ function createBossModel() {
   };
   const skinMat = trackMat(
     new THREE.MeshStandardMaterial({
-      color: new THREE.Color("#F2E4E0"),
+      color: new THREE.Color("#BDA6A0"),
       map: atlas.albedoMap,
       emissive: LAVA_EMISSIVE_P1.clone(),
       emissiveMap: atlas.emissiveMap,
-      emissiveIntensity: 1.05,
+      emissiveIntensity: 0.78,
       normalMap: atlas.normalMap,
-      normalScale: new THREE.Vector2(1.1, 1.1),
-      roughness: 0.76,
-      metalness: 0.08,
+      normalScale: new THREE.Vector2(1.15, 1.15),
+      roughness: 0.84,
+      metalness: 0.06,
       vertexColors: true
     })
   );
   const boneMat = trackMat(
     new THREE.MeshStandardMaterial({
-      color: new THREE.Color("#F2E5C8"),
+      color: new THREE.Color("#C8BCA8"),
       map: atlas.albedoMap,
       emissive: BONE_TIP_EMISSIVE.clone(),
       emissiveMap: atlas.emissiveMap,
       emissiveIntensity: 0.06,
       normalMap: atlas.normalMap,
-      normalScale: new THREE.Vector2(0.9, 0.9),
-      roughness: 0.56,
-      metalness: 0.05,
+      normalScale: new THREE.Vector2(0.95, 0.95),
+      roughness: 0.74,
+      metalness: 0.04,
       vertexColors: true
     })
   );
   const coreMat = trackMat(
     new THREE.MeshStandardMaterial({
-      color: new THREE.Color("#421006"),
+      color: new THREE.Color("#2B0904"),
       map: atlas.albedoMap,
       emissive: CORE_EMISSIVE_P1.clone(),
       emissiveMap: atlas.emissiveMap,
-      emissiveIntensity: 1.48,
+      emissiveIntensity: 1.15,
       normalMap: atlas.normalMap,
       normalScale: new THREE.Vector2(1.15, 1.15),
-      roughness: 0.42,
+      roughness: 0.48,
       metalness: 0.05
     })
   );
@@ -2580,8 +2580,8 @@ function createBossModel() {
     new THREE.MeshStandardMaterial({
       color: new THREE.Color("#2E0602"),
       emissive: new THREE.Color("#FF5210"),
-      emissiveIntensity: 3.2,
-      roughness: 0.22,
+      emissiveIntensity: 2.4,
+      roughness: 0.25,
       metalness: 0.05
     })
   );
@@ -2959,14 +2959,14 @@ function createBossModel() {
     const pulseFreq = 2.6 + (1 - hpPct) * 1.6 + moltenHeat * 1.2;
     const pulse = 0.5 + 0.5 * Math.sin(elapsed * pulseFreq);
     skinMat.emissive.copy(LAVA_EMISSIVE_P1).lerp(LAVA_EMISSIVE_P2, moltenHeat);
-    skinMat.emissiveIntensity = (1.02 + moltenHeat * 1.55 + pulse * (0.12 + moltenHeat * 0.2)) * (coreWarnMult > 1.2 ? 1.1 : 1);
+    skinMat.emissiveIntensity = (0.76 + moltenHeat * 1.15 + pulse * (0.09 + moltenHeat * 0.16)) * (coreWarnMult > 1.2 ? 1.08 : 1);
     coreMat.emissive.copy(CORE_EMISSIVE_P1).lerp(CORE_EMISSIVE_P2, moltenHeat);
-    coreMat.emissiveIntensity = (1.48 + moltenHeat * 1.38 + pulse * (0.14 + moltenHeat * 0.22)) * coreWarnMult;
-    boneMat.emissiveIntensity = 0.06 + moltenHeat * (1.22 + pulse * 0.16);
+    coreMat.emissiveIntensity = (1.15 + moltenHeat * 1.15 + pulse * (0.1 + moltenHeat * 0.18)) * coreWarnMult;
+    boneMat.emissiveIntensity = 0.06 + moltenHeat * (1.05 + pulse * 0.14);
     const targetCoreScale = 1 + moltenHeat * 0.14 + pulse * (0.022 + moltenHeat * 0.028);
     coreScaleCur += (targetCoreScale - coreScaleCur) * scalarAlpha;
     core.scale.setScalar(coreScaleCur);
-    eyeMat.emissiveIntensity = (3.1 + moltenHeat * 1.8 + pulse * 0.28) * (coreWarnMult > 1.2 ? 1.15 : 1);
+    eyeMat.emissiveIntensity = (2.4 + moltenHeat * 1.4 + pulse * 0.22) * (coreWarnMult > 1.2 ? 1.12 : 1);
   };
   const dispose = () => {
     if (disposed) return;
@@ -3508,6 +3508,7 @@ var BossController = class {
       this.model = this.mountBossModel();
       this.deathFadeApplied = false;
     }
+    this.modelWrap.visible = true;
     this.shadowMesh.visible = true;
     this.shadowMat.opacity = CONTACT_SHADOW_OPACITY;
     this.hitRecoilTimerMs = 0;
@@ -3532,6 +3533,43 @@ var BossController = class {
   }
   setVisible(visible) {
     this.modelWrap.visible = visible;
+  }
+  /** Relocate Boss on deck (e2e/test staging only); optionally resets BossAI to idle. */
+  relocate(x, z, playerPos, resetAi = false) {
+    if (this.disposed) return;
+    if (resetAi) {
+      this.ai.reset();
+      this.deadStarted = false;
+      this.deadElapsedSec = 0;
+      this.hitRecoilTimerMs = 0;
+      this.currentRecoilZ = 0;
+      this._hitsTaken = 0;
+      this._meleeHitsDealt = 0;
+      this._lastHitPart = null;
+      this._lastReportedPhase = 1;
+      this.lastEventsArr = [];
+    }
+    this.origin = { x, y: 0, z };
+    this.worldPos = { x, y: 0, z };
+    const pPos = playerPos ?? this.opts.playerPos ?? { x: 0, z: 15 };
+    this.currentYaw = yawToTarget(this.worldPos.x, this.worldPos.z, pPos.x, pPos.z);
+    this.modelWrap.visible = true;
+    this.shadowMesh.visible = true;
+    this.modelWrap.position.set(0, this.modelBaseY, 0);
+    this.modelWrap.rotation.set(0, 0, 0);
+    this.mesh.position.set(this.worldPos.x, this.worldPos.y, this.worldPos.z);
+    this.mesh.rotation.y = this.currentYaw;
+    this.cachedTick = this.ai.update(
+      0,
+      { x: pPos.x - this.origin.x, z: pPos.z - this.origin.z },
+      Math.hypot(pPos.x - this.worldPos.x, pPos.z - this.worldPos.z)
+    );
+    const hpPct = this.cachedTick.hpMax > 0 ? this.cachedTick.hp / this.cachedTick.hpMax : 0;
+    this.model.update(0, {
+      hpPct,
+      phase: this.cachedTick.phase,
+      anim: mapStateToAnim(this.cachedTick.state)
+    });
   }
   getFeetWorldY() {
     this.mesh.updateMatrixWorld(true);

@@ -41,7 +41,12 @@ import { createMatch } from './game/match';
 import { scorePlayerDeath } from './game/objective';
 import type { Faction } from './game/ai';
 import { parseDifficulty, type DifficultyId } from './game/difficulty';
-import { BossController, BOSS_MELEE_DAMAGE } from './game/bossController';
+import {
+  BossController,
+  BOSS_BODY_RADIUS,
+  BOSS_MELEE_DAMAGE,
+  hasClearSightline,
+} from './game/bossController';
 import type { BossHitPart, BossState } from './game/bossAI';
 import { BossHud, type ScreenProjection } from './render/bossHud';
 import type { EnemyTagTelemetry } from './render/enemyTags';
@@ -133,6 +138,8 @@ declare global {
       x: number;
       y: number;
       z: number;
+      height: number;
+      radius: number;
       tris: number;
     }[];
     __enemiesSummary: () => {
@@ -160,6 +167,8 @@ declare global {
       setDifficulty(diff: DifficultyId): void;
       damageEnemy(id: string, dmg: number): void;
       damageBoss(dmg: number, part?: BossHitPart): { dealt: number; dead: boolean };
+      positionBoss(x: number, z: number, resetAi?: boolean): void;
+      hasClearLos(x0: number, y0: number, z0: number, x1: number, y1: number, z1: number): boolean;
       setReloadPreview(pct: number | null): void;
       skipCountdown(): void;
       setEnemiesVisible(visible: boolean): void;
@@ -167,6 +176,8 @@ declare global {
         id: string;
         faction: Faction;
         dist: number;
+        height: number;
+        radius: number;
         hasLos: boolean;
         x0: number;
         y0: number;
@@ -455,6 +466,18 @@ function projectWorldToScreen(pt: Vec3): ScreenProjection {
     y: (-scratchProj.y * 0.5 + 0.5) * window.innerHeight,
     visible,
   };
+}
+
+function hasBossLos(): boolean {
+  if (!boss.alive) return false;
+  const eye: Vec3 = {
+    x: player.position.x,
+    y: player.position.y + player.eyeHeight,
+    z: player.position.z,
+  };
+  const bp = boss.pos;
+  // Require clear sightline to Boss mid-torso (55% height) so container walls never spoof LOS
+  return hasClearSightline(eye, { x: bp.x, y: bp.y + boss.height * 0.55, z: bp.z });
 }
 
 /** camera-space aim direction derived from yaw/pitch (matches Player.forward) */
@@ -894,12 +917,14 @@ engine.onFrame = (dt) => {
     maxHp: boss.hpMax,
     ammo: 0,
     shotsFired: 0,
-    hasLos: true,
+    hasLos: hasBossLos(),
     firstSightAt: 0,
     firstShotAt: -1,
     x: bp.x,
     y: bp.y,
     z: bp.z,
+    height: boss.height,
+    radius: BOSS_BODY_RADIUS,
     tris: boss.triangleCount,
   });
 };
@@ -1004,12 +1029,14 @@ const enemiesDbg: Window['__enemies'] = [
     maxHp: boss.hpMax,
     ammo: 0,
     shotsFired: 0,
-    hasLos: true,
+    hasLos: hasBossLos(),
     firstSightAt: 0,
     firstShotAt: -1,
     x: initBossPos.x,
     y: initBossPos.y,
     z: initBossPos.z,
+    height: boss.height,
+    radius: BOSS_BODY_RADIUS,
     tris: boss.triangleCount,
   },
 ];
@@ -1067,6 +1094,30 @@ window.__test = {
     boss.applyDamage(dmg, 'body');
   },
   damageBoss: (dmg: number, part: BossHitPart = 'body') => boss.applyDamage(dmg, part),
+  positionBoss: (x: number, z: number, resetAi = false) => {
+    boss.relocate(x, z, { x: player.position.x, z: player.position.z }, resetAi);
+    const bp = boss.pos;
+    const dist = Math.hypot(bp.x - player.position.x, bp.z - player.position.z);
+    bossDbg.x = bp.x;
+    bossDbg.y = bp.y;
+    bossDbg.z = bp.z;
+    bossDbg.yaw = boss.yaw;
+    bossDbg.state = boss.state;
+    bossDbg.hp = boss.hp;
+    bossDbg.phase = boss.phase;
+    bossDbg.dist = dist;
+    bossDbg.meleeHitsDealt = boss.meleeHitsDealt;
+    if (enemiesDbg[0]) {
+      enemiesDbg[0].x = bp.x;
+      enemiesDbg[0].y = bp.y;
+      enemiesDbg[0].z = bp.z;
+      enemiesDbg[0].state = boss.state;
+      enemiesDbg[0].dist = dist;
+      enemiesDbg[0].hasLos = hasBossLos();
+    }
+  },
+  hasClearLos: (x0: number, y0: number, z0: number, x1: number, y1: number, z1: number) =>
+    hasClearSightline({ x: x0, y: y0, z: z0 }, { x: x1, y: y1, z: z1 }),
   setReloadPreview: (pct: number | null) => {
     reloadPreviewPct = pct;
     if (pct === null) {
@@ -1101,7 +1152,9 @@ window.__test = {
         id: 'boss',
         faction: 'enemy' as Faction,
         dist: Number(dist.toFixed(2)),
-        hasLos: true,
+        height: boss.height,
+        radius: BOSS_BODY_RADIUS,
+        hasLos: hasBossLos(),
         ...rect,
       },
     ];

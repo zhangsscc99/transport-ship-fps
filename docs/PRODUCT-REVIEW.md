@@ -189,3 +189,44 @@ fill 0.85 + camFill 后该区域从 luma≈5 升到可见灰阶，连通块 5896
 （低负载下确认是 `setVisible` 失效、遮挡还是陈旧帧）；④ 用闸门数字把 Boss 的
 |Δluma| 拉到 ≥14、同时守住 `p99Luma ≤ 205` 与 `hotFrac ≤ 0.06`（即「洗白」不能靠堆亮度解决，要靠
 暗红底 + 更硬的自发光裂纹对比）。验收必须在低负载窗口跑，且连跑 2 次都过。
+
+## 2026-11-22 10:50 轮次（Boss 画面可读性 + A/B 零差分定性 + 闸门按体量修正）
+
+### ② A/B 零变化与「整屏土黄+暗红斑点」真因已定性（已修）
+
+- **`BossController.setVisible()` 生效、帧未陈旧**：在原 `069592b` 构建上把相机放到 16.74m 无遮挡视线做同帧 A/B，
+  `md5A ≠ md5B`、`globalDiffPx = 6611`、`meanA = 127.43 ≠ meanB = 128.08`、非敌区差分 `0` → `setVisible()` 与
+  `engine.renderOnce()` 链路完好，不存在陈旧帧。
+- **真正根因是「前景集装箱遮挡 + `hasLos` 硬编码 `true` + 旧小怪车道回退」**：
+  1. `src/main.ts` 接入单 Boss 时将 `window.__enemies[0].hasLos` 与 `getEnemyScreenBounds()[0].hasLos` 硬编码为 `true`，
+     没有对 `MAP.boxes` 做射线遮挡检测。
+  2. Boss 出生点 `(-9.96, 0, -5.41)` 不命中旧脚本 `scripts/enemy-contrast.mjs` 为小机器人写的 4 条硬编码车道，
+     回退到 `[0.2, -3.5]` 并向前推进 2 帧，直接顶在赭黄集装箱 `box(-6, 0, -4)`（`#7d6138` 瓦楞壁 + `#7a3f22` 锈斑）
+     东面 `x=-3` 墙前——`/tmp/debug-natural-advance-A.png` 的「整屏土黄+暗红斑点」正是这面集装箱墙，完全挡住后方 8.6m 的 Boss，
+     因此隐藏 Boss 像素零变化且 3D 投影包围盒铺满 55% 视口。
+- **无遮挡复测同时证实了 Boss 自身在 exposure 1.45 下的过曝问题**：原 `069592b` 构建在 16.74m 无遮挡视角下，
+  `silP99Luma = 218.69 > 205`（98.3% 来自 `boneMat #F2E5C8` + 顶点色 `1.26–1.30` 的骨刺过曝成惨白），
+  `hotFrac = 10.39% > 6%`（96.9% 来自过宽过亮的岩浆漫反射与自发光叠加，焦壳仅占 20.2%、岩浆占 44.3%）。
+
+### 改动与实测（全局 exposure 1.45 / 主光 4.8 / 半球 0.92 保持不动）
+
+- **`src/render/bossModel.ts`**：压暗火山焦壳底色（黑红焦壳占主导）、收窄收锐熔岩裂纹并降低裂纹漫反射（由 `emissiveMap` 主导硬朗发光）、
+  骨刺与肋骨改为风化暗象牙骨色（`#C8BCA8`，骨顶点色上限夹紧 ≤ 0.96，提高粗糙度去白斑反光）。
+- **`src/game/bossController.ts` & `src/main.ts`**：导出 `hasClearSightline` 接入真实 `hasBossLos()` 取代硬编码 `hasLos: true`；
+  在 `__enemies` / `getEnemyScreenBounds()` 暴露 `height` / `radius`；`reset()` 恢复 `modelWrap.visible = true`；补测试定位与 LOS 探针接口。
+- **`scripts/enemy-contrast.mjs`**：文件头与代码按敌人身高/半径自动切换区间（Boss ≥3m 用 **14–22m**，小怪 <3m 仍用 **8–15m**）；
+  新增前置断言（包围盒非空且 A/B `changedPx > 500`，否则退出码 ≠0 并打印 `GATE INVALID: boss occluded or setVisible ineffective`）；
+  390×844 单分辨率采样并输出三张 Boss 截图。
+
+| 指标（390×844 竖屏） | 改前无遮挡 @16.74m | 改后 Run #1 (`rc=0`) | 改后 Run #2 (`rc=0`) | 阈值 |
+|---|---|---|---|---|
+| `median\|Δluma\|` (均值差 / 像素中位差) | 24.31 / — | **97.95** / **138.24** | **95.75** / **136.92** | ≥ 14 |
+| `max silP99Luma` | 218.69 (FAIL) | **162.26** | **189.54** | ≤ 205 |
+| `max hotFrac` | 0.1039 (FAIL) | **0.0109** (1.09%) | **0.0100** (1.00%) | ≤ 0.06 |
+| `min A/B changedPx` | 6611 | **4550** | **2443** | > 500 |
+| `nonEnemy meanDiff` | 0 | **0** | **0** | ≤ 0.25 |
+
+- **三张 390×844 竖屏截图**：`e2e/shots/boss-standoff-17m.png`（16.2m 无遮挡全景对峙）、
+  `e2e/shots/boss-charge.png`（18.6m 俯身冲锋瞬间）、`e2e/shots/boss-melee-hit.png`（3.0m 近战挥爪命中，`hp 200→180` + 受击红弧）。
+- **人工看图自检**：清晰读出「暗黑红焦壳 + 橙红岩浆裂纹/胸核 + 风化象牙骨刺/肋骨」而非一团土黄；
+  剪影与亮灰甲板、海天吊机背景对比锐利（`|Δluma| ≈ 96–98`）；骨刺与岩浆均无过曝洗白（`p99 ≤ 189.54`、`hotFrac ≤ 1.09%`）。

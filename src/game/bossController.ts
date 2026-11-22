@@ -136,8 +136,8 @@ function countObjectTriangles(root: THREE.Object3D): number {
   return total;
 }
 
-/** Check whether a horizontal sightline from player eye to candidate Boss torso clears all boxes. */
-function hasClearSightline(from: Vec3, to: Vec3): boolean {
+/** Check whether a sightline from `from` to `to` clears all non-deck MAP.boxes. */
+export function hasClearSightline(from: Vec3, to: Vec3): boolean {
   const dx = to.x - from.x;
   const dy = to.y - from.y;
   const dz = to.z - from.z;
@@ -694,6 +694,7 @@ export class BossController {
       this.deathFadeApplied = false;
     }
 
+    this.modelWrap.visible = true;
     this.shadowMesh.visible = true;
     this.shadowMat.opacity = CONTACT_SHADOW_OPACITY;
     this.hitRecoilTimerMs = 0;
@@ -720,6 +721,49 @@ export class BossController {
 
   setVisible(visible: boolean): void {
     this.modelWrap.visible = visible;
+  }
+
+  /** Relocate Boss on deck (e2e/test staging only); optionally resets BossAI to idle. */
+  relocate(
+    x: number,
+    z: number,
+    playerPos?: { x: number; z: number },
+    resetAi = false,
+  ): void {
+    if (this.disposed) return;
+    if (resetAi) {
+      this.ai.reset();
+      this.deadStarted = false;
+      this.deadElapsedSec = 0;
+      this.hitRecoilTimerMs = 0;
+      this.currentRecoilZ = 0;
+      this._hitsTaken = 0;
+      this._meleeHitsDealt = 0;
+      this._lastHitPart = null;
+      this._lastReportedPhase = 1;
+      this.lastEventsArr = [];
+    }
+    this.origin = { x, y: 0, z };
+    this.worldPos = { x, y: 0, z };
+    const pPos = playerPos ?? this.opts.playerPos ?? { x: 0, z: 15 };
+    this.currentYaw = yawToTarget(this.worldPos.x, this.worldPos.z, pPos.x, pPos.z);
+    this.modelWrap.visible = true;
+    this.shadowMesh.visible = true;
+    this.modelWrap.position.set(0, this.modelBaseY, 0);
+    this.modelWrap.rotation.set(0, 0, 0);
+    this.mesh.position.set(this.worldPos.x, this.worldPos.y, this.worldPos.z);
+    this.mesh.rotation.y = this.currentYaw;
+    this.cachedTick = this.ai.update(
+      0,
+      { x: pPos.x - this.origin.x, z: pPos.z - this.origin.z },
+      Math.hypot(pPos.x - this.worldPos.x, pPos.z - this.worldPos.z),
+    );
+    const hpPct = this.cachedTick.hpMax > 0 ? this.cachedTick.hp / this.cachedTick.hpMax : 0;
+    this.model.update(0, {
+      hpPct,
+      phase: this.cachedTick.phase,
+      anim: mapStateToAnim(this.cachedTick.state),
+    });
   }
 
   getFeetWorldY(): number | null {
