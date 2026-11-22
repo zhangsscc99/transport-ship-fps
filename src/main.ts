@@ -35,15 +35,16 @@ import {
   PLAYER_MAX_HP,
   LOW_HP_THRESHOLD,
   CRITICAL_HP_THRESHOLD,
-  HEADSHOT_MULT,
   type Ray,
 } from './game/damage';
 import { createMatch } from './game/match';
 import { scorePlayerDeath } from './game/objective';
-import { EnemyManager, type Faction } from './game/ai';
+import type { Faction } from './game/ai';
 import { parseDifficulty, type DifficultyId } from './game/difficulty';
-import { EnemyRenderer } from './render/enemies';
-import { EnemyTagOverlay, type EnemyTagTelemetry } from './render/enemyTags';
+import { BossController, BOSS_MELEE_DAMAGE } from './game/bossController';
+import type { BossHitPart, BossState } from './game/bossAI';
+import { BossHud, type ScreenProjection } from './render/bossHud';
+import type { EnemyTagTelemetry } from './render/enemyTags';
 import { Menu } from './render/menu';
 import { PALETTE } from './render/palette';
 import { createSfx } from './audio/sfx';
@@ -87,6 +88,29 @@ declare global {
     __vfx: VfxTelemetry;
     __hands: HandsTelemetry;
     __enemyTags: readonly EnemyTagTelemetry[];
+    __boss: {
+      id: string;
+      alive: boolean;
+      hp: number;
+      hpMax: number;
+      phase: 1 | 2;
+      state: BossState;
+      x: number;
+      y: number;
+      z: number;
+      yaw: number;
+      height: number;
+      dist: number;
+      hitsTaken: number;
+      meleeHitsDealt: number;
+      lastHitPart: BossHitPart | null;
+      hitRecoilOffset: number;
+      tris: number;
+    };
+    __sceneStats: () => {
+      totalObjects: number;
+      projectileObjects: string[];
+    };
     __enemies: {
       id: string;
       faction: Faction;
@@ -135,6 +159,7 @@ declare global {
       clearEnemies(): void;
       setDifficulty(diff: DifficultyId): void;
       damageEnemy(id: string, dmg: number): void;
+      damageBoss(dmg: number, part?: BossHitPart): { dealt: number; dead: boolean };
       setReloadPreview(pct: number | null): void;
       skipCountdown(): void;
       setEnemiesVisible(visible: boolean): void;
@@ -231,9 +256,28 @@ let simNowMs = 0;
 const playerEnt = createEntity('player', player.position, PLAYER_MAX_HP, PLAYER_RADIUS, MOVE.eyeHeight);
 let lastHurtSimMs = -1e9;
 let desatActive = false;
-const enemyMgr = new EnemyManager('normal');
-const enemyRenderer = new EnemyRenderer(engine.scene);
-const enemyTags = new EnemyTagOverlay(document.body);
+
+// Single Melee Boss + Boss HUD (multi-enemy EnemyManager & EnemyTagOverlay removed)
+const bossHud = new BossHud(document.body);
+bossHud.setVisible(false);
+const bossHudEl = document.querySelector<HTMLElement>('[data-hud="boss-hud"]');
+
+const BOSS_DEFEAT_BANNER_MS = 2000;
+const BOSS_HUD_FADE_MS = 600;
+const bossDefeatEl = document.createElement('div');
+bossDefeatEl.dataset.role = 'boss-defeat-banner';
+bossDefeatEl.textContent = '击破';
+bossDefeatEl.style.cssText =
+  `position:fixed;left:50%;top:42%;transform:translate(-50%,-50%);z-index:25;` +
+  `pointer-events:none;user-select:none;-webkit-user-select:none;` +
+  `font-family:'DIN Alternate','Bahnschrift','PingFang SC','Microsoft YaHei',system-ui,sans-serif;` +
+  `font-size:64px;font-weight:900;letter-spacing:0.25em;padding-left:0.25em;` +
+  `color:#38E0E8;text-shadow:0 0 24px rgba(56,224,232,0.85),0 4px 16px rgba(0,0,0,0.9);` +
+  `opacity:0;display:none;`;
+document.body.appendChild(bossDefeatEl);
+
+let lastBossPhase: 1 | 2 = 1;
+let bossDefeatedSimAt = -1;
 
 const DEATH_FALL_MS = 600;
 let playerDeathSimAt = -1;
@@ -243,9 +287,40 @@ let roundKills = 0;
 let currentDifficulty: DifficultyId = 'normal';
 
 const match = createMatch();
+
+const boss = new BossController(engine.scene, {
+  playerPos: { x: sx, z: sz },
+  meleeDamage: BOSS_MELEE_DAMAGE,
+  onAttackHit: ({ damage, bossPos }) => {
+    if (!playerEnt.alive) return;
+    const fwd = player.forward();
+    const rightX = -fwd.z;
+    const rightZ = fwd.x;
+    const dx = bossPos.x - player.position.x;
+    const dz = bossPos.z - player.position.z;
+    const localF = dx * fwd.x + dz * fwd.z;
+    const localR = dx * rightX + dz * rightZ;
+    const angleRad = Math.atan2(localR, localF);
+    hurtPlayer(damage, angleRad);
+  },
+  onPhaseChange: (phase) => {
+    lastBossPhase = phase;
+    bossHud.setPhase(phase);
+  },
+  onDefeated: () => {
+    bossDefeatedSimAt = simNowMs;
+    roundKills++;
+    sfx.play('kill');
+    hud.notifyKill(performance.now());
+    bossDefeatEl.style.display = 'block';
+    bossDefeatEl.style.opacity = '1';
+  },
+});
+bossHud.setHp(boss.hp, boss.hpMax);
+bossHud.setPhase(boss.phase);
+
 const startRound = (settings: { difficulty: DifficultyId; muted: boolean; musicEnabled: boolean }) => {
   currentDifficulty = parseDifficulty(settings.difficulty);
-  enemyMgr.setDifficulty(currentDifficulty);
   sfx.setMuted(settings.muted);
   bgm.setMuted(settings.muted);
   bgm.setEnabled(settings.musicEnabled);
@@ -297,9 +372,15 @@ const startRound = (settings: { difficulty: DifficultyId; muted: boolean; musicE
     w.cancelReload();
     w.resetSpin();
   }
-  enemyRenderer.clearAll();
-  enemyTags.clearAll();
-  enemyMgr.reset(simNowMs, player.position);
+  bossDefeatedSimAt = -1;
+  bossDefeatEl.style.display = 'none';
+  bossDefeatEl.style.opacity = '0';
+  if (bossHudEl) bossHudEl.style.opacity = '1';
+  boss.reset({ x: rx, z: rz });
+  lastBossPhase = boss.phase;
+  bossHud.setPhase(boss.phase);
+  bossHud.setHp(boss.hp, boss.hpMax);
+  bossHud.setVisible(true);
 };
 
 const menu = new Menu(document.body, {
@@ -319,10 +400,16 @@ const menu = new Menu(document.body, {
     playerDeathSimAt = -1;
     deathPanelShown = false;
     hud.setDeathVeil(0);
-    enemyMgr.clear();
-    enemyRenderer.clearAll();
-    enemyTags.clearAll();
     const [rx, ry, rz] = spawnPoint('A', 0);
+    bossDefeatedSimAt = -1;
+    bossDefeatEl.style.display = 'none';
+    bossDefeatEl.style.opacity = '0';
+    if (bossHudEl) bossHudEl.style.opacity = '1';
+    boss.reset({ x: rx, z: rz });
+    lastBossPhase = boss.phase;
+    bossHud.setPhase(boss.phase);
+    bossHud.setHp(boss.hp, boss.hpMax);
+    bossHud.setVisible(false);
     player.position.x = rx;
     player.position.y = ry;
     player.position.z = rz;
@@ -332,7 +419,6 @@ const menu = new Menu(document.body, {
   },
   onSettingsChange: (s) => {
     currentDifficulty = parseDifficulty(s.difficulty);
-    enemyMgr.setDifficulty(currentDifficulty);
     sfx.setMuted(s.muted);
     bgm.setMuted(s.muted);
     bgm.setEnabled(s.musicEnabled);
@@ -340,7 +426,6 @@ const menu = new Menu(document.body, {
   },
 });
 currentDifficulty = menu.settings.difficulty;
-enemyMgr.setDifficulty(currentDifficulty);
 bgm.setEnabled(menu.settings.musicEnabled);
 bgm.setMuted(menu.settings.muted);
 hud.onMuteToggle = (m) => {
@@ -354,11 +439,23 @@ const scratchMuzzle = new THREE.Vector3();
 const scratchEject = new THREE.Vector3();
 const scratchRight = new THREE.Vector3();
 const scratchFwd = new THREE.Vector3();
+const scratchProj = new THREE.Vector3();
 const rayEnd = (ray: Ray, dist: number): Vec3 => ({
   x: ray.origin.x + ray.dir.x * dist,
   y: ray.origin.y + ray.dir.y * dist,
   z: ray.origin.z + ray.dir.z * dist,
 });
+
+function projectWorldToScreen(pt: Vec3): ScreenProjection {
+  view.camera.updateMatrixWorld();
+  scratchProj.set(pt.x, pt.y, pt.z).project(view.camera);
+  const visible = scratchProj.z >= -1 && scratchProj.z <= 1;
+  return {
+    x: (scratchProj.x * 0.5 + 0.5) * window.innerWidth,
+    y: (-scratchProj.y * 0.5 + 0.5) * window.innerHeight,
+    visible,
+  };
+}
 
 /** camera-space aim direction derived from yaw/pitch (matches Player.forward) */
 function aimDir(): Vec3 {
@@ -392,23 +489,6 @@ function hurtPlayer(dmg: number, angleRad?: number): void {
     document.exitPointerLock?.();
   }
 }
-
-/** shared enemy-kill path (real shots and window.__test.damageEnemy) */
-function onEnemyKilled(now: number): void {
-  roundKills++;
-  match.registerKill('A', simNowMs);
-  sfx.play('kill');
-  hud.notifyKill(now);
-}
-
-/** per-frame snapshot for the HUD objective bar (target always from match) */
-const objectiveState = () => ({
-  phase: match.phase,
-  killsA: match.killsA,
-  killsB: match.killsB,
-  killsToWin: match.killsToWin,
-  timeLeftMs: match.timeLeftMs,
-});
 
 engine.camera = view.camera;
 engine.onResize = (w, h) => view.setAspect(w / h);
@@ -598,7 +678,6 @@ engine.onFrame = (dt) => {
     lastReloadStageSfx = curStage;
   }
 
-  let playerFiredThisFrame = false;
   if (acting && playerEnt.alive) {
     if (inp.reload && !rack.swapping(simNowMs) && w.reload(simNowMs)) sfx.play('reload');
     if (inp.fire) rack.noteFireIntent(simNowMs);
@@ -618,7 +697,6 @@ engine.onFrame = (dt) => {
         const subT = maxSubShots === 1 ? simNowMs : prevSimMs + ((sub + 1) / maxSubShots) * dtMs;
         const shots = w.tryFire(subT, eye, aimDir());
         if (!shots) continue;
-        playerFiredThisFrame = true;
         rack.clearBufferedFire();
         if (!firedInFrame) {
           firedInFrame = true;
@@ -644,77 +722,63 @@ engine.onFrame = (dt) => {
         }
 
         for (const ray of shots) {
-          const hit = traceHit(ray, MAP.boxes, enemyMgr.entities);
-          worldVfx.spawnTracer(scratchMuzzle, hit ? hit.point : rayEnd(ray, 80));
-          if (hit) hud.notifyHit(now);
-          if (hit?.kind === 'box') {
-            worldVfx.spawnImpact(hit.point, hit.normal);
-          } else if (hit?.kind === 'entity') {
-            const dmg =
-              w.spec.dmg *
-              falloffFactor(w.spec, hit.dist) *
-              (hit.headshot ? HEADSHOT_MULT : 1);
-            sfx.play(hit.headshot ? 'headshot' : 'hit');
-            const killed = applyDamage(hit.entity, dmg, simNowMs);
-            enemyMgr.onBotDamaged(hit.entity, player.position, simNowMs);
-            if (killed) onEnemyKilled(now);
+          const boxHit = traceHit(ray, MAP.boxes, []);
+          const boxDist = boxHit ? boxHit.dist : Infinity;
+          const bossHit = boss.raycast(ray);
+          if (bossHit && bossHit.dist < boxDist) {
+            worldVfx.spawnTracer(scratchMuzzle, bossHit.point);
+            hud.notifyHit(now);
+            const baseDmg = w.spec.dmg * falloffFactor(w.spec, bossHit.dist);
+            const res = boss.applyDamage(baseDmg, bossHit.part);
+            if (res.dealt > 0) {
+              sfx.play(bossHit.part === 'body' ? 'hit' : 'headshot');
+              const hitPt = bossHit.point;
+              bossHud.showDamage(
+                () => projectWorldToScreen(hitPt),
+                res.dealt,
+                bossHit.part === 'body' ? 'body' : 'weak',
+              );
+            }
+          } else if (boxHit?.kind === 'box') {
+            worldVfx.spawnTracer(scratchMuzzle, boxHit.point);
+            worldVfx.spawnImpact(boxHit.point, boxHit.normal);
+          } else {
+            worldVfx.spawnTracer(scratchMuzzle, rayEnd(ray, 80));
           }
         }
       }
     }
   }
 
-  // --- CF-style AI Enemies update & combat ---
+  // --- Single Melee Boss AI update & Boss HUD sync ---
   if (match.phase === 'playing') {
-    const pEye: Vec3 = {
-      x: player.position.x,
-      y: player.position.y + player.eyeHeight,
-      z: player.position.z,
-    };
-    const pSpeed = Math.hypot(player.velocity.x, player.velocity.z);
-    const enemyShots = enemyMgr.update({
-      dt,
-      nowMs: simNowMs,
-      playerPos: player.position,
-      playerEye: pEye,
-      playerAlive: playerEnt.alive,
-      playerFired: playerFiredThisFrame,
-      playerSpeed: pSpeed,
-      playerOnGround: player.onGround,
-      boxes: MAP.boxes,
-      collider: world,
-    });
-    const fwd = player.forward();
-    const rightX = -fwd.z;
-    const rightZ = fwd.x;
-    for (const es of enemyShots) {
-      const origin = enemyRenderer.getMuzzleWorld(es.botId, scratchMuzzle)
-        ? { x: scratchMuzzle.x, y: scratchMuzzle.y, z: scratchMuzzle.z }
-        : es.origin;
-      worldVfx.spawnTracer(origin, es.target);
-      const dx = origin.x - player.position.x;
-      const dz = origin.z - player.position.z;
-      const dLen = Math.hypot(dx, dz) || 1;
-      const stereoPan = Math.max(-1, Math.min(1, (dx * rightX + dz * rightZ) / dLen));
-      sfx.play('shotEnemy', { distance: es.dist, maxRange: 60, pan: stereoPan, volume: 0.78 });
-      if (es.hit && playerEnt.alive) {
-        const localF = dx * fwd.x + dz * fwd.z;
-        const localR = dx * rightX + dz * rightZ;
-        const angleRad = Math.atan2(localR, localF);
-        hurtPlayer(es.damage, angleRad);
-      }
+    boss.update(dt * 1000, { x: player.position.x, z: player.position.z });
+  } else {
+    boss.updateVisualOnly(dt * 1000, { x: player.position.x, z: player.position.z });
+  }
+
+  bossHud.setHp(boss.hp, boss.hpMax);
+  if (boss.phase !== lastBossPhase) {
+    lastBossPhase = boss.phase;
+    bossHud.setPhase(boss.phase);
+  }
+  if (bossDefeatedSimAt >= 0) {
+    const elapsed = simNowMs - bossDefeatedSimAt;
+    const hudAlpha = Math.max(0, 1 - elapsed / BOSS_HUD_FADE_MS);
+    if (bossHudEl) bossHudEl.style.opacity = hudAlpha.toFixed(3);
+    if (hudAlpha <= 0) bossHud.setVisible(false);
+    if (elapsed < BOSS_DEFEAT_BANNER_MS) {
+      const bannerAlpha =
+        elapsed > BOSS_DEFEAT_BANNER_MS - 300
+          ? Math.max(0, (BOSS_DEFEAT_BANNER_MS - elapsed) / 300)
+          : 1;
+      bossDefeatEl.style.display = 'block';
+      bossDefeatEl.style.opacity = bannerAlpha.toFixed(3);
+    } else {
+      bossDefeatEl.style.opacity = '0';
+      bossDefeatEl.style.display = 'none';
     }
   }
-  enemyRenderer.sync(enemyMgr.bots, dt, simNowMs, view.camera.position);
-  // overhead distance & HP tags — hidden (and cleared) in menu / settlement phases
-  enemyTags.update(
-    enemyMgr.bots,
-    enemyRenderer,
-    view.camera,
-    MAP.boxes,
-    simNowMs,
-    (match.phase === 'playing' || match.phase === 'countdown') && !deathPanelShown,
-  );
 
   const reloadSnap = w.reloadSnapshot(simNowMs);
   weaponView.group.visible = playerEnt.alive;
@@ -743,7 +807,6 @@ engine.onFrame = (dt) => {
     fps: window.__fps,
     dead: !playerEnt.alive,
     respawnIn: 0,
-    objective: objectiveState(),
   });
 
   const ri = engine.renderer.info;
@@ -795,34 +858,50 @@ engine.onFrame = (dt) => {
   mdbg.winner = match.winner;
   mdbg.killsToWin = match.killsToWin;
 
+  const bp = boss.pos;
+  const bossDist = Math.hypot(bp.x - player.position.x, bp.z - player.position.z);
+  bossDbg.alive = boss.alive;
+  bossDbg.hp = boss.hp;
+  bossDbg.hpMax = boss.hpMax;
+  bossDbg.phase = boss.phase;
+  bossDbg.state = boss.state;
+  bossDbg.x = bp.x;
+  bossDbg.y = bp.y;
+  bossDbg.z = bp.z;
+  bossDbg.yaw = boss.yaw;
+  bossDbg.height = boss.height;
+  bossDbg.dist = bossDist;
+  bossDbg.hitsTaken = boss.hitsTaken;
+  bossDbg.meleeHitsDealt = boss.meleeHitsDealt;
+  bossDbg.lastHitPart = boss.lastHitPart;
+  bossDbg.hitRecoilOffset = boss.hitRecoilOffset;
+  bossDbg.tris = boss.triangleCount;
+
   enemiesDbg.length = 0;
-  for (const b of enemyMgr.bots) {
-    const dist = Math.hypot(b.entity.pos.x - player.position.x, b.entity.pos.z - player.position.z);
-    enemiesDbg.push({
-      id: b.id,
-      faction: b.faction,
-      state: b.state,
-      alive: b.entity.alive,
-      advancing: b.advancing,
-      dist,
-      anim: b.anim,
-      clip: enemyRenderer.getActiveClip(b.id),
-      clipsPlayed: enemyRenderer.getClipsPlayed(b.id),
-      modelSource: enemyRenderer.modelSource,
-      modelLoaded: enemyRenderer.isModelLoaded,
-      hp: b.entity.hp,
-      maxHp: b.entity.maxHp,
-      ammo: b.ammo,
-      shotsFired: b.shotsFired,
-      hasLos: b.hasLos,
-      firstSightAt: b.firstSightAt,
-      firstShotAt: b.firstShotAt,
-      x: b.entity.pos.x,
-      y: b.entity.pos.y,
-      z: b.entity.pos.z,
-      tris: enemyRenderer.getRigTris(b.id),
-    });
-  }
+  enemiesDbg.push({
+    id: 'boss',
+    faction: 'enemy',
+    state: boss.state,
+    alive: boss.alive,
+    advancing: boss.state === 'chase' || boss.state === 'charge',
+    dist: bossDist,
+    anim: boss.state,
+    clip: boss.state,
+    clipsPlayed: [boss.state],
+    modelSource: 'procedural:cyberpunk-robot-boss',
+    modelLoaded: true,
+    hp: boss.hp,
+    maxHp: boss.hpMax,
+    ammo: 0,
+    shotsFired: 0,
+    hasLos: true,
+    firstSightAt: 0,
+    firstShotAt: -1,
+    x: bp.x,
+    y: bp.y,
+    z: bp.z,
+    tris: boss.triangleCount,
+  });
 };
 
 /** persistent debug handles (no per-frame alloc) — e2e tests read these */
@@ -875,49 +954,86 @@ const vfxDbg: VfxTelemetry = {
 };
 window.__vfx = vfxDbg;
 window.__hands = weaponView.handsTelemetry;
-const enemiesDbg: Window['__enemies'] = [];
-window.__enemies = enemiesDbg;
-window.__enemiesSummary = () => {
-  let minDist = Infinity;
-  let engaged = 0;
-  let maxLastContactAt = -Infinity;
-  for (const b of enemyMgr.bots) {
-    if (!b.entity.alive || b.state === 'DEAD') continue;
-    const d = Math.hypot(b.entity.pos.x - player.position.x, b.entity.pos.z - player.position.z);
-    if (d < minDist) minDist = d;
-    if (b.state === 'ENGAGE') engaged++;
-    if (b.lastContactAt > maxLastContactAt) maxLastContactAt = b.lastContactAt;
-  }
-  const lastContactAgoMs =
-    maxLastContactAt > -Infinity ? Math.max(0, Math.round(simNowMs - maxLastContactAt)) : Infinity;
-  return {
-    minDist,
-    engaged,
-    shotsFired: enemyMgr.totalShotsFired,
-    lastContactAgoMs,
-  };
+const initBossPos = boss.pos;
+const bossDbg: Window['__boss'] = {
+  id: 'boss',
+  alive: boss.alive,
+  hp: boss.hp,
+  hpMax: boss.hpMax,
+  phase: boss.phase,
+  state: boss.state,
+  x: initBossPos.x,
+  y: initBossPos.y,
+  z: initBossPos.z,
+  yaw: boss.yaw,
+  height: boss.height,
+  dist: Math.hypot(initBossPos.x - sx, initBossPos.z - sz),
+  hitsTaken: 0,
+  meleeHitsDealt: 0,
+  lastHitPart: null,
+  hitRecoilOffset: 0,
+  tris: boss.triangleCount,
 };
+window.__boss = bossDbg;
+window.__sceneStats = () => {
+  let totalObjects = 0;
+  const projectileObjects: string[] = [];
+  const projRe = /(?:^|[-_])(bullet|projectile|missile|fireball|laser)(?:$|[-_])/i;
+  engine.scene.traverse((obj) => {
+    totalObjects++;
+    if (obj.name && obj.name !== 'vfx-bullet-holes' && projRe.test(obj.name)) {
+      projectileObjects.push(obj.name);
+    }
+  });
+  return { totalObjects, projectileObjects };
+};
+const enemiesDbg: Window['__enemies'] = [
+  {
+    id: 'boss',
+    faction: 'enemy',
+    state: boss.state,
+    alive: boss.alive,
+    advancing: false,
+    dist: bossDbg.dist,
+    anim: boss.state,
+    clip: boss.state,
+    clipsPlayed: [boss.state],
+    modelSource: 'procedural:cyberpunk-robot-boss',
+    modelLoaded: true,
+    hp: boss.hp,
+    maxHp: boss.hpMax,
+    ammo: 0,
+    shotsFired: 0,
+    hasLos: true,
+    firstSightAt: 0,
+    firstShotAt: -1,
+    x: initBossPos.x,
+    y: initBossPos.y,
+    z: initBossPos.z,
+    tris: boss.triangleCount,
+  },
+];
+window.__enemies = enemiesDbg;
+window.__enemiesSummary = () => ({
+  minDist: boss.alive
+    ? Math.hypot(boss.pos.x - player.position.x, boss.pos.z - player.position.z)
+    : Infinity,
+  engaged: boss.alive && boss.state !== 'idle' ? 1 : 0,
+  shotsFired: 0,
+  lastContactAgoMs: 0,
+});
 window.__enemiesFeet = () => {
-  const out: { id: string; feetY: number; deckY: number; gap: number }[] = [];
-  for (const b of enemyMgr.bots) {
-    if (!b.entity.alive || b.state === 'DEAD') continue;
-    const feetY = enemyRenderer.measureFeetWorldY(b.id);
-    if (feetY === null) continue;
-    const deckY = b.entity.pos.y;
-    out.push({
-      id: b.id,
-      feetY,
-      deckY,
-      gap: feetY - deckY,
-    });
-  }
-  return out;
+  if (!boss.alive) return [];
+  const feetY = boss.getFeetWorldY();
+  if (feetY === null) return [];
+  const deckY = boss.pos.y;
+  return [{ id: 'boss', feetY, deckY, gap: feetY - deckY }];
 };
 window.__vmRect = () => weaponView.screenRect(view.camera, window.innerWidth, window.innerHeight);
 window.__vmCoverage = (rect) =>
   weaponView.screenCoverage(view.camera, window.innerWidth, window.innerHeight, rect);
 window.__hudBtnState = readHudButtonState;
-window.__enemyTags = enemyTags.telemetry;
+window.__enemyTags = [];
 window.__test = {
   hurt: (dmg: number) => hurtPlayer(dmg),
   // e2e-only camera placement: drop the player at (x,z[,y]) facing yaw/pitch
@@ -939,31 +1055,18 @@ window.__test = {
     if (paused) engine.pause();
     else engine.resume();
   },
-  spawnEnemyAt: (x: number, z: number, yawDeg: number, faction?: Faction) => {
-    const b = enemyMgr.spawnManual(x, z, (yawDeg * Math.PI) / 180, faction, simNowMs);
-    enemyRenderer.sync(enemyMgr.bots, 0, simNowMs, view.camera.position);
-    return b.id;
-  },
+  spawnEnemyAt: () => 'boss',
   clearEnemies: () => {
-    enemyMgr.clear();
-    enemyRenderer.clearAll();
-    enemyTags.clearAll();
+    boss.setVisible(false);
   },
   setDifficulty: (diff: DifficultyId) => {
     currentDifficulty = diff;
     menu.setDifficulty(diff);
-    enemyMgr.setDifficulty(diff);
   },
-  damageEnemy: (id: string, dmg: number) => {
-    const b = enemyMgr.bots.find((e) => e.id === id);
-    if (!b) return;
-    const killed = applyDamage(b.entity, dmg, simNowMs);
-    enemyMgr.onBotDamaged(b.entity, player.position, simNowMs);
-    if (killed) {
-      enemyTags.remove(id);
-      onEnemyKilled(performance.now());
-    }
+  damageEnemy: (_id: string, dmg: number) => {
+    boss.applyDamage(dmg, 'body');
   },
+  damageBoss: (dmg: number, part: BossHitPart = 'body') => boss.applyDamage(dmg, part),
   setReloadPreview: (pct: number | null) => {
     reloadPreviewPct = pct;
     if (pct === null) {
@@ -982,37 +1085,26 @@ window.__test = {
     }
   },
   setEnemiesVisible: (visible: boolean) => {
-    enemyRenderer.setVisible(visible);
+    boss.setVisible(visible);
     engine.renderOnce(!visible);
   },
   getEnemyScreenBounds: () => {
+    if (!boss.alive) return [];
     const vw = window.innerWidth || 390;
     const vh = window.innerHeight || 844;
-    const out: {
-      id: string;
-      faction: Faction;
-      dist: number;
-      hasLos: boolean;
-      x0: number;
-      y0: number;
-      x1: number;
-      y1: number;
-      onScreen: boolean;
-    }[] = [];
-    for (const b of enemyMgr.bots) {
-      if (!b.entity.alive || b.state === 'DEAD') continue;
-      const rect = enemyRenderer.projectChassisRect(b.id, view.camera, vw, vh);
-      if (!rect) continue;
-      const dist = Math.hypot(b.entity.pos.x - player.position.x, b.entity.pos.z - player.position.z);
-      out.push({
-        id: b.id,
-        faction: b.faction,
+    const rect = boss.projectScreenBounds(view.camera, vw, vh);
+    if (!rect) return [];
+    const bp = boss.pos;
+    const dist = Math.hypot(bp.x - player.position.x, bp.z - player.position.z);
+    return [
+      {
+        id: 'boss',
+        faction: 'enemy' as Faction,
         dist: Number(dist.toFixed(2)),
-        hasLos: b.hasLos,
+        hasLos: true,
         ...rect,
-      });
-    }
-    return out;
+      },
+    ];
   },
 };
 const mdbg = {
@@ -1041,7 +1133,6 @@ hud.update({
   fps: 60,
   dead: false,
   respawnIn: 0,
-  objective: objectiveState(),
 });
 
 view.snap(player);
