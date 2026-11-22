@@ -9,7 +9,7 @@ import * as THREE2 from "three";
 // src/game/bossAI.ts
 var BOSS_DEFAULTS = {
   hpMax: 2e3,
-  moveSpeed: 2.6,
+  moveSpeed: 1.75,
   attackRange: 3.2,
   chargeTriggerDist: 18,
   windupMs: 700,
@@ -19,13 +19,13 @@ var BOSS_DEFAULTS = {
   recoverMs: 800,
   minRecoverMs: 800,
   cooldownMs: 900,
-  chargeSpeedMult: 2.2,
+  chargeSpeedMult: 1.85,
   chargeHitRadius: 1.8,
   chargeOvershootDist: 2.5,
   chargeMaxCapDist: 45,
   phase2HpRatio: 0.7,
   phase2EnrageHpRatio: 0.35,
-  phase2SpeedMult: 1.15,
+  phase2SpeedMult: 1.08,
   phase2CooldownMult: 0.8,
   phase2EnrageCooldownMult: 0.7,
   phase2WindupDeltaMs: 100
@@ -945,13 +945,20 @@ var PALETTE = {
 
 // src/render/robotModel.ts
 var ARMOR_FRESNEL_CACHE_KEY = "robot-armor-fresnel-v1";
+var ARMOR_FRESNEL_POWER = 4.5;
 var ARMOR_EMISSIVE_INTENSITY = 0.16;
 var ARMOR_FRESNEL_K = {
-  enemy: 2.6,
-  ally: 2
+  enemy: 0.72,
+  ally: 0.48
 };
-var ARMOR_HIT_FRESNEL_K = 3.6;
-var VISOR_HALO_OPACITY = 0.9;
+var ARMOR_HIT_FRESNEL_K = 2;
+var GLOW_EMISSIVE_INTENSITY = {
+  enemy: 0.68,
+  ally: 0.25
+};
+var VISOR_HALO_OPACITY = 0.3;
+var VISOR_HALO_FLASH_OPACITY = 0.98;
+var VISOR_HALO_SCALE = [0.3, 0.16];
 var cachedMaterials = null;
 var cachedGeometries = null;
 function countGeoTris(g) {
@@ -1069,7 +1076,7 @@ function applyArmorFresnel(mat, rimHex, rimStrength) {
       `#include <emissivemap_fragment>
 {
 	float rimNdotV = clamp( dot( normalize( normal ), normalize( vViewPosition ) ), 0.0, 1.0 );
-	float rimFactor = pow( 1.0 - rimNdotV, 3.0 );
+	float rimFactor = pow( 1.0 - rimNdotV, ${ARMOR_FRESNEL_POWER.toFixed(1)} );
 	totalEmissiveRadiance += uRimColor * rimFactor * uRimStrength;
 }`
     );
@@ -1085,19 +1092,19 @@ function getMaterials() {
       emissiveIntensity: emissiveInt,
       metalness: 0.86,
       roughness: 0.26,
-      envMapIntensity: 2.9,
+      envMapIntensity: 2.1,
       vertexColors: true
     });
     applyArmorFresnel(mat, rimHex, { value: rimK });
     return mat;
   };
-  const makeGlow = (hex) => new THREE.MeshStandardMaterial({
+  const makeGlow = (hex, emissiveIntensity) => new THREE.MeshStandardMaterial({
     color: hex,
     emissive: hex,
-    emissiveIntensity: 4.4,
+    emissiveIntensity,
     metalness: 0.85,
     roughness: 0.2,
-    envMapIntensity: 1.4
+    envMapIntensity: 0.4
   });
   const makeEdgeTrim = (hex) => new THREE.MeshStandardMaterial({
     color: PALETTE.robotEdge,
@@ -1141,8 +1148,8 @@ function getMaterials() {
     },
     armorHitFlash: makeArmor(PALETTE.robotHitFlash, ARMOR_HIT_FRESNEL_K, PALETTE.robotHitFlash, 0.42),
     glow: {
-      enemy: makeGlow(PALETTE.robotGlowEnemy),
-      ally: makeGlow(PALETTE.robotGlowAlly)
+      enemy: makeGlow(PALETTE.robotGlowEnemy, GLOW_EMISSIVE_INTENSITY.enemy),
+      ally: makeGlow(PALETTE.robotGlowAlly, GLOW_EMISSIVE_INTENSITY.ally)
     },
     edgeTrim: {
       enemy: makeEdgeTrim(PALETTE.robotGlowEnemy),
@@ -1157,16 +1164,16 @@ function getMaterials() {
       enemy: makeVisorHalo(PALETTE.robotGlowEnemy, VISOR_HALO_OPACITY),
       ally: makeVisorHalo(PALETTE.robotGlowAlly, VISOR_HALO_OPACITY)
     },
-    visorHaloFlash: makeVisorHalo(PALETTE.robotHitFlash, 0.98),
+    visorHaloFlash: makeVisorHalo(PALETTE.robotHitFlash, VISOR_HALO_FLASH_OPACITY),
     visorGlowTex,
     flashTex: createFlashTexture()
   };
   return cachedMaterials;
 }
-var TINT_ARMOR = [1, 1, 1];
-var TINT_ARMOR_HI = [1.75, 1.82, 1.95];
-var TINT_FRAME = [0.62, 0.66, 0.74];
-var TINT_GUN = [1.35, 1.42, 1.52];
+var TINT_ARMOR = [5.2, 5.3, 5.5];
+var TINT_ARMOR_HI = [5.8, 5.9, 6.2];
+var TINT_FRAME = [3, 3.1, 3.3];
+var TINT_GUN = [4.6, 4.8, 5];
 function buildUpperArm(side) {
   const pauldronMain = makePart(
     new THREE.BoxGeometry(0.15, 0.125, 0.21),
@@ -1545,7 +1552,7 @@ function createRobot(faction = "enemy") {
   const visorHalo = new THREE.Sprite(visorHaloMat);
   visorHalo.name = "robot-visor-halo";
   visorHalo.position.set(0, 8e-3, -0.124);
-  visorHalo.scale.set(0.46, 0.24, 1);
+  visorHalo.scale.set(VISOR_HALO_SCALE[0], VISOR_HALO_SCALE[1], 1);
   visorHalo.frustumCulled = false;
   visorHalo.renderOrder = 2;
   headPivot.add(visorHalo);
@@ -1684,7 +1691,7 @@ function createRobot(faction = "enemy") {
     fTrim.opacity = a;
     fTrim.emissiveIntensity = 0.55 * a;
     fGlow.opacity = a;
-    fGlow.emissiveIntensity = 0.45 * a;
+    fGlow.emissiveIntensity = GLOW_EMISSIVE_INTENSITY[faction] * a;
     fLine.opacity = 0.62 * a;
     fHalo.opacity = VISOR_HALO_OPACITY * a;
   };
