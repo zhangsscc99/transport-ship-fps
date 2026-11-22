@@ -1,10 +1,12 @@
-// Three-layer Saltline-inspired lighting rig:
-//   1. Environment layer (PMREM sky IBL) — wired in atmosphere.ts
-//   2. Sun layer — low-angle warm-white directional light (~15.5° elevation),
-//      2048² PCFSoft shadow map tightly following a 40m box around the player
-//      with texel-grid snapping to prevent shadow shimmer.
-//   3. Fill layer — sky/ground HemisphereLight + cool counter-directional fill
-//      so shadowed faces keep a rich cool mid-tone without flattening contrast.
+// Three-layer Saltline-calibrated lighting rig:
+//   1. Environment layer (PMREM sky IBL) — captured in atmosphere.ts, intensity
+//      lifted toward Saltline's outdoor IBL (2.0) so metals & wet deck gleam.
+//   2. Sun layer — low-angle warm-white directional light (~15.5° elevation,
+//      direction preserved), 2048² PCFSoft shadow map tightly following a 40m box
+//      around the player with texel-grid snapping to prevent shadow shimmer.
+//   3. Fill layer — bright maritime HemisphereLight + counter-directional cool
+//      fill + soft sea-bounce cross-fill (both castShadow=false) to lift backlit
+//      surfaces while preserving crisp sun/shadow contrast.
 // Plus local ship beacons (blinking bow beacon, warm tower work lamp).
 
 import * as THREE from 'three';
@@ -26,6 +28,7 @@ export interface Lights {
   sun: THREE.DirectionalLight;
   hemi: THREE.HemisphereLight;
   fill: THREE.DirectionalLight;
+  backFill: THREE.DirectionalLight;
   bow: THREE.PointLight;
   tower: THREE.PointLight;
   /** t = elapsed seconds; focusPos = player/camera world pos for 40m shadow follow. */
@@ -36,13 +39,21 @@ export function configureRenderer(renderer: THREE.WebGLRenderer): void {
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.14;
+  renderer.toneMappingExposure = 1.45;
   renderer.outputColorSpace = THREE.SRGBColorSpace;
 }
 
 export function addLights(scene: THREE.Scene): Lights {
-  // --- Layer 2: Sun key light (warm-white #ffe6c4, intensity 2.45, 15.5° elev) ---
-  const sun = new THREE.DirectionalLight(SUN_COLOR.clone(), 2.45);
+  // --- Layer 1 tuning: Match Saltline's strong outdoor PMREM IBL (Jy=2.0) ---
+  // Keeps metallic gun/rail/wet-deck reflections crisp instead of greying out.
+  if (scene.environment) {
+    scene.environmentIntensity = 1.9;
+  }
+
+  // --- Layer 2: Sun key light (warm daylight #ffecd2, intensity 4.8, 15.5° elev) ---
+  // Direction & elevation strictly preserved so cast shadow angles stay identical.
+  const sunTint = SUN_COLOR.clone().lerp(new THREE.Color(0xfff2de), 0.35);
+  const sun = new THREE.DirectionalLight(sunTint, 4.8);
   sun.name = 'sun-key';
   sun.position.copy(SUN_DIR).multiplyScalar(SUN_DIST);
   sun.castShadow = true;
@@ -60,18 +71,33 @@ export function addLights(scene: THREE.Scene): Lights {
   scene.add(sun);
   scene.add(sun.target);
 
-  // --- Layer 3a: Sky/ground hemisphere fill (sky #6f8db3 / ground #2a2622, 0.35) ---
-  const hemi = new THREE.HemisphereLight(PALETTE.sky[1], PALETTE.skyGround, 0.35);
+  // --- Layer 3a: Sky/ground hemisphere fill (sky #c4dcf5 / ground #5e5850, 0.92) ---
+  // Bright pale blue-white zenith with lifted warm-neutral deck bounce.
+  const hemiSky = new THREE.Color(PALETTE.sky[1]).lerp(new THREE.Color(0xe6f2ff), 0.58);
+  const hemiGround = new THREE.Color(PALETTE.skyGround).lerp(new THREE.Color(0x7a736a), 0.55);
+  const hemi = new THREE.HemisphereLight(hemiSky, hemiGround, 0.92);
   hemi.name = 'sky-hemi';
   scene.add(hemi);
 
-  // --- Layer 3b: Cool counter-directional fill (#5b7fb3, 0.25) ---
-  // Lifts opposite shadowed faces into crisp maritime blue without bleaching contrast.
-  const fill = new THREE.DirectionalLight(PALETTE.fill, 0.25);
+  // --- Layer 3b: Cool counter-directional fill (#90b8e6, 0.90, castShadow=false) ---
+  // Lifts opposite shadowed faces into legible maritime blue without flattening shadows.
+  const fillColor = new THREE.Color(PALETTE.fill).lerp(new THREE.Color(0xc8e0ff), 0.45);
+  const fill = new THREE.DirectionalLight(fillColor, 0.9);
   fill.name = 'cool-fill';
+  fill.castShadow = false;
   fill.position.set(-SUN_DIR.x * 40, 22, -SUN_DIR.z * 40);
   scene.add(fill);
   scene.add(fill.target);
+
+  // --- Layer 3c: Soft sea-bounce cross-fill (#c2d6ea, 0.55, castShadow=false) ---
+  // Single extra non-shadow light lifting backlit vertical walls & weapon bevels.
+  const backFillColor = new THREE.Color(PALETTE.skyHorizon).lerp(new THREE.Color(0xe8f2fc), 0.52);
+  const backFill = new THREE.DirectionalLight(backFillColor, 0.55);
+  backFill.name = 'sea-bounce-fill';
+  backFill.castShadow = false;
+  backFill.position.set(28, 14, 28);
+  scene.add(backFill);
+  scene.add(backFill.target);
 
   // --- Local ship lights ---
   const bow = new THREE.PointLight(PALETTE.lampRed, 22, 28, 2);
@@ -93,6 +119,7 @@ export function addLights(scene: THREE.Scene): Lights {
     sun,
     hemi,
     fill,
+    backFill,
     bow,
     tower,
     update(t, focusPos) {
