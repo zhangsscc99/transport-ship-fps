@@ -88,6 +88,19 @@ export class Engine {
     this.start(); // lastT resets inside start()
   }
 
+  /** Render the current scene once without advancing simulation or clocks (for paused A/B checks). */
+  renderOnce(freezeShadowMap = false): void {
+    if (!this.camera) return;
+    if (freezeShadowMap) {
+      const prevAuto = this.renderer.shadowMap.autoUpdate;
+      this.renderer.shadowMap.autoUpdate = false;
+      this.renderer.render(this.scene, this.camera);
+      this.renderer.shadowMap.autoUpdate = prevAuto;
+    } else {
+      this.renderer.render(this.scene, this.camera);
+    }
+  }
+
   dispose(): void {
     this.pause();
     this.renderer.dispose();

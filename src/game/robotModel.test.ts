@@ -1,7 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as THREE from 'three';
-import { createRobot, disposeRobotCache, getRobotTriangleCount } from '../render/robotModel.ts';
+import {
+  ARMOR_FRESNEL_CACHE_KEY,
+  createRobot,
+  disposeRobotCache,
+  getRobotTriangleCount,
+} from '../render/robotModel.ts';
 import { EnemyRig } from '../render/enemies.ts';
 import { PALETTE } from '../render/palette.ts';
 import { createEntity } from './entities.ts';
@@ -182,6 +187,81 @@ test('EnemyRig: all 6 animation states (idle/walk/aim/fire/hit/death) articulate
     assert.ok(dead.headY < aim.headY - 0.06, 'death must drop floating head as magnetic power cuts');
   } finally {
     rig.dispose();
+    disposeRobotCache();
+  }
+});
+
+test('robotModel: Fresnel rim shader injection, visor additive halo, hit-flash & death-fade clones', () => {
+  disposeRobotCache();
+  const enemy = createRobot('enemy');
+  const enemyPeer = createRobot('enemy');
+  const ally = createRobot('ally');
+
+  try {
+    const enemyArmor = enemy.bodyMeshes[0].material as THREE.MeshStandardMaterial;
+    const allyArmor = ally.bodyMeshes[0].material as THREE.MeshStandardMaterial;
+
+    // 1. Fresnel rim onBeforeCompile + stable program cache key + faction rim color
+    assert.equal(enemyArmor.customProgramCacheKey(), ARMOR_FRESNEL_CACHE_KEY);
+    assert.equal(allyArmor.customProgramCacheKey(), ARMOR_FRESNEL_CACHE_KEY);
+    assert.equal(enemyArmor.userData.fresnelRimColor, PALETTE.robotGlowEnemy);
+    assert.equal(allyArmor.userData.fresnelRimColor, PALETTE.robotGlowAlly);
+    assert.ok(enemyArmor.userData.fresnelRimStrength.value > 0);
+    assert.ok(allyArmor.userData.fresnelRimStrength.value > 0);
+
+    // Simulate Three.js shader compilation hook and verify pow(1.0 - dot(N,V), 3.0) Fresnel injection
+    const mockShader = {
+      uniforms: {} as Record<string, { value: unknown }>,
+      fragmentShader: '#include <common>\nvoid main() {\n#include <emissivemap_fragment>\n}',
+      vertexShader: '',
+    };
+    enemyArmor.onBeforeCompile(mockShader as unknown as THREE.WebGLProgramParametersWithUniforms, {} as THREE.WebGLRenderer);
+    assert.ok(mockShader.uniforms.uRimColor, 'uRimColor uniform must be injected');
+    assert.ok(mockShader.uniforms.uRimStrength, 'uRimStrength uniform must be injected');
+    assert.match(mockShader.fragmentShader, /pow\(\s*1\.0\s*-\s*rimNdotV,\s*3\.0\s*\)/);
+    assert.match(mockShader.fragmentShader, /totalEmissiveRadiance\s*\+=\s*uRimColor/);
+
+    // 2. Additive low-cost visor fake bloom halo (no post-processing, fog disabled)
+    const haloMat = enemy.visorHalo.material as THREE.SpriteMaterial;
+    assert.equal(haloMat.blending, THREE.AdditiveBlending);
+    assert.equal(haloMat.depthWrite, false);
+    assert.equal(haloMat.fog, false);
+    assert.equal(haloMat.color.getHex(), new THREE.Color(PALETTE.robotGlowEnemy).getHex());
+    const allyHaloMat = ally.visorHalo.material as THREE.SpriteMaterial;
+    assert.equal(allyHaloMat.color.getHex(), new THREE.Color(PALETTE.robotGlowAlly).getHex());
+
+    // 3. Hit flash swaps armor, visor & visor halo to white and restores cached materials cleanly
+    enemy.setHitFlash(true);
+    const hitArmor = enemy.bodyMeshes[0].material as THREE.MeshStandardMaterial;
+    const hitHalo = enemy.visorHalo.material as THREE.SpriteMaterial;
+    assert.equal(hitArmor.userData.fresnelRimColor, PALETTE.robotHitFlash);
+    assert.equal(hitArmor.customProgramCacheKey(), ARMOR_FRESNEL_CACHE_KEY);
+    assert.equal(hitHalo.color.getHex(), new THREE.Color(PALETTE.robotHitFlash).getHex());
+    // Peer instance must remain unaffected
+    assert.equal(enemyPeer.bodyMeshes[0].material, enemyArmor);
+    enemy.setHitFlash(false);
+    assert.equal(enemy.bodyMeshes[0].material, enemyArmor);
+    assert.equal(enemy.visorHalo.material, haloMat);
+
+    // 4. Death-fade clones preserve Fresnel onBeforeCompile + fade rim strength & visor halo
+    const baseRimK = enemyArmor.userData.fresnelRimStrength.value;
+    enemy.setDeathFade(0.5);
+    const fadeArmor = enemy.bodyMeshes[0].material as THREE.MeshStandardMaterial;
+    const fadeHalo = enemy.visorHalo.material as THREE.SpriteMaterial;
+    assert.notEqual(fadeArmor, enemyArmor, 'death fade must clone armor material');
+    assert.equal(fadeArmor.transparent, true);
+    assert.equal(fadeArmor.opacity, 0.5);
+    assert.equal(fadeArmor.customProgramCacheKey(), ARMOR_FRESNEL_CACHE_KEY);
+    assert.equal(fadeArmor.userData.fresnelRimColor, PALETTE.robotGlowEnemy);
+    assert.ok(Math.abs(fadeArmor.userData.fresnelRimStrength.value - baseRimK * 0.5) < 1e-6);
+    assert.ok(fadeHalo.opacity < haloMat.opacity && fadeHalo.opacity > 0);
+    // Peer shared armor must remain untouched & opaque
+    assert.equal((enemyPeer.bodyMeshes[0].material as THREE.MeshStandardMaterial).opacity, 1);
+    assert.equal(enemyArmor.userData.fresnelRimStrength.value, baseRimK);
+  } finally {
+    enemy.dispose();
+    enemyPeer.dispose();
+    ally.dispose();
     disposeRobotCache();
   }
 });

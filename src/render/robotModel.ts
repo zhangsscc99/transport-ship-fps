@@ -39,6 +39,7 @@ export interface RobotInstance {
   readonly faction: RobotFaction;
   readonly joints: RobotJoints;
   readonly visorMesh: THREE.Mesh;
+  readonly visorHalo: THREE.Sprite;
   readonly glowMeshes: readonly THREE.Mesh[];
   readonly edgeLines: readonly THREE.LineSegments[];
   readonly bodyMeshes: readonly THREE.Mesh[];
@@ -58,13 +59,26 @@ export interface RobotInstance {
 }
 
 interface MaterialCache {
-  armor: THREE.MeshStandardMaterial;
+  armor: Record<RobotFaction, THREE.MeshStandardMaterial>;
+  armorHitFlash: THREE.MeshStandardMaterial;
   glow: Record<RobotFaction, THREE.MeshStandardMaterial>;
   edgeTrim: Record<RobotFaction, THREE.MeshStandardMaterial>;
   edgeLine: Record<RobotFaction, THREE.LineBasicMaterial>;
   visorFlash: THREE.MeshStandardMaterial;
+  visorHalo: Record<RobotFaction, THREE.SpriteMaterial>;
+  visorHaloFlash: THREE.SpriteMaterial;
+  visorGlowTex: THREE.Texture;
   flashTex: THREE.Texture;
 }
+
+export const ARMOR_FRESNEL_CACHE_KEY = 'robot-armor-fresnel-v1';
+const ARMOR_EMISSIVE_INTENSITY = 0.16;
+const ARMOR_FRESNEL_K: Record<RobotFaction, number> = {
+  enemy: 2.6,
+  ally: 2.0,
+};
+const ARMOR_HIT_FRESNEL_K = 3.6;
+const VISOR_HALO_OPACITY = 0.90;
 
 interface GeometryCache {
   pelvis: THREE.BufferGeometry;
@@ -167,24 +181,103 @@ function createFlashTexture(): THREE.Texture {
   return tex;
 }
 
+/** Create procedural additive horizontal visor bloom sprite texture (zero external assets). */
+function createVisorGlowTexture(): THREE.Texture {
+  if (typeof document === 'undefined') {
+    const tex = new THREE.DataTexture(new Uint8Array([255, 255, 255, 255]), 1, 1);
+    tex.needsUpdate = true;
+    return tex;
+  }
+  const size = 64;
+  const c = document.createElement('canvas');
+  c.width = size;
+  c.height = size;
+  const ctx = c.getContext('2d')!;
+  const img = ctx.createImageData(size, size);
+  const d = img.data;
+  const half = (size - 1) * 0.5;
+  for (let y = 0; y < size; y++) {
+    const ny = (y - half) / half;
+    for (let x = 0; x < size; x++) {
+      const nx = (x - half) / half;
+      // Wide horizontal visor capsule core + smooth radial outer bloom fading cleanly to 0 at border
+      const barDx = Math.max(0, Math.abs(nx) - 0.32) / 0.68;
+      const barR = Math.hypot(barDx, ny * 1.45);
+      const core = Math.exp(-barR * barR * 6.5);
+      const outerR = Math.hypot(nx, ny);
+      const halo = outerR < 1 ? Math.pow(1 - outerR, 2.2) : 0;
+      const edgeFade = outerR < 1 ? Math.min(1, (1 - outerR) * 4.5) : 0;
+      const alpha = Math.max(0, Math.min(1, (core * 0.85 + halo * 0.72) * edgeFade));
+      const idx = (y * size + x) * 4;
+      d[idx] = 255;
+      d[idx + 1] = 255;
+      d[idx + 2] = 255;
+      d[idx + 3] = Math.round(alpha * 255);
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.needsUpdate = true;
+  return tex;
+}
+
+/**
+ * Inject view-dependent Fresnel silhouette rim glow into a MeshStandardMaterial:
+ *   totalEmissiveRadiance += rimColor * pow(1.0 - dot(N, V), 3.0) * k
+ * Uses uniform uRimColor + uRimStrength so enemy/ally/hit/death-fade clones share one program.
+ */
+function applyArmorFresnel(
+  mat: THREE.MeshStandardMaterial,
+  rimHex: string,
+  rimStrength: { value: number },
+): void {
+  const rimColor = new THREE.Color(rimHex);
+  mat.userData.fresnelRimColor = rimHex;
+  mat.userData.fresnelRimStrength = rimStrength;
+  mat.onBeforeCompile = (shader) => {
+    shader.uniforms.uRimColor = { value: rimColor };
+    shader.uniforms.uRimStrength = rimStrength;
+    shader.fragmentShader = shader.fragmentShader
+      .replace(
+        '#include <common>',
+        '#include <common>\nuniform vec3 uRimColor;\nuniform float uRimStrength;',
+      )
+      .replace(
+        '#include <emissivemap_fragment>',
+        `#include <emissivemap_fragment>
+{
+	float rimNdotV = clamp( dot( normalize( normal ), normalize( vViewPosition ) ), 0.0, 1.0 );
+	float rimFactor = pow( 1.0 - rimNdotV, 3.0 );
+	totalEmissiveRadiance += uRimColor * rimFactor * uRimStrength;
+}`,
+      );
+  };
+  mat.customProgramCacheKey = () => ARMOR_FRESNEL_CACHE_KEY;
+}
+
 function getMaterials(): MaterialCache {
   if (cachedMaterials) return cachedMaterials;
 
-  const armor = new THREE.MeshStandardMaterial({
-    color: PALETTE.robotArmor,
-    emissive: PALETTE.robotEdge,
-    emissiveIntensity: 0.14,
-    metalness: 0.87,
-    roughness: 0.27,
-    envMapIntensity: 2.6,
-    vertexColors: true,
-  });
+  const makeArmor = (rimHex: string, rimK: number, emissiveHex: string = PALETTE.robotEdge, emissiveInt = ARMOR_EMISSIVE_INTENSITY): THREE.MeshStandardMaterial => {
+    const mat = new THREE.MeshStandardMaterial({
+      color: PALETTE.robotArmor,
+      emissive: emissiveHex,
+      emissiveIntensity: emissiveInt,
+      metalness: 0.86,
+      roughness: 0.26,
+      envMapIntensity: 2.9,
+      vertexColors: true,
+    });
+    applyArmorFresnel(mat, rimHex, { value: rimK });
+    return mat;
+  };
 
   const makeGlow = (hex: string): THREE.MeshStandardMaterial =>
     new THREE.MeshStandardMaterial({
       color: hex,
       emissive: hex,
-      emissiveIntensity: 4.2,
+      emissiveIntensity: 4.4,
       metalness: 0.85,
       roughness: 0.20,
       envMapIntensity: 1.4,
@@ -194,20 +287,34 @@ function getMaterials(): MaterialCache {
     new THREE.MeshStandardMaterial({
       color: PALETTE.robotEdge,
       emissive: hex,
-      emissiveIntensity: 0.42,
+      emissiveIntensity: 0.55,
       metalness: 0.92,
       roughness: 0.22,
-      envMapIntensity: 2.0,
+      envMapIntensity: 2.2,
     });
 
   const makeEdgeLine = (hex: string): THREE.LineBasicMaterial => {
-    const col = new THREE.Color(PALETTE.robotEdge).lerp(new THREE.Color(hex), 0.42);
+    const col = new THREE.Color(PALETTE.robotEdge).lerp(new THREE.Color(hex), 0.48);
     return new THREE.LineBasicMaterial({
       color: col,
       transparent: true,
-      opacity: 0.78,
+      opacity: 0.82,
     });
   };
+
+  const visorGlowTex = createVisorGlowTexture();
+  const makeVisorHalo = (hex: string, opacity: number): THREE.SpriteMaterial =>
+    new THREE.SpriteMaterial({
+      map: visorGlowTex,
+      color: hex,
+      blending: THREE.AdditiveBlending,
+      transparent: true,
+      opacity,
+      depthWrite: false,
+      depthTest: true,
+      fog: false,
+      toneMapped: false,
+    });
 
   const visorFlash = new THREE.MeshStandardMaterial({
     color: PALETTE.robotHitFlash,
@@ -218,7 +325,11 @@ function getMaterials(): MaterialCache {
   });
 
   cachedMaterials = {
-    armor,
+    armor: {
+      enemy: makeArmor(PALETTE.robotGlowEnemy, ARMOR_FRESNEL_K.enemy),
+      ally: makeArmor(PALETTE.robotGlowAlly, ARMOR_FRESNEL_K.ally),
+    },
+    armorHitFlash: makeArmor(PALETTE.robotHitFlash, ARMOR_HIT_FRESNEL_K, PALETTE.robotHitFlash, 0.42),
     glow: {
       enemy: makeGlow(PALETTE.robotGlowEnemy),
       ally: makeGlow(PALETTE.robotGlowAlly),
@@ -232,16 +343,22 @@ function getMaterials(): MaterialCache {
       ally: makeEdgeLine(PALETTE.robotGlowAlly),
     },
     visorFlash,
+    visorHalo: {
+      enemy: makeVisorHalo(PALETTE.robotGlowEnemy, VISOR_HALO_OPACITY),
+      ally: makeVisorHalo(PALETTE.robotGlowAlly, VISOR_HALO_OPACITY),
+    },
+    visorHaloFlash: makeVisorHalo(PALETTE.robotHitFlash, 0.98),
+    visorGlowTex,
     flashTex: createFlashTexture(),
   };
   return cachedMaterials;
 }
 
-// Vertex tint multipliers against PALETTE.robotArmor (#23262E)
+// Vertex tint multipliers against PALETTE.robotArmor
 const TINT_ARMOR: [number, number, number] = [1.0, 1.0, 1.0];
-const TINT_ARMOR_HI: [number, number, number] = [1.62, 1.68, 1.78]; // machined bright chamfer panels
-const TINT_FRAME: [number, number, number] = [0.78, 0.82, 0.88]; // inner hydraulic dark gunmetal
-const TINT_GUN: [number, number, number] = [1.32, 1.38, 1.46]; // machined pulse carbine steel
+const TINT_ARMOR_HI: [number, number, number] = [1.75, 1.82, 1.95]; // machined bright chamfer panels
+const TINT_FRAME: [number, number, number] = [0.62, 0.66, 0.74]; // inner hydraulic dark gunmetal
+const TINT_GUN: [number, number, number] = [1.35, 1.42, 1.52]; // machined pulse carbine steel
 
 function buildUpperArm(side: -1 | 1): {
   armor: THREE.BufferGeometry;
@@ -519,10 +636,10 @@ function getGeometries(): GeometryCache {
 
   // Single razor-sharp horizontal glowing visor strip wrapping across the faceless front (-Z)
   const headVisor = mergeStrict([
-    makePart(new THREE.BoxGeometry(0.184, 0.036, 0.026), [0, 0.008, -0.10], [0, 0, 0], TINT_ARMOR),
+    makePart(new THREE.BoxGeometry(0.186, 0.042, 0.026), [0, 0.008, -0.10], [0, 0, 0], TINT_ARMOR),
     // Wraparound temple light accents
-    makePart(new THREE.BoxGeometry(0.02, 0.028, 0.074), [-0.09, 0.008, -0.062], [0, 0, 0], TINT_ARMOR),
-    makePart(new THREE.BoxGeometry(0.02, 0.028, 0.074), [0.09, 0.008, -0.062], [0, 0, 0], TINT_ARMOR),
+    makePart(new THREE.BoxGeometry(0.02, 0.032, 0.074), [-0.09, 0.008, -0.062], [0, 0, 0], TINT_ARMOR),
+    makePart(new THREE.BoxGeometry(0.02, 0.032, 0.074), [0.09, 0.008, -0.062], [0, 0, 0], TINT_ARMOR),
   ]);
 
   // --- Arms ---
@@ -594,7 +711,8 @@ function getGeometries(): GeometryCache {
     countGeoTris(thighR) +
     countGeoTris(shinL.armor) +
     countGeoTris(shinR.armor) +
-    countGeoTris(foot) * 2;
+    countGeoTris(foot) * 2 +
+    2; // visor additive fake-bloom sprite (2 tris)
 
   cachedGeometries = {
     pelvis,
@@ -626,14 +744,18 @@ function getGeometries(): GeometryCache {
 export function createRobot(faction: RobotFaction = 'enemy'): RobotInstance {
   const mats = getMaterials();
   const geos = getGeometries();
+  const armorMat = mats.armor[faction];
   const glowMat = mats.glow[faction];
   const edgeTrimMat = mats.edgeTrim[faction];
   const edgeLineMat = mats.edgeLine[faction];
+  const visorHaloMat = mats.visorHalo[faction];
+  const factionGlowHex = faction === 'enemy' ? PALETTE.robotGlowEnemy : PALETTE.robotGlowAlly;
 
   const root = new THREE.Group();
   root.name = `cyber-robot-${faction}`;
 
   const bodyMeshes: THREE.Mesh[] = [];
+  const armorMeshes: THREE.Mesh[] = [];
   const glowMeshes: THREE.Mesh[] = [];
   const edgeLines: THREE.LineSegments[] = [];
 
@@ -650,7 +772,10 @@ export function createRobot(faction: RobotFaction = 'enemy'): RobotInstance {
     m.frustumCulled = false;
     parent.add(m);
     if (isGlow) glowMeshes.push(m);
-    else bodyMeshes.push(m);
+    else {
+      bodyMeshes.push(m);
+      if (mat === armorMat) armorMeshes.push(m);
+    }
     return m;
   };
 
@@ -666,14 +791,14 @@ export function createRobot(faction: RobotFaction = 'enemy'): RobotInstance {
   bodyPivot.name = 'robot-body';
   bodyPivot.position.set(0, 0.96, 0);
   root.add(bodyPivot);
-  addMesh(bodyPivot, geos.pelvis, mats.armor);
+  addMesh(bodyPivot, geos.pelvis, armorMat);
 
   // Torso
   const torsoPivot = new THREE.Group();
   torsoPivot.name = 'robot-torso';
   torsoPivot.position.set(0, 0.08, 0);
   bodyPivot.add(torsoPivot);
-  addMesh(torsoPivot, geos.torsoArmor, mats.armor);
+  addMesh(torsoPivot, geos.torsoArmor, armorMat);
   addMesh(torsoPivot, geos.torsoEdgeTrim, edgeTrimMat, false, false);
   addMesh(torsoPivot, geos.torsoGlow, glowMat, true, false);
   addEdge(torsoPivot, geos.torsoEdgeLine);
@@ -683,10 +808,20 @@ export function createRobot(faction: RobotFaction = 'enemy'): RobotInstance {
   headPivot.name = 'robot-head';
   headPivot.position.set(0, 0.56, 0);
   torsoPivot.add(headPivot);
-  addMesh(headPivot, geos.headArmor, mats.armor);
+  addMesh(headPivot, geos.headArmor, armorMat);
   addEdge(headPivot, geos.headEdgeLine);
   const visorMesh = addMesh(headPivot, geos.headVisor, glowMat, true, false);
   visorMesh.name = 'robot-visor';
+
+  // Low-cost procedural additive fake-bloom halo over visor (zero post-processing):
+  // reads as a bright luminous point at 12-35m instead of a sub-pixel hairline.
+  const visorHalo = new THREE.Sprite(visorHaloMat);
+  visorHalo.name = 'robot-visor-halo';
+  visorHalo.position.set(0, 0.008, -0.124);
+  visorHalo.scale.set(0.46, 0.24, 1);
+  visorHalo.frustumCulled = false;
+  visorHalo.renderOrder = 2;
+  headPivot.add(visorHalo);
 
   const headTopAnchor = new THREE.Object3D();
   headTopAnchor.position.set(0, 0.16, 0);
@@ -697,32 +832,32 @@ export function createRobot(faction: RobotFaction = 'enemy'): RobotInstance {
   shoulderL.name = 'robot-shoulder-l';
   shoulderL.position.set(-0.245, 0.34, 0);
   torsoPivot.add(shoulderL);
-  addMesh(shoulderL, geos.upperArmL, mats.armor, false, false);
+  addMesh(shoulderL, geos.upperArmL, armorMat, false, false);
 
   const elbowL = new THREE.Group();
   elbowL.name = 'robot-elbow-l';
   elbowL.position.set(-0.01, -0.25, 0);
   shoulderL.add(elbowL);
-  addMesh(elbowL, geos.forearmL, mats.armor, false, false);
+  addMesh(elbowL, geos.forearmL, armorMat, false, false);
 
   // Right arm + Cyber Pulse Carbine
   const shoulderR = new THREE.Group();
   shoulderR.name = 'robot-shoulder-r';
   shoulderR.position.set(0.245, 0.34, 0);
   torsoPivot.add(shoulderR);
-  addMesh(shoulderR, geos.upperArmR, mats.armor, false, false);
+  addMesh(shoulderR, geos.upperArmR, armorMat, false, false);
 
   const elbowR = new THREE.Group();
   elbowR.name = 'robot-elbow-r';
   elbowR.position.set(0.01, -0.25, 0);
   shoulderR.add(elbowR);
-  addMesh(elbowR, geos.forearmR, mats.armor, false, false);
+  addMesh(elbowR, geos.forearmR, armorMat, false, false);
 
   const weaponMount = new THREE.Group();
   weaponMount.name = 'robot-weapon';
   weaponMount.position.set(-0.01, -0.24, -0.02);
   elbowR.add(weaponMount);
-  addMesh(weaponMount, geos.weaponBody, mats.armor, false, false);
+  addMesh(weaponMount, geos.weaponBody, armorMat, false, false);
   addMesh(weaponMount, geos.weaponGlow, glowMat, true, false);
 
   const muzzleAnchor = new THREE.Object3D();
@@ -748,19 +883,19 @@ export function createRobot(faction: RobotFaction = 'enemy'): RobotInstance {
   hipL.name = 'robot-hip-l';
   hipL.position.set(-0.115, -0.02, 0);
   bodyPivot.add(hipL);
-  addMesh(hipL, geos.thighL, mats.armor, false, true);
+  addMesh(hipL, geos.thighL, armorMat, false, true);
 
   const kneeL = new THREE.Group();
   kneeL.name = 'robot-knee-l';
   kneeL.position.set(0, -0.44, 0);
   hipL.add(kneeL);
-  addMesh(kneeL, geos.shinL, mats.armor, false, false);
+  addMesh(kneeL, geos.shinL, armorMat, false, false);
 
   const ankleL = new THREE.Group();
   ankleL.name = 'robot-ankle-l';
   ankleL.position.set(0, -0.42, 0);
   kneeL.add(ankleL);
-  addMesh(ankleL, geos.foot, mats.armor, false, false);
+  addMesh(ankleL, geos.foot, armorMat, false, false);
 
   const soleProbeL = new THREE.Object3D();
   soleProbeL.position.set(0, -0.08, -0.02);
@@ -771,19 +906,19 @@ export function createRobot(faction: RobotFaction = 'enemy'): RobotInstance {
   hipR.name = 'robot-hip-r';
   hipR.position.set(0.115, -0.02, 0);
   bodyPivot.add(hipR);
-  addMesh(hipR, geos.thighR, mats.armor, false, true);
+  addMesh(hipR, geos.thighR, armorMat, false, true);
 
   const kneeR = new THREE.Group();
   kneeR.name = 'robot-knee-r';
   kneeR.position.set(0, -0.44, 0);
   hipR.add(kneeR);
-  addMesh(kneeR, geos.shinR, mats.armor, false, false);
+  addMesh(kneeR, geos.shinR, armorMat, false, false);
 
   const ankleR = new THREE.Group();
   ankleR.name = 'robot-ankle-r';
   ankleR.position.set(0, -0.42, 0);
   kneeR.add(ankleR);
-  addMesh(ankleR, geos.foot, mats.armor, false, false);
+  addMesh(ankleR, geos.foot, armorMat, false, false);
 
   const soleProbeR = new THREE.Object3D();
   soleProbeR.position.set(0, -0.08, -0.02);
@@ -791,20 +926,29 @@ export function createRobot(faction: RobotFaction = 'enemy'): RobotInstance {
 
   let hitFlashOn = false;
   let fadeClones: THREE.Material[] | null = null;
+  let fadeRimStrength: { value: number } | null = null;
 
   const setHitFlash = (active: boolean): void => {
     if (fadeClones) return;
     if (active === hitFlashOn) return;
     hitFlashOn = active;
     visorMesh.material = active ? mats.visorFlash : glowMat;
+    visorHalo.material = active ? mats.visorHaloFlash : visorHaloMat;
+    const targetArmor = active ? mats.armorHitFlash : armorMat;
+    for (const m of armorMeshes) {
+      m.material = targetArmor;
+    }
   };
 
   const setDeathFade = (opacity: number): void => {
     const a = Math.max(0, Math.min(1, opacity));
     if (!fadeClones) {
-      const fArmor = mats.armor.clone();
+      hitFlashOn = false;
+      const fArmor = armorMat.clone();
       fArmor.transparent = true;
       fArmor.depthWrite = false;
+      const fRimStrength = { value: ARMOR_FRESNEL_K[faction] };
+      applyArmorFresnel(fArmor, factionGlowHex, fRimStrength);
       const fTrim = edgeTrimMat.clone();
       fTrim.transparent = true;
       fTrim.depthWrite = false;
@@ -813,7 +957,11 @@ export function createRobot(faction: RobotFaction = 'enemy'): RobotInstance {
       fGlow.depthWrite = false;
       const fLine = edgeLineMat.clone();
       fLine.transparent = true;
-      fadeClones = [fArmor, fTrim, fGlow, fLine];
+      const fHalo = visorHaloMat.clone();
+      fHalo.transparent = true;
+      fHalo.depthWrite = false;
+      fadeClones = [fArmor, fTrim, fGlow, fLine, fHalo];
+      fadeRimStrength = fRimStrength;
 
       for (const m of bodyMeshes) {
         m.material = m.material === edgeTrimMat ? fTrim : fArmor;
@@ -824,19 +972,24 @@ export function createRobot(faction: RobotFaction = 'enemy'): RobotInstance {
       for (const ls of edgeLines) {
         ls.material = fLine;
       }
+      visorHalo.material = fHalo;
     }
-    const [fArmor, fTrim, fGlow, fLine] = fadeClones as [
+    const [fArmor, fTrim, fGlow, fLine, fHalo] = fadeClones as [
       THREE.MeshStandardMaterial,
       THREE.MeshStandardMaterial,
       THREE.MeshStandardMaterial,
       THREE.LineBasicMaterial,
+      THREE.SpriteMaterial,
     ];
     fArmor.opacity = a;
+    fArmor.emissiveIntensity = ARMOR_EMISSIVE_INTENSITY * a;
+    if (fadeRimStrength) fadeRimStrength.value = ARMOR_FRESNEL_K[faction] * a;
     fTrim.opacity = a;
-    fTrim.emissiveIntensity = 0.36 * a;
+    fTrim.emissiveIntensity = 0.55 * a;
     fGlow.opacity = a;
     fGlow.emissiveIntensity = 0.45 * a;
-    fLine.opacity = 0.58 * a;
+    fLine.opacity = 0.62 * a;
+    fHalo.opacity = VISOR_HALO_OPACITY * a;
   };
 
   const dispose = (): void => {
@@ -844,6 +997,7 @@ export function createRobot(faction: RobotFaction = 'enemy'): RobotInstance {
     if (fadeClones) {
       for (const m of fadeClones) m.dispose();
       fadeClones = null;
+      fadeRimStrength = null;
     }
   };
 
@@ -867,6 +1021,7 @@ export function createRobot(faction: RobotFaction = 'enemy'): RobotInstance {
       ankleR,
     },
     visorMesh,
+    visorHalo,
     glowMeshes,
     edgeLines,
     bodyMeshes,
@@ -911,7 +1066,9 @@ export function disposeRobotCache(): void {
   }
   if (cachedMaterials) {
     const m = cachedMaterials;
-    m.armor.dispose();
+    m.armor.enemy.dispose();
+    m.armor.ally.dispose();
+    m.armorHitFlash.dispose();
     m.glow.enemy.dispose();
     m.glow.ally.dispose();
     m.edgeTrim.enemy.dispose();
@@ -919,6 +1076,10 @@ export function disposeRobotCache(): void {
     m.edgeLine.enemy.dispose();
     m.edgeLine.ally.dispose();
     m.visorFlash.dispose();
+    m.visorHalo.enemy.dispose();
+    m.visorHalo.ally.dispose();
+    m.visorHaloFlash.dispose();
+    m.visorGlowTex.dispose();
     m.flashTex.dispose();
     cachedMaterials = null;
   }
