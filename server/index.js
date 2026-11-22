@@ -5,13 +5,18 @@
 import http from 'node:http';
 import path from 'node:path';
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT) || 3028;
 const HOST = '127.0.0.1';
 const DIST = path.join(__dirname, 'dist');
+const INDEX_HTML = path.join(DIST, 'index.html');
+const ASSETS_DIR = path.join(DIST, 'assets');
 const PREFIX = '/transport';
+const FILE_EXT_RE = /\.\w{2,5}$/;
+const ASSET_REF_RE = new RegExp(`\\b(src|href)=(["'])(${PREFIX}/assets/[^"'?#]+)\\2`, 'g');
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -42,30 +47,101 @@ function send(res, status, body, headers = {}) {
   res.end(body);
 }
 
+function sendText(req, res, status, body) {
+  const buf = Buffer.from(body, 'utf8');
+  res.writeHead(status, {
+    'Content-Type': MIME['.txt'],
+    'Content-Length': buf.length,
+    'Cache-Control': 'no-store',
+  });
+  if (req.method === 'HEAD') return res.end();
+  res.end(buf);
+}
+
 function health(_req, res) {
-  send(res, 200, JSON.stringify({ ok: true }), { 'Content-Type': 'application/json' });
+  send(res, 200, JSON.stringify({ ok: true }), {
+    'Content-Type': 'application/json',
+    'Cache-Control': 'no-store',
+  });
+}
+
+function assetVersion(assetUrl, fallbackSeed) {
+  const rel = assetUrl.slice(PREFIX.length);
+  const file = path.normalize(path.join(DIST, rel));
+  let seed = fallbackSeed;
+  if (file.startsWith(ASSETS_DIR + path.sep)) {
+    try {
+      const st = fs.statSync(file);
+      if (st.isFile()) {
+        seed = `${rel}:${Math.trunc(st.mtimeMs)}:${st.size}`;
+      }
+    } catch {
+      // Fall back to index.html mtime seed if asset cannot be stat'd.
+    }
+  }
+  return crypto.createHash('sha256').update(seed).digest('hex').slice(0, 8);
+}
+
+function serveIndexHtml(req, res) {
+  fs.stat(INDEX_HTML, (statErr, indexSt) => {
+    if (statErr || !indexSt.isFile()) {
+      return sendText(req, res, 404, 'not found');
+    }
+    fs.readFile(INDEX_HTML, 'utf8', (readErr, rawHtml) => {
+      if (readErr) {
+        return sendText(req, res, 500, 'internal error');
+      }
+      const fallbackSeed = `index:${Math.trunc(indexSt.mtimeMs)}:${indexSt.size}`;
+      const html = rawHtml.replace(ASSET_REF_RE, (_m, attr, quote, assetUrl) => {
+        const ver = assetVersion(assetUrl, fallbackSeed);
+        return `${attr}=${quote}${assetUrl}?v=${ver}${quote}`;
+      });
+      const buf = Buffer.from(html, 'utf8');
+      res.writeHead(200, {
+        'Content-Type': MIME['.html'],
+        'Content-Length': buf.length,
+        'Cache-Control': 'no-store, must-revalidate',
+      });
+      if (req.method === 'HEAD') return res.end();
+      res.end(buf);
+    });
+  });
 }
 
 // Static file under DIST. `urlPath` must already be stripped of the /transport prefix.
 function serveStatic(req, res, urlPath, allowSpaFallback = true) {
-  let rel = decodeURIComponent(urlPath.split('?')[0]);
-  if (rel === '/' || rel === '') rel = '/index.html';
+  let rawRel;
+  try {
+    rawRel = decodeURIComponent(urlPath.split('?')[0]);
+  } catch {
+    return sendText(req, res, 400, 'bad request');
+  }
+  const rel = rawRel === '/' || rawRel === '' ? '/index.html' : rawRel;
   const file = path.normalize(path.join(DIST, rel));
-  if (!file.startsWith(DIST + path.sep) && file !== path.join(DIST, 'index.html')) {
-    return send(res, 403, 'forbidden');
+  if (!file.startsWith(DIST + path.sep) && file !== INDEX_HTML) {
+    return sendText(req, res, 403, 'forbidden');
+  }
+  if (file === INDEX_HTML) {
+    return serveIndexHtml(req, res);
   }
   fs.stat(file, (err, st) => {
     if (err || !st.isFile()) {
-      if (!allowSpaFallback) return send(res, 404, 'not found');
-      const index = path.join(DIST, 'index.html');
-      if (!fs.existsSync(index)) return send(res, 404, 'not found');
-      res.writeHead(200, { 'Content-Type': MIME['.html'], 'Cache-Control': 'no-cache' });
-      if (req.method === 'HEAD') return res.end();
-      return fs.createReadStream(index).pipe(res);
+      const hasFileExt = FILE_EXT_RE.test(rawRel);
+      const isAssetPath = file.startsWith(ASSETS_DIR + path.sep) || file === ASSETS_DIR;
+      if (!allowSpaFallback || hasFileExt || isAssetPath) {
+        return sendText(req, res, 404, 'not found');
+      }
+      return serveIndexHtml(req, res);
     }
     const ext = path.extname(file).toLowerCase();
     const contentType = MIME[ext] || 'application/octet-stream';
-    const cacheControl = ext === '.html' ? 'no-cache' : 'public, max-age=3600';
+    const isAsset = file.startsWith(ASSETS_DIR + path.sep);
+    const cacheControl =
+      ext === '.html'
+        ? 'no-store, must-revalidate'
+        : isAsset
+          ? 'public, max-age=31536000, immutable'
+          : 'public, max-age=3600';
     const size = st.size;
     const range = req.headers.range;
 
@@ -118,7 +194,7 @@ const server = http.createServer((req, res) => {
   if (pathname.startsWith('/audio/') || pathname.startsWith('/models/')) {
     return serveStatic(req, res, pathname, false);
   }
-  return send(res, 404, 'not found');
+  return sendText(req, res, 404, 'not found');
 });
 
 server.listen(PORT, HOST, () => {
