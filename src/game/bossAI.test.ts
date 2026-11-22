@@ -151,7 +151,7 @@ test('weakpoint multipliers: head = 2.5x, core = 2.0x, body = 1.0x', () => {
   assert.equal(boss.applyDamage(-10, 'core'), 0);
 });
 
-test('phase 2 at <=70% HP emits phase2 once, boosts speed +15%, cuts cooldown -20% and -10% more at <=35%', () => {
+test('phase 2 at <=70% HP emits phase2 once, boosts speed by phase2SpeedMult (+8%), cuts cooldown -20% and -10% more at <=35%', () => {
   const boss = new BossAI(1000);
 
   // Measure phase 1 chase speed
@@ -169,8 +169,8 @@ test('phase 2 at <=70% HP emits phase2 once, boosts speed +15%, cuts cooldown -2
   assert.ok(p2Tick.events.includes('phase2'), 'must emit phase2 event on threshold');
   const p2Speed = Math.hypot(p2Tick.pos.x - p1Moved.pos.x, p2Tick.pos.z - p1Moved.pos.z);
   assert.ok(
-    Math.abs(p2Speed - BOSS_DEFAULTS.moveSpeed * 1.15) < 1e-6,
-    `phase 2 speed ${p2Speed} should be ${BOSS_DEFAULTS.moveSpeed * 1.15}`,
+    Math.abs(p2Speed - BOSS_DEFAULTS.moveSpeed * BOSS_DEFAULTS.phase2SpeedMult) < 1e-6,
+    `phase 2 speed ${p2Speed} should be ${BOSS_DEFAULTS.moveSpeed * BOSS_DEFAULTS.phase2SpeedMult}`,
   );
 
   // Subsequent ticks must not repeat phase2 event
@@ -220,7 +220,7 @@ test('charge triggers at distance >18m, locks yaw (dodgeable by sidestep), and h
   assert.ok(start.events.includes('charge_start'));
   const lockedYaw = start.yaw;
 
-  // Verify speed during charge is 2.2x moveSpeed
+  // Verify speed during charge is chargeSpeedMult (1.85x) moveSpeed
   const after100 = bossDodge.update(100, { x: 6, z: 20 }, Math.hypot(6 - start.pos.x, 20 - start.pos.z));
   assert.equal(after100.state, 'charge');
   assert.equal(after100.yaw, lockedYaw, 'yaw must NOT follow sidestepping player during charge');
@@ -347,4 +347,24 @@ test('pure melee & pure logic: source and exports contain no ranged/projectile o
 
   assert.equal(/\bfrom\s+['"]three['"]/.test(source), false, 'bossAI.ts must not import three.js');
   assert.equal(/\b(window|document)\b/.test(source), false, 'bossAI.ts must not touch DOM');
+});
+
+test('default chase speed: 3s chase displacement stays within 4.5-6.0m', () => {
+  const boss = new BossAI(2000);
+  const player = { x: 0, z: 15 };
+  let pos = { x: 0, z: 0 };
+
+  // 150 steps * 20ms = 3000ms (3.0s) of uninterrupted chase (dist stays in (3.2, 18]m)
+  for (let i = 0; i < 150; i++) {
+    const dist = Math.hypot(player.x - pos.x, player.z - pos.z);
+    const tick = boss.update(20, player, dist);
+    assert.equal(tick.state, 'chase', `expected chase at step ${i}, got ${tick.state}`);
+    pos = tick.pos;
+  }
+
+  const displacement = Math.hypot(pos.x, pos.z);
+  assert.ok(
+    displacement >= 4.5 && displacement <= 6.0,
+    `3s chase displacement should be within [4.5, 6.0]m, got ${displacement.toFixed(3)}m`,
+  );
 });
