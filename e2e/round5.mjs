@@ -250,13 +250,13 @@ try {
     `CHECK 3 OK — 5 enemies live (maxEnemyTris=${perf5.maxEnemyTris} <=2500), hands=${perf5.hands.leftTris}+${perf5.hands.rightTris}=${perf5.hands.totalTris} tris (<=2400), calls=${perf5.renderInfo.calls} (<=170), tris=${perf5.renderInfo.triangles} (<=220k)`,
   );
 
-  // ── 3. Capture enemy-alert.png showing BOTH BL (黑红+红眼灯) & GR (蓝白+蓝眼灯) in combat stance ──
+  // ── 3. Capture enemy-alert.png showing BOTH enemy (magenta glow) & ally (cyan glow) robots ──
   await page.evaluate(() => {
     window.__test.clearEnemies();
     window.__test.teleport(0, 10, 0, -4, 0);
-    // Place BL & GR ~6m ahead in open sunlit deck facing directly toward player (yaw=180° faces +Z)
-    window.__test.spawnEnemyAt(-1.65, 3.8, 180, 'bl');
-    window.__test.spawnEnemyAt(1.65, 3.8, 180, 'gr');
+    // Place enemy & ally robots ~6m ahead in open sunlit deck facing directly toward player (yaw=180° faces +Z)
+    window.__test.spawnEnemyAt(-1.65, 3.8, 180, 'enemy');
+    window.__test.spawnEnemyAt(1.65, 3.8, 180, 'ally');
   });
   // Let enemies spot player & level rifles in ALERT/AIM stance (350ms < 600ms NORMAL reaction delay)
   await waitSimMs(page, 350);
@@ -413,7 +413,7 @@ try {
       window.__test.clearEnemies();
       window.__test.setDifficulty(d);
       window.__test.teleport(0, 0, 180, 0, 0); // face north toward enemy
-      window.__test.spawnEnemyAt(0, -10, 180, 'bl'); // enemy at z=-10 facing south (+Z) toward player at (0,0)
+      window.__test.spawnEnemyAt(0, -10, 180, 'enemy'); // enemy at z=-10 facing south (+Z) toward player at (0,0)
     }, diff);
     await page.waitForFunction(
       () => window.__enemies.length > 0 && window.__enemies[0].firstShotAt > 0,
@@ -437,7 +437,7 @@ try {
     // Container sits at (-6, 0, -4) w=6, h=2.6, d=2.5 (z in [-5.25, -2.75]).
     // Player at (-6, -0.8), Enemy at (-6, -7.2) facing south -> completely occluded.
     window.__test.teleport(-6, -0.8, 0, 0, 0);
-    window.__test.spawnEnemyAt(-6, -7.2, 180, 'gr');
+    window.__test.spawnEnemyAt(-6, -7.2, 180, 'enemy');
   });
   const occStartSim = await page.evaluate(() => window.__anim.simTimeMs);
   while ((await page.evaluate(() => window.__anim.simTimeMs)) - occStartSim < 3050) {

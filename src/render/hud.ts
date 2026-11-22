@@ -45,6 +45,7 @@ export interface HudState {
 }
 
 export const HUD_FONT = `'DIN Alternate','Bahnschrift','Segoe UI',system-ui,-apple-system,sans-serif`;
+export const HUD_BTN_FONT = `'DIN Alternate','Bahnschrift','Roboto Condensed','Arial Narrow','DejaVu Sans','Segoe UI',system-ui,-apple-system,sans-serif`;
 
 const HURT_BG = `radial-gradient(ellipse 115% 90% at 50% 50%, transparent 55%, ${PALETTE.hurtVeil} 100%)`;
 
@@ -57,6 +58,8 @@ const PULSE_PEAK = 0.25;
 const RIFLE_SEGMENTS = 30;
 const GATLING_ROWS = 3;
 const GATLING_CELLS_PER_ROW = 20; // 20 cells × 5 rounds = 100 rounds per row × 3 rows = 300
+const BTN_STROKE_PX = 1.5;
+const BTN_LABEL_PX = 8.5;
 
 const svgWrap = (inner: string, size: number): string =>
   `<svg viewBox="0 0 24 24" width="${size}" height="${size}" fill="none" stroke="currentColor" ` +
@@ -64,7 +67,7 @@ const svgWrap = (inner: string, size: number): string =>
   `style="display:block;pointer-events:none;flex:0 0 auto;">${inner}</svg>`;
 
 export const HUD_ICONS = {
-  fire: (size = 26) =>
+  fire: (size = 27) =>
     svgWrap(
       `<circle cx="12" cy="12" r="6.5"/>` +
         `<line x1="12" y1="2.5" x2="12" y2="6.5"/>` +
@@ -74,12 +77,12 @@ export const HUD_ICONS = {
         `<circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none"/>`,
       size,
     ),
-  reload: (size = 18) =>
+  reload: (size = 20) =>
     svgWrap(
       `<path d="M19.5 12a7.5 7.5 0 1 1-2.1-5.2"/>` + `<polyline points="19.5 4.5 19.5 8.8 15.2 8.8"/>`,
       size,
     ),
-  swap: (size = 18) =>
+  swap: (size = 20) =>
     svgWrap(
       `<polyline points="16 4 20 8 16 12"/>` +
         `<line x1="4" y1="8" x2="20" y2="8"/>` +
@@ -87,29 +90,29 @@ export const HUD_ICONS = {
         `<line x1="20" y1="16" x2="4" y2="16"/>`,
       size,
     ),
-  crouch: (size = 17) =>
+  crouch: (size = 20) =>
     svgWrap(
-      `<circle cx="12.5" cy="5.5" r="2"/>` +
-        `<path d="M9.5 10.5l3-1 3 2.5"/>` +
-        `<path d="M12 9.5l-1.5 4.5 4 1.5-1 4"/>` +
-        `<path d="M10.5 14l-3.5 1.5-1 4"/>`,
+      `<circle cx="13" cy="5.5" r="2.1"/>` +
+        `<path d="M9 11l3.5-1.5 3.5 2"/>` +
+        `<path d="M12.5 9.5l-2 5 4.5 1.5-1 4"/>` +
+        `<path d="M10.5 14.5l-3.5 2-1 3.5"/>`,
       size,
     ),
-  jump: (size = 17) =>
+  jump: (size = 20) =>
     svgWrap(
       `<polyline points="7 11 12 6 17 11"/>` +
         `<line x1="12" y1="6.5" x2="12" y2="16.5"/>` +
         `<line x1="6.5" y1="19.5" x2="17.5" y2="19.5"/>`,
       size,
     ),
-  soundOn: (size = 17) =>
+  soundOn: (size = 18) =>
     svgWrap(
       `<polygon points="4 9.5 8.5 9.5 13 5.5 13 18.5 8.5 14.5 4 14.5"/>` +
         `<path d="M16.2 9.2a4.2 4.2 0 0 1 0 5.6"/>` +
         `<path d="M18.8 6.8a7.4 7.4 0 0 1 0 10.4"/>`,
       size,
     ),
-  soundOff: (size = 17) =>
+  soundOff: (size = 18) =>
     svgWrap(
       `<polygon points="4 9.5 8.5 9.5 13 5.5 13 18.5 8.5 14.5 4 14.5"/>` +
         `<line x1="16.5" y1="9.5" x2="21" y2="14.5"/>` +
@@ -117,6 +120,117 @@ export const HUD_ICONS = {
       size,
     ),
 };
+
+export interface HudBtnState {
+  rect: { x: number; y: number; w: number; h: number };
+  pressed: boolean;
+  active: boolean;
+  disabled: boolean;
+  reloadPct: number;
+  labelFontPx: number;
+  strokePx: number;
+}
+
+const chamferCut = (size: number): number => (size >= 44 ? 7 : 6);
+
+const chamferClipCss = (size: number): string => {
+  const c = chamferCut(size);
+  return `polygon(${c}px 0, calc(100% - ${c}px) 0, 100% ${c}px, 100% calc(100% - ${c}px), calc(100% - ${c}px) 100%, ${c}px 100%, 0 calc(100% - ${c}px), 0 ${c}px)`;
+};
+
+const chamferPoints = (size: number, inset: number): string => {
+  const c = chamferCut(size);
+  const k = inset * (Math.SQRT2 - 1);
+  const s = size;
+  const f = (n: number) => Number(n.toFixed(2));
+  const p = [
+    [c + k, inset],
+    [s - c - k, inset],
+    [s - inset, c + k],
+    [s - inset, s - c - k],
+    [s - c - k, s - inset],
+    [c + k, s - inset],
+    [inset, s - c - k],
+    [inset, c + k],
+  ];
+  return p.map(([x, y]) => `${f(x)},${f(y)}`).join(' ');
+};
+
+/** Clockwise closed path starting at 12 o'clock for reload progress stroke-dashoffset. */
+const chamferRingPath = (size: number, inset: number): string => {
+  const c = chamferCut(size);
+  const k = inset * (Math.SQRT2 - 1);
+  const s = size;
+  const mid = s / 2;
+  const f = (n: number) => Number(n.toFixed(2));
+  return (
+    `M ${f(mid)},${f(inset)} ` +
+    `L ${f(s - c - k)},${f(inset)} ` +
+    `L ${f(s - inset)},${f(c + k)} ` +
+    `L ${f(s - inset)},${f(s - c - k)} ` +
+    `L ${f(s - c - k)},${f(s - inset)} ` +
+    `L ${f(c + k)},${f(s - inset)} ` +
+    `L ${f(inset)},${f(s - c - k)} ` +
+    `L ${f(inset)},${f(c + k)} ` +
+    `L ${f(c + k)},${f(inset)} Z`
+  );
+};
+
+function buildFrameSvg(size: number, circle: boolean): string {
+  const s = size;
+  const halfStroke = BTN_STROKE_PX / 2;
+  if (circle) {
+    const r = s / 2;
+    const rBorder = Number((r - halfStroke).toFixed(2));
+    const rHi = Number((r - (s >= 100 ? 3.5 : 2.1)).toFixed(2));
+    const rInner = Number((r - (s >= 100 ? 6.5 : 2.9)).toFixed(2));
+    const dash = s >= 100 ? '14 8' : '10 6';
+    // Upper ~112° highlight arc centered at 12 o'clock (-146° to -34°)
+    const a0 = (-146 * Math.PI) / 180;
+    const a1 = (-34 * Math.PI) / 180;
+    const x0 = Number((r + rHi * Math.cos(a0)).toFixed(2));
+    const y0 = Number((r + rHi * Math.sin(a0)).toFixed(2));
+    const x1 = Number((r + rHi * Math.cos(a1)).toFixed(2));
+    const y1 = Number((r + rHi * Math.sin(a1)).toFixed(2));
+    return (
+      `<svg data-role="frame" viewBox="0 0 ${s} ${s}" width="100%" height="100%" aria-hidden="true" ` +
+      `style="position:absolute;inset:0;display:block;pointer-events:none;z-index:1;overflow:visible;">` +
+      `<circle data-role="fire-accent" cx="${r}" cy="${r}" r="${rInner}" fill="none" stroke-width="1.25" stroke-dasharray="${dash}"/>` +
+      `<path data-role="hi-top" d="M ${x0} ${y0} A ${rHi} ${rHi} 0 0 1 ${x1} ${y1}" fill="none" stroke="${PALETTE.uiBtnHiTop}" stroke-width="1.2" stroke-linecap="round"/>` +
+      `<circle data-role="border" cx="${r}" cy="${r}" r="${rBorder}" fill="none" stroke-width="${BTN_STROKE_PX}"/>` +
+      `</svg>`
+    );
+  }
+  const c = chamferCut(s);
+  const pts = chamferPoints(s, halfStroke);
+  const hiY = Number((halfStroke + 1.25).toFixed(2));
+  const hiX0 = Number((c + 1.1).toFixed(2));
+  const hiX1 = Number((s - c - 1.1).toFixed(2));
+  const hiSide = Number((halfStroke + 1.25).toFixed(2));
+  const hiEndY = Number((c + 1.1).toFixed(2));
+  const botY = Number((s - halfStroke - 1.25).toFixed(2));
+  return (
+    `<svg data-role="frame" viewBox="0 0 ${s} ${s}" width="100%" height="100%" aria-hidden="true" ` +
+    `style="position:absolute;inset:0;display:block;pointer-events:none;z-index:1;overflow:visible;">` +
+    `<polyline data-role="hi-top" points="${hiSide},${hiEndY} ${hiX0},${hiY} ${hiX1},${hiY} ${Number((s - hiSide).toFixed(2))},${hiEndY}" fill="none" stroke="${PALETTE.uiBtnHiTop}" stroke-width="1" stroke-linecap="square"/>` +
+    `<line data-role="hi-bot" x1="${hiX0}" y1="${botY}" x2="${hiX1}" y2="${botY}" stroke="${PALETTE.uiBtnHiInnerBot}" stroke-width="1"/>` +
+    `<polygon data-role="border" points="${pts}" fill="none" stroke-width="${BTN_STROKE_PX}" stroke-linejoin="miter"/>` +
+    `</svg>`
+  );
+}
+
+function buildReloadRingSvg(size: number, dashOffset = 360): string {
+  const s = size;
+  const d = chamferRingPath(s, 2.6);
+  const off = Number(dashOffset.toFixed(2));
+  return (
+    `<svg data-role="reload-ring" viewBox="0 0 ${s} ${s}" width="100%" height="100%" aria-hidden="true" ` +
+    `style="position:absolute;inset:0;display:block;pointer-events:none;z-index:2;opacity:0;transition:opacity 80ms linear;">` +
+    `<path data-role="reload-track" d="${d}" fill="none" stroke="${PALETTE.uiBtnReloadTrack}" stroke-width="2.4" stroke-linejoin="miter"/>` +
+    `<path data-role="reload-arc" d="${d}" pathLength="360" fill="none" stroke="${PALETTE.accent}" stroke-width="2.4" stroke-linecap="butt" stroke-linejoin="miter" stroke-dasharray="360" stroke-dashoffset="${off}"/>` +
+    `</svg>`
+  );
+}
 
 let stylesInjected = false;
 export function ensureHudStyles(): void {
@@ -130,8 +244,8 @@ export function ensureHudStyles(): void {
   50% { opacity: 0.62; filter: drop-shadow(0 0 10px rgba(255,70,85,0.85)); }
 }
 @keyframes valFirePulse {
-  0% { box-shadow: 0 0 0 0 rgba(255,70,85,0.72), inset 0 0 14px rgba(255,70,85,0.28); transform: scale(0.95); }
-  100% { box-shadow: 0 0 0 14px rgba(255,70,85,0), inset 0 0 4px rgba(255,70,85,0.08); transform: scale(1); }
+  0% { box-shadow: 0 3px 7px ${PALETTE.uiBtnShadow}, 0 0 0 0 rgba(255,70,85,0.68), inset 0 0 12px rgba(255,70,85,0.28); }
+  100% { box-shadow: 0 3px 7px ${PALETTE.uiBtnShadow}, 0 0 0 12px rgba(255,70,85,0), inset 0 0 4px rgba(255,70,85,0.06); }
 }
 @keyframes valObjUrgent {
   0%, 100% { transform: scale(1); opacity: 1; }
@@ -140,11 +254,207 @@ export function ensureHudStyles(): void {
 .val-lowhp-breathe { animation: valLowHpBreathe 1.2s ease-in-out infinite; }
 .val-obj-urgent { animation: valObjUrgent 0.9s ease-in-out infinite; }
 .val-fire-pulse { animation: valFirePulse 160ms ease-out; }
+.val-btn-slot {
+  position: absolute;
+  pointer-events: none;
+  box-sizing: border-box;
+  filter: drop-shadow(0 3px 5px ${PALETTE.uiBtnShadow});
+}
+.val-btn-slot[data-circle="1"] {
+  filter: none;
+}
+.val-tac-btn {
+  --btn-stroke: ${PALETTE.uiBtnBorder};
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  box-sizing: border-box;
+  background-color: ${PALETTE.uiBtnPanel};
+  background-image: linear-gradient(180deg, ${PALETTE.uiBtnGradTop} 0%, ${PALETTE.uiBtnGradMid} 36%, ${PALETTE.uiBtnGradBot} 100%);
+  color: ${PALETTE.uiText};
+  font-family: ${HUD_BTN_FONT};
+  font-stretch: condensed;
+  font-weight: 700;
+  text-transform: uppercase;
+  line-height: 1;
+  pointer-events: auto;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: pointer;
+  transform: scale(1);
+  transform-origin: 50% 50%;
+  transition: transform 160ms cubic-bezier(0.22, 1, 0.36, 1), filter 160ms ease-out;
+}
+.val-tac-btn[data-circle="1"] {
+  border-radius: 50%;
+  box-shadow: 0 3px 7px ${PALETTE.uiBtnShadow};
+  color: ${PALETTE.accent};
+}
+.val-tac-btn [data-role="icon"] {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  position: relative;
+  z-index: 3;
+}
+.val-tac-btn [data-role="label"] {
+  font-size: ${BTN_LABEL_PX}px;
+  font-stretch: condensed;
+  letter-spacing: 0.06em;
+  margin-right: -0.06em;
+  transform: scaleX(0.88);
+  transform-origin: 50% 50%;
+  color: ${PALETTE.uiText};
+  opacity: 1;
+  white-space: nowrap;
+  pointer-events: none;
+  position: relative;
+  z-index: 3;
+}
+.val-tac-btn[data-circle="1"] [data-role="label"] {
+  font-size: 11px;
+  letter-spacing: 0.10em;
+  transform: scaleX(0.96);
+}
+.val-tac-btn [data-role="border"] {
+  stroke: var(--btn-stroke);
+}
+.val-tac-btn [data-role="fire-accent"] {
+  stroke: ${PALETTE.uiBtnFireInnerRing};
+}
+.val-tac-btn[data-active="1"],
+[data-btn="mute"][data-active="1"] .val-mute-plate {
+  --btn-stroke: ${PALETTE.accent};
+  background-image: linear-gradient(180deg, ${PALETTE.uiBtnActiveTop} 0%, ${PALETTE.uiBtnActiveMid} 52%, ${PALETTE.uiBtnActiveBot} 100%);
+  color: ${PALETTE.accent};
+}
+.val-tac-btn[data-pressed="1"],
+[data-btn="mute"][data-pressed="1"] .val-mute-plate {
+  --btn-stroke: ${PALETTE.accent};
+  transform: scale(0.96);
+  background-image: linear-gradient(180deg, ${PALETTE.uiBtnPressedTop} 0%, ${PALETTE.uiBtnPressedMid} 50%, ${PALETTE.uiBtnPressedBot} 100%);
+  box-shadow: inset 0 0 14px ${PALETTE.uiBtnPressedGlow};
+  filter: brightness(1.18);
+}
+.val-tac-btn[data-circle="1"][data-pressed="1"] {
+  box-shadow: 0 3px 7px ${PALETTE.uiBtnShadow}, 0 0 14px ${PALETTE.uiBtnPressedGlow}, inset 0 0 18px ${PALETTE.uiBtnPressedGlow};
+}
+.val-tac-btn[data-circle="1"][data-pressed="1"] [data-role="fire-accent"] {
+  stroke: ${PALETTE.accent};
+}
+.val-tac-btn[data-disabled="1"] {
+  --btn-stroke: ${PALETTE.uiBtnBorderDisabled};
+  background-image: linear-gradient(180deg, ${PALETTE.uiBtnGradTop} 0%, ${PALETTE.uiBtnGradMid} 36%, ${PALETTE.uiBtnGradBot} 100%);
+  color: ${PALETTE.uiBtnFgDisabled};
+  filter: saturate(0.18) brightness(0.84);
+  transform: scale(1);
+}
+.val-tac-btn[data-disabled="1"] [data-role="label"] {
+  color: ${PALETTE.uiBtnFgDisabled};
+}
+.val-tac-btn[data-disabled="1"] [data-role="fire-accent"] {
+  stroke: ${PALETTE.uiBtnBorderDisabled};
+  opacity: 0.45;
+}
 `;
   document.head.appendChild(st);
 }
 
-/** Shared VALORANT icon+label button factory (used by HUD sound & touch controls). */
+/** Update chamfer clip-path & pixel-exact SVG frame (and optional reload ring) after size changes. */
+export function syncHudButtonFrame(el: HTMLElement, size: number, circle: boolean): void {
+  el.dataset.btnSize = String(size);
+  el.dataset.circle = circle ? '1' : '0';
+  el.style.clipPath = circle ? '' : chamferClipCss(size);
+  el.style.gap = `${size >= 68 ? 3 : 2}px`;
+
+  const oldFrame = el.querySelector('[data-role="frame"]');
+  const tmp = document.createElement('div');
+  tmp.innerHTML = buildFrameSvg(size, circle);
+  const newFrame = tmp.firstElementChild;
+  if (newFrame) {
+    if (oldFrame) oldFrame.replaceWith(newFrame);
+    else el.prepend(newFrame);
+  }
+
+  const oldRing = el.querySelector('[data-role="reload-ring"]');
+  if (oldRing) {
+    const prevArc = oldRing.querySelector('[data-role="reload-arc"]');
+    const prevOff = prevArc ? Number(prevArc.getAttribute('stroke-dashoffset') ?? 360) : 360;
+    const prevOp = (oldRing as HTMLElement).style.opacity || '0';
+    tmp.innerHTML = buildReloadRingSvg(size, prevOff);
+    const newRing = tmp.firstElementChild as HTMLElement | null;
+    if (newRing) {
+      newRing.style.opacity = prevOp;
+      oldRing.replaceWith(newRing);
+    }
+  }
+}
+
+/** Update reload progress ring (0..100%) on the reload tactical button. */
+export function setHudReloadProgress(el: HTMLElement, active: boolean, pct: number): void {
+  const clamped = active ? Math.max(0, Math.min(100, pct)) : 0;
+  const deg = clamped * 3.6;
+  const dashOff = 360 - deg;
+  el.dataset.reloading = active ? '1' : '0';
+  el.dataset.reloadPct = String(Number(clamped.toFixed(2)));
+  el.dataset.reloadDeg = String(Number(deg.toFixed(1)));
+
+  const ring = el.querySelector<HTMLElement>('[data-role="reload-ring"]');
+  const arc = el.querySelector<SVGElement>('[data-role="reload-arc"]');
+  const conic = el.querySelector<HTMLElement>('[data-role="reload-conic"]');
+  if (arc) {
+    const offStr = dashOff.toFixed(2);
+    arc.style.strokeDashoffset = offStr;
+    arc.setAttribute('stroke-dashoffset', offStr);
+  }
+  if (ring) {
+    ring.style.opacity = active ? '1' : '0';
+  }
+  if (conic) {
+    conic.style.opacity = active ? '1' : '0';
+    conic.style.background = active
+      ? `conic-gradient(from 0deg, ${PALETTE.uiBtnReloadSweep} 0deg ${deg.toFixed(1)}deg, transparent ${deg.toFixed(1)}deg 360deg)`
+      : 'none';
+  }
+}
+
+/** Read DOM-verifiable state of any tactical HUD button (`fire|reload|swap|jump|crouch|mute`). */
+export function readHudButtonState(id: string): HudBtnState | null {
+  if (typeof document === 'undefined') return null;
+  const el =
+    document.querySelector<HTMLElement>(`#touch-ui [data-btn="${id}"]`) ??
+    document.querySelector<HTMLElement>(`[data-btn="${id}"]`);
+  if (!el) return null;
+  const r = el.getBoundingClientRect();
+  const lbl = el.querySelector<HTMLElement>('[data-role="label"]');
+  const labelFontPx = lbl ? Number(parseFloat(getComputedStyle(lbl).fontSize).toFixed(2)) : 0;
+  const borderEl = el.querySelector<SVGElement>('[data-role="border"]');
+  const strokePx = borderEl
+    ? Number(parseFloat(getComputedStyle(borderEl).strokeWidth).toFixed(2))
+    : Number(parseFloat(getComputedStyle(el).borderTopWidth).toFixed(2));
+  const reloadPct = Number(Number(el.dataset.reloadPct ?? 0).toFixed(2));
+  return {
+    rect: {
+      x: Number(r.x.toFixed(1)),
+      y: Number(r.y.toFixed(1)),
+      w: Number(r.width.toFixed(1)),
+      h: Number(r.height.toFixed(1)),
+    },
+    pressed: el.dataset.pressed === '1',
+    active: el.dataset.active === '1',
+    disabled: el.dataset.disabled === '1',
+    reloadPct,
+    labelFontPx,
+    strokePx,
+  };
+}
+
+/** Shared tactical panel button factory (used by HUD touch controls). */
 export function buildHudButton(opts: {
   id: string;
   label: string;
@@ -153,39 +463,55 @@ export function buildHudButton(opts: {
   size: number;
   circle?: boolean;
   danger?: boolean;
+  hasReloadRing?: boolean;
   zIndex?: number;
 }): HTMLDivElement {
   ensureHudStyles();
-  const { id, label, iconSvg, posCss, size, circle = false, danger = false, zIndex } = opts;
+  const {
+    id,
+    label,
+    iconSvg,
+    posCss,
+    size,
+    circle = false,
+    hasReloadRing = false,
+    zIndex,
+  } = opts;
   const el = document.createElement('div');
+  el.className = 'val-tac-btn';
   el.dataset.btn = id;
-  const fg = danger ? PALETTE.accent : PALETTE.uiText;
-  const border = danger ? `2px solid ${PALETTE.accent}` : `1.5px solid ${PALETTE.uiBtnBorder}`;
-  const labelSize = size >= 68 ? 10 : 8.6;
-  const tracking = size >= 68 ? '0.10em' : '0em';
+  el.dataset.pressed = '0';
+  el.dataset.active = '0';
+  el.dataset.disabled = '0';
+  el.dataset.reloadPct = '0';
+  el.dataset.reloadDeg = '0';
+  el.dataset.circle = circle ? '1' : '0';
   el.style.cssText =
-    `position:${zIndex !== undefined ? 'fixed' : 'absolute'};${posCss}` +
+    (posCss ? `position:${zIndex !== undefined ? 'fixed' : 'absolute'};${posCss}` : '') +
     `width:${size}px;height:${size}px;` +
-    `display:flex;flex-direction:column;align-items:center;justify-content:center;gap:${size >= 68 ? 3 : 2}px;` +
-    `border-radius:${circle ? '50%' : '10px'};` +
-    `background:${PALETTE.uiBtnPanel};border:${border};color:${fg};` +
-    `box-shadow:0 2px 6px ${PALETTE.uiBtnShadow};` +
-    `font-family:${HUD_FONT};font-weight:700;letter-spacing:${tracking};text-transform:uppercase;` +
-    `line-height:1;pointer-events:auto;touch-action:none;user-select:none;-webkit-user-select:none;` +
-    `box-sizing:border-box;cursor:pointer;` +
     (zIndex !== undefined ? `z-index:${zIndex};` : '');
+
+  if (hasReloadRing) {
+    const conic = document.createElement('div');
+    conic.dataset.role = 'reload-conic';
+    conic.style.cssText =
+      'position:absolute;inset:0;pointer-events:none;z-index:0;opacity:0;transition:opacity 80ms linear;';
+    el.appendChild(conic);
+    const tmp = document.createElement('div');
+    tmp.innerHTML = buildReloadRingSvg(size, 360);
+    if (tmp.firstElementChild) el.appendChild(tmp.firstElementChild);
+  }
 
   const iconBox = document.createElement('div');
   iconBox.dataset.role = 'icon';
-  iconBox.style.cssText = 'display:flex;align-items:center;justify-content:center;pointer-events:none;';
   iconBox.innerHTML = iconSvg;
 
   const txt = document.createElement('span');
   txt.dataset.role = 'label';
   txt.textContent = label;
-  txt.style.cssText = `font-size:${labelSize}px;color:${PALETTE.uiText};opacity:1;white-space:nowrap;pointer-events:none;`;
 
   el.append(iconBox, txt);
+  syncHudButtonFrame(el, size, circle);
   return el;
 }
 
@@ -255,6 +581,8 @@ export class Hud {
   private killEl: HTMLDivElement;
   private muteBtn: HTMLDivElement;
   private muteBadge: HTMLDivElement;
+  private muteIconEl: HTMLDivElement;
+  private mutePtrs = new Set<number>();
   private hurtAt = -1;
   private arcAt = -1;
   private arcAngle = 0;
@@ -570,9 +898,9 @@ export class Hud {
       `<line x1="40" y1="24" x2="45" y2="24" stroke="${PALETTE.crosshair}" stroke-width="1.8"/>` +
       `</svg>`;
 
-    // Top-right toggleable FPS readout
+    // Top-right toggleable FPS readout (clear of 56×56 top-right mute button)
     this.fpsEl = div(
-      `position:absolute;right:${ar(62)};top:${at(26)};` +
+      `position:absolute;right:${ar(76)};top:${at(28)};` +
         `font-size:10px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;` +
         `color:${PALETTE.uiDim};pointer-events:none;`,
       this.root,
@@ -669,23 +997,40 @@ export class Hud {
     this.killEl.dataset.fx = 'kill';
     this.killEl.textContent = 'ELIMINATED';
 
-    // --- Top-right SOUND icon ---
+    // --- Top-right SOUND icon (56×56 clickable hit target, chamfered tactical plate) ---
     this.muteBtn = document.createElement('div');
     this.muteBtn.dataset.btn = 'mute';
+    this.muteBtn.dataset.pressed = '0';
+    this.muteBtn.dataset.active = '0';
+    this.muteBtn.dataset.disabled = '0';
+    this.muteBtn.dataset.reloadPct = '0';
     this.muteBtn.style.cssText =
-      `position:fixed;right:${ar(12)};top:${at(12)};width:44px;height:44px;` +
+      `position:fixed;right:${ar(8)};top:${at(8)};width:56px;height:56px;` +
       `display:flex;align-items:center;justify-content:center;background:transparent;` +
+      `filter:drop-shadow(0 3px 5px ${PALETTE.uiBtnShadow});` +
       `pointer-events:auto;touch-action:none;user-select:none;-webkit-user-select:none;` +
       `box-sizing:border-box;cursor:pointer;z-index:30;`;
     this.muteBadge = document.createElement('div');
-    this.muteBadge.dataset.role = 'icon';
-    this.muteBadge.style.cssText =
-      `width:40px;height:40px;display:flex;align-items:center;justify-content:center;` +
-      `border-radius:8px;background:${PALETTE.uiPanel};border:1px solid ${PALETTE.uiBorder};` +
-      `color:${PALETTE.uiText};pointer-events:none;box-sizing:border-box;`;
-    this.muteBadge.innerHTML = HUD_ICONS.soundOn(18);
+    this.muteBadge.className = 'val-tac-btn val-mute-plate';
+    this.muteBadge.style.cssText = 'width:48px;height:48px;pointer-events:none;';
+    this.muteIconEl = document.createElement('div');
+    this.muteIconEl.dataset.role = 'icon';
+    this.muteIconEl.innerHTML = HUD_ICONS.soundOn(20);
+    this.muteBadge.appendChild(this.muteIconEl);
+    syncHudButtonFrame(this.muteBadge, 48, false);
     this.muteBtn.appendChild(this.muteBadge);
     parent.appendChild(this.muteBtn);
+    this.muteBtn.addEventListener('pointerdown', (e) => {
+      this.mutePtrs.add(e.pointerId);
+      this.muteBtn.dataset.pressed = '1';
+    });
+    const releaseMute = (e: PointerEvent) => {
+      if (this.mutePtrs.delete(e.pointerId) && this.mutePtrs.size === 0) {
+        this.muteBtn.dataset.pressed = '0';
+      }
+    };
+    window.addEventListener('pointerup', releaseMute);
+    window.addEventListener('pointercancel', releaseMute);
     this.muteBtn.addEventListener('click', () => {
       this.setMuted(!this.mutedFlag);
       this.onMuteToggle?.(this.mutedFlag);
@@ -703,15 +1048,28 @@ export class Hud {
     const ab = (px: number) => `calc(${px}px + env(safe-area-inset-bottom, 0px))`;
     const al = (px: number) => `calc(${px}px + env(safe-area-inset-left, 0px))`;
     const ar = (px: number) => `calc(${px}px + env(safe-area-inset-right, 0px))`;
+    const at = (px: number) => `calc(${px}px + env(safe-area-inset-top, 0px))`;
 
     this.hpWrap.style.left = al(16);
     this.hpWrap.style.bottom = ab(portrait ? 18 : 14);
+    this.hpWrap.style.width = portrait ? '196px' : '206px';
 
-    this.ammoWrap.style.right = ar(16);
     if (this.touchMode) {
-      this.ammoWrap.style.bottom = ab(portrait ? 228 : 204);
+      if (portrait) {
+        // Portrait 390×844: upper-right beneath 56×56 mute button, leaving middle HUD & lower-right cluster completely clear
+        this.ammoWrap.style.right = ar(12);
+        this.ammoWrap.style.top = at(72);
+        this.ammoWrap.style.bottom = '';
+      } else {
+        // Landscape 844×390: bottom-right immediately left of the 128px FIRE button (clear of cluster & crosshair)
+        this.ammoWrap.style.right = ar(158);
+        this.ammoWrap.style.bottom = ab(14);
+        this.ammoWrap.style.top = '';
+      }
     } else {
+      this.ammoWrap.style.right = ar(16);
       this.ammoWrap.style.bottom = ab(16);
+      this.ammoWrap.style.top = '';
     }
   }
 
@@ -772,9 +1130,8 @@ export class Hud {
 
   setMuted(m: boolean): void {
     this.mutedFlag = m;
-    this.muteBadge.innerHTML = m ? HUD_ICONS.soundOff(18) : HUD_ICONS.soundOn(18);
-    this.muteBadge.style.borderColor = m ? PALETTE.accent : PALETTE.uiBorder;
-    this.muteBadge.style.color = m ? PALETTE.accent : PALETTE.uiText;
+    this.muteBtn.dataset.active = m ? '1' : '0';
+    this.muteIconEl.innerHTML = m ? HUD_ICONS.soundOff(20) : HUD_ICONS.soundOn(20);
   }
 
   /** Objective bar: writes text + dataset.v only when a displayed value changes. */

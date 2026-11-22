@@ -15,7 +15,7 @@ if [ ${#files[@]} -eq 0 ]; then
 fi
 
 for f in "${files[@]}"; do
-  npx esbuild "$f" --bundle --platform=node --format=esm --outfile="${f%.ts}.js"
+  npx esbuild "$f" --bundle --platform=node --format=esm --packages=external --outfile="${f%.ts}.js"
 done
 
 # Do not rely on `node --test <dir>` or generate a directory-entry index.js

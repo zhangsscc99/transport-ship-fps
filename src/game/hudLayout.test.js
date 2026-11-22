@@ -72,7 +72,24 @@ var PALETTE = {
   // 仅低血量/危险使用 Valorant 红
   uiPanel: "rgba(8,12,18,0.55)",
   uiBtnPanel: "rgba(14,19,27,0.90)",
+  uiBtnGradTop: "rgba(188,208,230,0.048)",
+  uiBtnGradMid: "rgba(14,19,27,0.00)",
+  uiBtnGradBot: "rgba(2,5,10,0.14)",
+  uiBtnHiTop: "rgba(255,255,255,0.28)",
+  uiBtnHiInnerBot: "rgba(0,0,0,0.45)",
+  uiBtnPressedTop: "rgba(255,255,255,0.24)",
+  uiBtnPressedMid: "rgba(255,255,255,0.14)",
+  uiBtnPressedBot: "rgba(255,255,255,0.08)",
+  uiBtnPressedGlow: "rgba(255,255,255,0.22)",
+  uiBtnActiveTop: "rgba(255,70,85,0.18)",
+  uiBtnActiveMid: "rgba(255,70,85,0.12)",
+  uiBtnActiveBot: "rgba(255,70,85,0.08)",
   uiBtnBorder: "rgba(236,232,225,0.48)",
+  uiBtnBorderDisabled: "rgba(154,164,176,0.42)",
+  uiBtnFgDisabled: "rgba(176,184,194,0.58)",
+  uiBtnFireInnerRing: "rgba(255,70,85,0.34)",
+  uiBtnReloadTrack: "rgba(236,232,225,0.18)",
+  uiBtnReloadSweep: "rgba(255,70,85,0.22)",
   uiBtnShadow: "rgba(4,7,12,0.58)",
   uiBorder: "rgba(255,255,255,0.18)",
   uiBorderActive: "rgba(236,232,225,0.72)",
@@ -100,39 +117,49 @@ var PALETTE = {
   tacKnuckle: "#1d2228",
   // 手背护骨甲
   tacSleeve: "#2b3b4e",
-  // 战术服袖子（保卫者海军灰蓝）
+  // 战术服袖子（海军灰蓝）
   tacCuff: "#212d3b",
   // 袖口加厚翻边
   tacVelcro: "#171c22",
   // 袖口魔术贴
   tacStitch: "#6c7c8e",
   // 袖口双排缝线
-  blSuit: "#1c1f25",
-  // 潜伏者：黑红战术服底色
-  blTeam: "#b3221f",
-  // 潜伏者：TeamColour 暗红染色
-  blRed: "#d4262e",
-  // 潜伏者：战术红甲/肩带/臂章
-  blMask: "#131519",
-  // 潜伏者：黑色战术面罩
-  blEye: "#ff2836",
-  // 潜伏者：红眼灯
-  blTagBg: "rgba(155, 28, 25, 0.88)",
-  // 潜伏者头顶标签暗红底
-  blTagBorder: "rgba(255, 92, 86, 0.9)",
-  grSuit: "#213f68",
-  // 保卫者：深蓝战术服
-  grTeam: "#2f6fb0",
-  // 保卫者：TeamColour 战术蓝染色
-  grWhite: "#e6ecf2",
-  // 保卫者：白色防弹胸甲/护肩
-  grHelmet: "#1a2e4a",
-  // 保卫者：蓝色战术头盔
-  grEye: "#2ec4ff",
-  // 保卫者：蓝眼灯
-  grTagBg: "rgba(35, 90, 148, 0.88)",
-  // 保卫者头顶标签战术蓝底
-  grTagBorder: "rgba(94, 180, 255, 0.9)",
+  // 赛博朋克机器人（全程序化金属 PBR，阵营仅靠发光色区分）
+  robotArmor: "#23262e",
+  // 深灰金属装甲漆面
+  robotFrame: "#171a21",
+  // 机械骨架与关节暗金属
+  robotGun: "#2b303a",
+  // 机器人脉冲步枪机匣
+  robotEdge: "#5b6678",
+  // 装甲边缘 1px 弱发光亮边
+  robotGlowEnemy: "#ff2d95",
+  // 敌方强发光：品红
+  robotGlowAlly: "#22e0ff",
+  // 我方/AI 友军强发光：青
+  robotHitFlash: "#ffffff",
+  // 受击 0.12s 视带闪白
+  // 敌人头顶距离牌 & 极简血条
+  tagGlassBg: "rgba(8,12,20,0.62)",
+  // 深色半透明玻璃底
+  tagBorderCyan: "rgba(120,255,255,0.35)",
+  // 1px 常规冷青内发光描边
+  tagBorderWarm: "#ffb454",
+  // <10m 暖色警示描边与 4px 圆点
+  tagGlowCyan: "rgba(120,255,255,0.22)",
+  // 常规 1px 内发光
+  tagGlowWarm: "rgba(255,180,84,0.32)",
+  // <10m 暖色内发光
+  tagText: "#eef4fa",
+  // 距离牌等宽数字色
+  tagHpTrack: "rgba(255,255,255,0.14)",
+  // 血条轨道底色
+  tagHpHigh: "#22e0ff",
+  // 血量 >60%：青
+  tagHpMid: "#ffd166",
+  // 血量 30%–60%：黄
+  tagHpLow: "#ff4655",
+  // 血量 <=30%：红
   bootDark: "#17191d",
   // 战术军靴
   brass: "#d8b054",
@@ -193,30 +220,47 @@ var STICK_R = 56;
 var PORTRAIT_LAYOUT = {
   stick: { left: 20, bottom: 82 },
   btns: {
-    fire: { size: 76, side: "right", x: 24, bottom: 24 },
-    reload: { size: 52, side: "left", x: 16, bottom: 202 },
-    jump: { size: 52, side: "left", x: 76, bottom: 202 },
-    swap: { size: 52, side: "left", x: 16, bottom: 262 },
-    crouch: { size: 52, side: "left", x: 76, bottom: 262 }
+    fire: { size: 128, side: "right", x: 16, bottom: 18 },
+    reload: { size: 56, side: "right", x: 16, bottom: 158 },
+    swap: { size: 56, side: "right", x: 84, bottom: 158 },
+    jump: { size: 56, side: "right", x: 16, bottom: 226 },
+    crouch: { size: 56, side: "right", x: 84, bottom: 226 }
   }
 };
 var LANDSCAPE_LAYOUT = {
   stick: { left: 20, bottom: 72 },
   btns: {
-    fire: { size: 70, side: "right", x: 16, bottom: 16 },
-    reload: { size: 48, side: "right", x: 96, bottom: 32 },
-    swap: { size: 48, side: "right", x: 84, bottom: 88 },
-    jump: { size: 48, side: "right", x: 26, bottom: 94 },
-    crouch: { size: 44, side: "right", x: 28, bottom: 150 }
+    fire: { size: 128, side: "right", x: 16, bottom: 14 },
+    reload: { size: 56, side: "right", x: 16, bottom: 154 },
+    swap: { size: 56, side: "right", x: 84, bottom: 154 },
+    jump: { size: 56, side: "right", x: 16, bottom: 222 },
+    crouch: { size: 56, side: "right", x: 84, bottom: 222 }
   }
 };
 
 // src/game/hudLayout.test.ts
 var BTN_IDS = ["fire", "reload", "swap", "jump", "crouch"];
+var SECONDARY_IDS = ["reload", "swap", "jump", "crouch"];
 function anchorToRect(id, a, vw, vh) {
   const x = a.side === "right" ? vw - a.x - a.size : a.x;
   const y = vh - a.bottom - a.size;
-  return { id, x, y, w: a.size, h: a.size, right: x + a.size, bottom: y + a.size };
+  return {
+    id,
+    x,
+    y,
+    w: a.size,
+    h: a.size,
+    right: x + a.size,
+    bottom: y + a.size,
+    cx: x + a.size / 2,
+    cy: y + a.size / 2
+  };
+}
+function stickRect(spec, vh) {
+  const d = STICK_R * 2;
+  const x = spec.stick.left;
+  const y = vh - spec.stick.bottom - d;
+  return { id: "stick", x, y, w: d, h: d, right: x + d, bottom: y + d, cx: x + STICK_R, cy: y + STICK_R };
 }
 function layoutRects(spec, vw, vh) {
   const out = {};
@@ -233,103 +277,69 @@ function rectGap(a, b) {
   const dy = Math.max(0, a.y - b.bottom, b.y - a.bottom);
   return Math.hypot(dx, dy);
 }
-test("portrait 390x844: 5 action button rects never overlap, pairwise gap >= 6px, edge margin >= 8px, FIRE margin 24+-2px", () => {
-  const VW = 390;
-  const VH = 844;
-  const rects = layoutRects(PORTRAIT_LAYOUT, VW, VH);
-  const list = BTN_IDS.map((id) => rects[id]);
-  for (const r of list) {
-    assert.ok(r.w >= 44 && r.h >= 44, `${r.id} size ${r.w}x${r.h} < 44px`);
-    assert.ok(r.x >= 8, `${r.id} left margin ${r.x} < 8px`);
-    assert.ok(r.y >= 8, `${r.id} top margin ${r.y} < 8px`);
-    assert.ok(VW - r.right >= 8, `${r.id} right margin ${VW - r.right} < 8px`);
-    assert.ok(VH - r.bottom >= 8, `${r.id} bottom margin ${VH - r.bottom} < 8px`);
-  }
-  const fire = rects.fire;
-  const fireRightMargin = VW - fire.right;
-  const fireBottomMargin = VH - fire.bottom;
-  assert.ok(
-    Math.abs(fireRightMargin - 24) <= 2,
-    `FIRE right margin ${fireRightMargin} outside 24+-2px`
-  );
-  assert.ok(
-    Math.abs(fireBottomMargin - 24) <= 2,
-    `FIRE bottom margin ${fireBottomMargin} outside 24+-2px`
-  );
-  for (let i = 0; i < list.length; i++) {
-    for (let j = i + 1; j < list.length; j++) {
-      const a = list[i];
-      const b = list[j];
-      assert.equal(rectsOverlap(a, b), false, `${a.id} overlaps ${b.id}`);
-      const gap = rectGap(a, b);
-      assert.ok(gap >= 6, `${a.id} <-> ${b.id} gap ${gap.toFixed(1)}px < 6px`);
+for (const { name, spec, vw, vh, hpWidth } of [
+  { name: "portrait 390x844", spec: PORTRAIT_LAYOUT, vw: 390, vh: 844, hpWidth: 196 },
+  { name: "landscape 844x390", spec: LANDSCAPE_LAYOUT, vw: 844, vh: 390, hpWidth: 206 }
+]) {
+  test(`${name}: all 5 action buttons sit on right side, hit target >= 56px, fire radius >= 64px, gap >= 10px, clear of stick/HP/crosshair`, () => {
+    const rects = layoutRects(spec, vw, vh);
+    const list = BTN_IDS.map((id) => rects[id]);
+    const stick = stickRect(spec, vh);
+    const hp = {
+      id: "hp",
+      x: 16,
+      y: vh - 78,
+      w: hpWidth,
+      h: 60,
+      right: 16 + hpWidth,
+      bottom: vh - 18,
+      cx: 16 + hpWidth / 2,
+      cy: vh - 48
+    };
+    for (const id of BTN_IDS) {
+      const a = spec.btns[id];
+      const r = rects[id];
+      assert.equal(a.side, "right", `${name}: ${id} must be right-anchored`);
+      assert.ok(r.cx > vw / 2, `${name}: ${id} center x=${r.cx} <= vw/2 (${vw / 2})`);
+      assert.ok(r.x > vw / 2, `${name}: ${id} left x=${r.x} crosses midline ${vw / 2}`);
+      assert.ok(r.w >= 56 && r.h >= 56, `${name}: ${id} size ${r.w}x${r.h} < 56px`);
+      assert.ok(r.x >= 8 && r.y >= 8 && vw - r.right >= 8 && vh - r.bottom >= 8, `${name}: ${id} edge margin < 8px`);
+      assert.equal(rectsOverlap(r, stick), false, `${name}: ${id} overlaps joystick`);
+      assert.equal(rectsOverlap(r, hp), false, `${name}: ${id} overlaps HP bar`);
     }
-  }
-  const cx = VW / 2;
-  const cy = VH / 2;
-  for (const r of list) {
-    const dx = Math.max(r.x - cx, 0, cx - r.right);
-    const dy = Math.max(r.y - cy, 0, cy - r.bottom);
-    const dist = Math.hypot(dx, dy);
-    assert.ok(dist >= 120, `${r.id} intrudes into 120px crosshair circle (dist=${dist.toFixed(1)}px)`);
-  }
-});
-test("landscape 844x390: all 5 action button rects match baseline anchors pixel-for-pixel", () => {
-  const VW = 844;
-  const VH = 390;
-  const rects = layoutRects(LANDSCAPE_LAYOUT, VW, VH);
-  const expected = {
-    fire: { x: 758, y: 304, w: 70, h: 70 },
-    reload: { x: 700, y: 310, w: 48, h: 48 },
-    swap: { x: 712, y: 254, w: 48, h: 48 },
-    jump: { x: 770, y: 248, w: 48, h: 48 },
-    crouch: { x: 772, y: 196, w: 44, h: 44 }
-  };
-  for (const id of BTN_IDS) {
-    const actual = rects[id];
-    const exp = expected[id];
-    assert.deepEqual(
-      { x: actual.x, y: actual.y, w: actual.w, h: actual.h },
-      exp,
-      `landscape ${id} rect drifted from baseline`
-    );
-  }
-});
-test("portrait 390x844 (F217b): secondary 2x2 grid sits on left above r=56 joystick ring, clear of HP bar, crosshair circle, and right viewmodel zone", () => {
-  const VW = 390;
-  const VH = 844;
-  const rects = layoutRects(PORTRAIT_LAYOUT, VW, VH);
-  const secondaryIds = ["reload", "swap", "jump", "crouch"];
-  const stickCx = PORTRAIT_LAYOUT.stick.left + STICK_R;
-  const stickCy = VH - PORTRAIT_LAYOUT.stick.bottom - STICK_R;
-  const stickTop = stickCy - STICK_R;
-  const hpRect = { x: 16, y: VH - 80, right: 16 + 206, bottom: VH - 18 };
-  assert.equal(PORTRAIT_LAYOUT.btns.fire.side, "right");
-  assert.equal(PORTRAIT_LAYOUT.btns.fire.x, 24);
-  assert.equal(PORTRAIT_LAYOUT.btns.fire.bottom, 24);
-  assert.equal(PORTRAIT_LAYOUT.btns.fire.size, 76);
-  const uniqueXs = /* @__PURE__ */ new Set();
-  const uniqueYs = /* @__PURE__ */ new Set();
-  for (const id of secondaryIds) {
-    const anchor = PORTRAIT_LAYOUT.btns[id];
-    const r = rects[id];
-    assert.equal(anchor.side, "left", `${id} must be anchored on the left side`);
-    assert.ok(r.right <= VW / 2, `${id} right edge ${r.right} crosses screen midline`);
-    assert.ok(r.y >= VH / 2, `${id} top ${r.y} crosses above screen midline ${VH / 2}`);
-    const cdx = Math.max(r.x - stickCx, 0, stickCx - r.right);
-    const cdy = Math.max(r.y - stickCy, 0, stickCy - r.bottom);
-    const stickDist = Math.hypot(cdx, cdy);
-    assert.ok(
-      stickDist >= STICK_R,
-      `${id} intersects joystick circle (dist=${stickDist.toFixed(1)}px < ${STICK_R}px)`
-    );
-    assert.ok(r.bottom <= stickTop, `${id} bottom ${r.bottom} intrudes below joystick top ${stickTop}`);
-    const hpOverlap = r.x < hpRect.right && hpRect.x < r.right && r.y < hpRect.bottom && hpRect.y < r.bottom;
-    assert.equal(hpOverlap, false, `${id} overlaps bottom-left HP bar`);
-    assert.ok(r.right <= 130, `${id} right edge ${r.right} > 130px (too close to viewmodel)`);
-    uniqueXs.add(r.x);
-    uniqueYs.add(r.y);
-  }
-  assert.equal(uniqueXs.size, 2, `expected 2 columns in left 2x2 grid, got ${uniqueXs.size}`);
-  assert.equal(uniqueYs.size, 2, `expected 2 rows in left 2x2 grid, got ${uniqueYs.size}`);
+    assert.ok(rects.fire.w >= 128 && rects.fire.h >= 128, `${name}: FIRE diameter ${rects.fire.w} < 128 (r<64)`);
+    for (const id of SECONDARY_IDS) {
+      assert.ok(rects.fire.w > rects[id].w, `${name}: FIRE should be larger than ${id}`);
+    }
+    for (let i = 0; i < list.length; i++) {
+      for (let j = i + 1; j < list.length; j++) {
+        const a = list[i];
+        const b = list[j];
+        assert.equal(rectsOverlap(a, b), false, `${name}: ${a.id} overlaps ${b.id}`);
+        const gap = rectGap(a, b);
+        assert.ok(gap >= 10, `${name}: ${a.id} <-> ${b.id} gap ${gap.toFixed(1)}px < 10px`);
+      }
+    }
+    const xs = new Set(SECONDARY_IDS.map((id) => rects[id].x));
+    const ys = new Set(SECONDARY_IDS.map((id) => rects[id].y));
+    assert.equal(xs.size, 2, `${name}: expected 2 columns in 2x2 secondary grid`);
+    assert.equal(ys.size, 2, `${name}: expected 2 rows in 2x2 secondary grid`);
+    assert.ok(rects.reload.bottom < rects.fire.y, `${name}: RELOAD must sit above FIRE`);
+    assert.ok(rects.swap.right < rects.reload.x, `${name}: SWAP must sit left of RELOAD`);
+    assert.ok(rects.jump.bottom < rects.reload.y, `${name}: JUMP must sit above RELOAD`);
+    assert.ok(rects.crouch.bottom < rects.swap.y, `${name}: CROUCH must sit above SWAP`);
+    const cx = vw / 2;
+    const cy = vh / 2;
+    for (const r of list) {
+      const dx = Math.max(r.x - cx, 0, cx - r.right);
+      const dy = Math.max(r.y - cy, 0, cy - r.bottom);
+      const dist = Math.hypot(dx, dy);
+      assert.ok(dist >= 120, `${name}: ${r.id} intrudes into 120px crosshair circle (dist=${dist.toFixed(1)}px)`);
+    }
+  });
+}
+test("joystick anchor stays unchanged at bottom-left in both portrait and landscape", () => {
+  assert.deepEqual(PORTRAIT_LAYOUT.stick, { left: 20, bottom: 82 });
+  assert.deepEqual(LANDSCAPE_LAYOUT.stick, { left: 20, bottom: 72 });
+  assert.equal(STICK_R, 56);
 });

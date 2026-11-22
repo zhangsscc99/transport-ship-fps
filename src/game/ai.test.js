@@ -391,13 +391,10 @@ var EnemyManager = class {
     this.entities.push(ent);
     return bot;
   }
-  /** Random CF faction assignment ('bl' 潜伏者 / 'gr' 保卫者), avoiding mono-faction streaks. */
+  /** Default hostile robot faction ('enemy' -> magenta glow). */
   pickFaction() {
-    let f = this.rng() < 0.5 ? "bl" : "gr";
-    if (this.factionBalance >= 2) f = "gr";
-    else if (this.factionBalance <= -2) f = "bl";
-    this.factionBalance += f === "bl" ? 1 : -1;
-    return f;
+    this.factionBalance = 0;
+    return "enemy";
   }
   nearestWaypoint(x, z) {
     let best = 0;
@@ -522,7 +519,7 @@ var EnemyManager = class {
     return Math.max(150, this.difficulty.reactionMs - FIRE_HIT_DELAY_MS);
   }
   /** Notify bot that it was hit by the player (triggers 0.25s hit clip without interrupting movement, death, or alert). */
-  onBotDamaged(entity, attackerPos, nowMs) {
+  onBotDamaged(entity, sourcePos, nowMs) {
     const bot = this.bots.find((b) => b.entity === entity);
     if (!bot) return null;
     bot.lastHitAt = nowMs;
@@ -538,7 +535,7 @@ var EnemyManager = class {
       bot.anim = "die";
       return bot;
     }
-    bot.lastSeenPos = { x: attackerPos.x, y: attackerPos.y, z: attackerPos.z };
+    bot.lastSeenPos = { x: sourcePos.x, y: sourcePos.y, z: sourcePos.z };
     bot.lastSeenAt = nowMs;
     bot.lastContactAt = nowMs;
     bot.advancing = false;
@@ -1639,8 +1636,8 @@ test("spawns never land within 15m of player spawn and bots stay >= 1.5m apart",
     }
   }
   mgr.clear();
-  const a = mgr.spawnManual(0, -10, 0, "bl", 0);
-  const b = mgr.spawnManual(0.2, -10, 0, "gr", 0);
+  const a = mgr.spawnManual(0, -10, 0, "enemy", 0);
+  const b = mgr.spawnManual(0.2, -10, 0, "ally", 0);
   for (let t = 50; t <= 300; t += 50) {
     mgr.update({
       dt: 0.05,
@@ -1663,7 +1660,7 @@ test("reaction delay & 0.18s fire_rifle hit trigger: EASY > 700ms; HARD < 500ms"
     const mgr = new EnemyManager(diff, () => 0.1);
     const playerPos = { x: 0, y: 0, z: 0 };
     const playerEye = { x: 0, y: 1.7, z: 0 };
-    const bot = mgr.spawnManual(0, -10, yawFromDir(0, 10), "bl", 0);
+    const bot = mgr.spawnManual(0, -10, yawFromDir(0, 10), "enemy", 0);
     for (let t = 20; t <= 2e3; t += 20) {
       const shots = mgr.update({
         dt: 0.02,
@@ -1695,7 +1692,7 @@ test("reaction delay & 0.18s fire_rifle hit trigger: EASY > 700ms; HARD < 500ms"
 });
 test("strict glTF clip state machine: IDLE->idle_rifle, PATROL->walk_rifle (1.4m/s), ENGAGE->aim_rifle/fire_rifle, RELOAD->reload_rifle (2.2s), COVER->crouch_rifle (1.2m/s)", () => {
   const mgr = new EnemyManager("normal", () => 0.2);
-  const bot = mgr.spawnManual(0, -15.5, 0, "bl", 0);
+  const bot = mgr.spawnManual(0, -15.5, 0, "enemy", 0);
   assert.equal(bot.state, "IDLE");
   assert.equal(bot.anim, "idle_rifle");
   let sawPatrol = false;
@@ -1721,7 +1718,7 @@ test("strict glTF clip state machine: IDLE->idle_rifle, PATROL->walk_rifle (1.4m
   }
   assert.equal(sawPatrol, true, "bot never entered PATROL");
   mgr.clear();
-  const rbot = mgr.spawnManual(0, -10, yawFromDir(0, 10), "gr", 0);
+  const rbot = mgr.spawnManual(0, -10, yawFromDir(0, 10), "enemy", 0);
   rbot.ammo = 1;
   let sawFireClip = false;
   let sawReloadClip = false;
@@ -1755,7 +1752,7 @@ test("strict glTF clip state machine: IDLE->idle_rifle, PATROL->walk_rifle (1.4m
 });
 test("enemies NEVER shoot through walls: 3s behind container consumes 0 ammo", () => {
   const mgr = new EnemyManager("hard", () => 0.1);
-  const bot = mgr.spawnManual(-6, -7.2, yawFromDir(0, 6.4), "gr", 0);
+  const bot = mgr.spawnManual(-6, -7.2, yawFromDir(0, 6.4), "enemy", 0);
   const playerPos = { x: -6, y: 0, z: -0.8 };
   const playerEye = { x: -6, y: 1.7, z: -0.8 };
   assert.equal(
@@ -1786,12 +1783,12 @@ test("enemies NEVER shoot through walls: 3s behind container consumes 0 ammo", (
 });
 test("wounded bot (<30% HP) enters COVER (crouch_rifle) on NORMAL, stays aggressive on EASY", () => {
   const mgrNorm = new EnemyManager("normal", () => 0.3);
-  const bNorm = mgrNorm.spawnManual(0, -10, yawFromDir(0, 10), "bl", 0);
+  const bNorm = mgrNorm.spawnManual(0, -10, yawFromDir(0, 10), "enemy", 0);
   applyDamage(bNorm.entity, 75, 100);
   mgrNorm.onBotDamaged(bNorm.entity, { x: 0, y: 0, z: 0 }, 100);
   assert.equal(bNorm.state, "COVER");
   const mgrEasy = new EnemyManager("easy", () => 0.3);
-  const bEasy = mgrEasy.spawnManual(0, -10, yawFromDir(0, 10), "gr", 0);
+  const bEasy = mgrEasy.spawnManual(0, -10, yawFromDir(0, 10), "enemy", 0);
   applyDamage(bEasy.entity, 75, 100);
   mgrEasy.onBotDamaged(bEasy.entity, { x: 0, y: 0, z: 0 }, 100);
   assert.notEqual(bEasy.state, "COVER");
@@ -1848,7 +1845,7 @@ test("stationary player >30m with no LOS: bot advances to <25m within 20s and ac
   ];
   for (let i = 0; i < starts.length; i++) {
     const [sx, sz] = starts[i];
-    const b = mgr.spawnManual(sx, sz, 0, i % 2 === 0 ? "bl" : "gr", 0);
+    const b = mgr.spawnManual(sx, sz, 0, i % 2 === 0 ? "enemy" : "ally", 0);
     const d0 = Math.hypot(sx - playerPos.x, sz - playerPos.z);
     assert.ok(d0 > 30, `initial bot ${i} dist ${d0.toFixed(2)}m must be >30m`);
     assert.equal(
@@ -1922,7 +1919,7 @@ test("advancing bot with clearLos within ENGAGE_MAX_DIST+8 enters ENGAGE directl
   const mgr = new EnemyManager("hard", makeRng(7));
   const playerPos = { x: 0, y: 0, z: 17 };
   const playerEye = { x: 0, y: 1.7, z: 17 };
-  const bot = mgr.spawnManual(0, -3, 0, "bl", 0);
+  const bot = mgr.spawnManual(0, -3, 0, "enemy", 0);
   assert.equal(hasLineOfSight({ x: 0, y: 1.56, z: -3 }, playerEye, MAP.boxes), true);
   bot.advancing = true;
   bot.state = "PATROL";
@@ -1950,8 +1947,8 @@ test("teammate callout shares LOS position for 3000ms and redirects advancing te
   const playerSpawn = { x: -8, y: 0, z: 17 };
   const spottedPos = { x: 14, y: 0, z: 15.5 };
   const spottedEye = { x: 14, y: 1.7, z: 15.5 };
-  const spotter = mgr.spawnManual(14, 7.5, yawFromDir(0, 1), "bl", 0);
-  const mate = mgr.spawnManual(6, -15.5, 0, "gr", 0);
+  const spotter = mgr.spawnManual(14, 7.5, yawFromDir(0, 1), "enemy", 0);
+  const mate = mgr.spawnManual(6, -15.5, 0, "enemy", 0);
   mgr.update({
     dt: 0.02,
     nowMs: 20,
@@ -2014,7 +2011,7 @@ test("after player dies, bots exit advancing and return to PATROL", () => {
   const playerEye = { x: -8, y: 1.7, z: 17 };
   const mgr = new EnemyManager("hard", makeRng(21));
   mgr.clear();
-  const bot = mgr.spawnManual(-14, -15.5, 0, "bl", 0);
+  const bot = mgr.spawnManual(-14, -15.5, 0, "enemy", 0);
   for (let t = 50; t <= 11500; t += 50) {
     mgr.update({
       dt: 0.05,

@@ -25,7 +25,7 @@ import type { CollisionWorld } from './collision';
 import type { Vec3 } from './player';
 import { getDifficultySpec, type DifficultyId, type DifficultySpec } from './difficulty';
 
-export type Faction = 'bl' | 'gr'; // bl = 潜伏者 (Black List), gr = 保卫者 (Global Risk)
+export type Faction = 'enemy' | 'ally';
 
 export type AiState =
   | 'IDLE'
@@ -398,13 +398,10 @@ export class EnemyManager {
     return bot;
   }
 
-  /** Random CF faction assignment ('bl' 潜伏者 / 'gr' 保卫者), avoiding mono-faction streaks. */
+  /** Default hostile robot faction ('enemy' -> magenta glow). */
   private pickFaction(): Faction {
-    let f: Faction = this.rng() < 0.5 ? 'bl' : 'gr';
-    if (this.factionBalance >= 2) f = 'gr';
-    else if (this.factionBalance <= -2) f = 'bl';
-    this.factionBalance += f === 'bl' ? 1 : -1;
-    return f;
+    this.factionBalance = 0;
+    return 'enemy';
   }
 
   private nearestWaypoint(x: number, z: number): number {
@@ -541,7 +538,7 @@ export class EnemyManager {
   }
 
   /** Notify bot that it was hit by the player (triggers 0.25s hit clip without interrupting movement, death, or alert). */
-  onBotDamaged(entity: Entity, attackerPos: Vec3, nowMs: number): EnemyBot | null {
+  onBotDamaged(entity: Entity, sourcePos: Vec3, nowMs: number): EnemyBot | null {
     const bot = this.bots.find((b) => b.entity === entity);
     if (!bot) return null;
     bot.lastHitAt = nowMs;
@@ -557,8 +554,8 @@ export class EnemyManager {
       bot.anim = 'die';
       return bot;
     }
-    // Wounded bot knows attacker direction without interrupting movement
-    bot.lastSeenPos = { x: attackerPos.x, y: attackerPos.y, z: attackerPos.z };
+    // Wounded bot knows incoming-fire direction without interrupting movement
+    bot.lastSeenPos = { x: sourcePos.x, y: sourcePos.y, z: sourcePos.z };
     bot.lastSeenAt = nowMs;
     bot.lastContactAt = nowMs;
     bot.advancing = false;

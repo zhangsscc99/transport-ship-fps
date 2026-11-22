@@ -1,17 +1,24 @@
-// Touch control layer (F108 / HUD v2 / F217b portrait composition):
-//   - Portrait (390×844): virtual joystick bottom-left (left:20, bottom:82, r=56),
-//     RELOAD/SWAP/JUMP/CROUCH in a 2×2 grid strictly above the joystick ring on
-//     the left so the bottom-right stays open for the natural FPS viewmodel;
-//     FIRE stays at bottom-right 24/24px.
-//   - Landscape (844×390): unchanged right thumb arc (FIRE/RELOAD/SWAP/JUMP/CROUCH)
-//     with left joystick only.
-//   - Input判定 logic (stick/look/aim-while-firing/edge/toggle) is unchanged.
+// Touch control layer (right-hand single-thumb action cluster):
+//   - Movement joystick stays unchanged at bottom-left in both portrait (390×844)
+//     and landscape (844×390): same anchors, radius (56px), dead-zone (8px), feel.
+//   - ALL 5 action buttons (FIRE / RELOAD / SWAP / JUMP / CROUCH) sit on the
+//     right side of the screen:
+//       * FIRE: bottom-right, diameter 128px (radius 64px)
+//       * 2×2 secondary grid (56×56px each, 12px gaps >= 10px) directly above FIRE:
+//           Top row:    [ CROUCH ] [ JUMP ]
+//           Bottom row: [  SWAP  ] [ RELOAD ]
+//   - Every clickable hit target >= 56px; zero left-hand action buttons.
 
 import type { InputState } from '../game/player';
 import { emptyInput } from '../game/player';
 import { TOUCH_LOOK_SENSITIVITY, type InputSource } from '../game/input';
 import { PALETTE } from '../render/palette';
-import { buildHudButton, HUD_ICONS } from '../render/hud';
+import {
+  buildHudButton,
+  HUD_ICONS,
+  setHudReloadProgress,
+  syncHudButtonFrame,
+} from '../render/hud';
 
 /** SPEC: joystick radius 56 CSS px, dead-zone 8px, look 0.35°/px. */
 export const STICK_R = 56;
@@ -31,33 +38,36 @@ export interface LayoutSpec {
   btns: Record<TouchBtnId, BtnAnchor>;
 }
 
-/** Portrait 390×844 anchors (F217b):
- *  - FIRE stays anchored at bottom-right 24/24px (76px circle).
- *  - RELOAD/SWAP/JUMP/CROUCH form a 2×2 grid on the left (x=16/76, bottom=202/262,
- *    52px plates, 8px pairwise spacing, 8px clear above the r=56 joystick ring at
- *    left:20/bottom:82, right edge 128px clear of the bottom-right viewmodel, and
- *    strictly outside the 120px center crosshair circle). */
+/** Portrait 390×844 anchors:
+ *  - Joystick unchanged at bottom-left (left:20, bottom:82, r=56 -> x:[20,132], y:[650,762]).
+ *  - All 5 action buttons on right half (x >= 246 > 195), zero overlap with joystick/HP/mid HUD:
+ *      FIRE 128px (radius 64px) at right:16, bottom:18 -> x:[246,374], y:[698,826]
+ *      2×2 secondary grid (56×56, 12px gap) directly above FIRE -> y:[562,686], x:[250,374] */
 export const PORTRAIT_LAYOUT: LayoutSpec = {
   stick: { left: 20, bottom: 82 },
   btns: {
-    fire: { size: 76, side: 'right', x: 24, bottom: 24 },
-    reload: { size: 52, side: 'left', x: 16, bottom: 202 },
-    jump: { size: 52, side: 'left', x: 76, bottom: 202 },
-    swap: { size: 52, side: 'left', x: 16, bottom: 262 },
-    crouch: { size: 52, side: 'left', x: 76, bottom: 262 },
+    fire: { size: 128, side: 'right', x: 16, bottom: 18 },
+    reload: { size: 56, side: 'right', x: 16, bottom: 158 },
+    swap: { size: 56, side: 'right', x: 84, bottom: 158 },
+    jump: { size: 56, side: 'right', x: 16, bottom: 226 },
+    crouch: { size: 56, side: 'right', x: 84, bottom: 226 },
   },
 };
 
-/** Landscape 844×390 anchors: right cluster shifts right and scales down 8% (0.92×)
- *  while keeping every hit rect ≥ 44 CSS px. */
+/** Landscape 844×390 anchors:
+ *  - Joystick unchanged at bottom-left (left:20, bottom:72, r=56 -> x:[20,132], y:[206,318]).
+ *  - All 5 action buttons on right thumb hotzone:
+ *      FIRE 128px (radius 64px) at right:16, bottom:14 -> x:[700,828], y:[248,376]
+ *      2×2 secondary grid (56×56, 12px gap) directly above FIRE:
+ *        RELOAD directly above FIRE, SWAP left of RELOAD, JUMP/CROUCH on upper row. */
 export const LANDSCAPE_LAYOUT: LayoutSpec = {
   stick: { left: 20, bottom: 72 },
   btns: {
-    fire: { size: 70, side: 'right', x: 16, bottom: 16 },
-    reload: { size: 48, side: 'right', x: 96, bottom: 32 },
-    swap: { size: 48, side: 'right', x: 84, bottom: 88 },
-    jump: { size: 48, side: 'right', x: 26, bottom: 94 },
-    crouch: { size: 44, side: 'right', x: 28, bottom: 150 },
+    fire: { size: 128, side: 'right', x: 16, bottom: 14 },
+    reload: { size: 56, side: 'right', x: 16, bottom: 154 },
+    swap: { size: 56, side: 'right', x: 84, bottom: 154 },
+    jump: { size: 56, side: 'right', x: 16, bottom: 222 },
+    crouch: { size: 56, side: 'right', x: 84, bottom: 222 },
   },
 };
 
@@ -94,7 +104,11 @@ export class TouchControls implements InputSource {
   private stickNub: HTMLDivElement | null = null;
   private stickIdle: HTMLDivElement | null = null;
   private fireBtn: HTMLDivElement | null = null;
+  private reloadBtn: HTMLDivElement | null = null;
   private btnEls: Partial<Record<TouchBtnId, HTMLDivElement>> = {};
+  private btnSlots: Partial<Record<TouchBtnId, HTMLDivElement>> = {};
+  private btnPtrs = new Map<HTMLDivElement, Set<number>>();
+  private lastReloadKey = '';
 
   constructor(parent: HTMLElement = document.body) {
     this.enabled = isTouchDevice();
@@ -154,15 +168,23 @@ export class TouchControls implements InputSource {
     );
     document.body.append(this.stickBase, this.stickNub);
 
-    // HUD v2 buttons: FIRE/RELOAD/SWAP/JUMP/CROUCH on right thumb arc; left side is joystick only.
+    // Unified tactical panel buttons: FIRE (large circle, r=64px) + 4 chamfered secondary controls (56×56).
     this.fireBtn = buildHudButton({
       id: 'fire',
       label: 'FIRE',
-      iconSvg: HUD_ICONS.fire(26),
+      iconSvg: HUD_ICONS.fire(42),
       posCss: '',
       size: PORTRAIT_LAYOUT.btns.fire.size,
       circle: true,
       danger: true,
+    });
+    this.reloadBtn = buildHudButton({
+      id: 'reload',
+      label: 'RELOAD',
+      iconSvg: HUD_ICONS.reload(22),
+      posCss: '',
+      size: PORTRAIT_LAYOUT.btns.reload.size,
+      hasReloadRing: true,
     });
     const btns: {
       el: HTMLDivElement;
@@ -170,22 +192,12 @@ export class TouchControls implements InputSource {
       act: 'hold' | 'edge' | 'toggle';
     }[] = [
       { el: this.fireBtn, act: 'hold', id: 'fire' },
-      {
-        el: buildHudButton({
-          id: 'reload',
-          label: 'RELOAD',
-          iconSvg: HUD_ICONS.reload(18),
-          posCss: '',
-          size: PORTRAIT_LAYOUT.btns.reload.size,
-        }),
-        act: 'edge',
-        id: 'reload',
-      },
+      { el: this.reloadBtn, act: 'edge', id: 'reload' },
       {
         el: buildHudButton({
           id: 'swap',
           label: 'SWAP',
-          iconSvg: HUD_ICONS.swap(18),
+          iconSvg: HUD_ICONS.swap(22),
           posCss: '',
           size: PORTRAIT_LAYOUT.btns.swap.size,
         }),
@@ -196,7 +208,7 @@ export class TouchControls implements InputSource {
         el: buildHudButton({
           id: 'jump',
           label: 'JUMP',
-          iconSvg: HUD_ICONS.jump(18),
+          iconSvg: HUD_ICONS.jump(22),
           posCss: '',
           size: PORTRAIT_LAYOUT.btns.jump.size,
         }),
@@ -207,7 +219,7 @@ export class TouchControls implements InputSource {
         el: buildHudButton({
           id: 'crouch',
           label: 'CROUCH',
-          iconSvg: HUD_ICONS.crouch(17),
+          iconSvg: HUD_ICONS.crouch(22),
           posCss: '',
           size: PORTRAIT_LAYOUT.btns.crouch.size,
         }),
@@ -217,10 +229,21 @@ export class TouchControls implements InputSource {
     ];
     for (const b of btns) {
       this.btnEls[b.id] = b.el;
-      this.root.appendChild(b.el);
+      this.btnPtrs.set(b.el, new Set());
+      const slot = document.createElement('div');
+      slot.className = 'val-btn-slot';
+      slot.dataset.btnSlot = b.id;
+      slot.dataset.circle = b.id === 'fire' ? '1' : '0';
+      b.el.style.width = '100%';
+      b.el.style.height = '100%';
+      slot.appendChild(b.el);
+      this.btnSlots[b.id] = slot;
+      this.root.appendChild(slot);
       this.on(b.el, 'pointerdown', (e) => {
         e.preventDefault();
         e.stopPropagation();
+        this.btnPtrs.get(b.el)!.add(e.pointerId);
+        b.el.dataset.pressed = '1';
         if (b.act === 'hold') {
           this.fireIds.add(e.pointerId);
           this.flags.fire = true;
@@ -290,6 +313,11 @@ export class TouchControls implements InputSource {
       }
       if (e.pointerId === this.lookId) this.lookId = -1;
       if (this.fireIds.delete(e.pointerId) && this.fireIds.size === 0) this.flags.fire = false;
+      for (const [el, ptrs] of this.btnPtrs) {
+        if (ptrs.delete(e.pointerId) && ptrs.size === 0) {
+          el.dataset.pressed = '0';
+        }
+      }
     };
     this.on(window, 'pointerup', release);
     this.on(window, 'pointercancel', release);
@@ -314,18 +342,20 @@ export class TouchControls implements InputSource {
       keyof LayoutSpec['btns'],
       BtnAnchor,
     ][]) {
+      const slot = this.btnSlots[id];
       const el = this.btnEls[id];
-      if (!el) continue;
-      el.style.width = `${anchor.size}px`;
-      el.style.height = `${anchor.size}px`;
-      el.style.bottom = ab(anchor.bottom);
+      if (!slot || !el) continue;
+      slot.style.width = `${anchor.size}px`;
+      slot.style.height = `${anchor.size}px`;
+      slot.style.bottom = ab(anchor.bottom);
       if (anchor.side === 'right') {
-        el.style.right = ar(anchor.x);
-        el.style.left = '';
+        slot.style.right = ar(anchor.x);
+        slot.style.left = '';
       } else {
-        el.style.left = al(anchor.x);
-        el.style.right = '';
+        slot.style.left = al(anchor.x);
+        slot.style.right = '';
       }
+      syncHudButtonFrame(el, anchor.size, id === 'fire');
     }
   }
 
@@ -339,9 +369,18 @@ export class TouchControls implements InputSource {
   }
 
   private markToggle(el: HTMLElement, on: boolean): void {
-    el.style.borderColor = on ? PALETTE.uiBorderActive : PALETTE.uiBorder;
-    el.style.color = on ? PALETTE.uiText : PALETTE.uiDim;
-    el.style.background = on ? 'rgba(236,232,225,0.14)' : PALETTE.uiPanel;
+    el.dataset.active = on ? '1' : '0';
+  }
+
+  /** Sync reload progress ring on RELOAD button & disabled visual state on FIRE button. */
+  setReloadState(active: boolean, progress01: number): void {
+    if (!this.enabled) return;
+    const pct = active ? Math.max(0, Math.min(100, progress01 * 100)) : 0;
+    const key = active ? `1:${pct.toFixed(1)}` : '0';
+    if (key === this.lastReloadKey) return;
+    this.lastReloadKey = key;
+    if (this.reloadBtn) setHudReloadProgress(this.reloadBtn, active, pct);
+    if (this.fireBtn) this.fireBtn.dataset.disabled = active ? '1' : '0';
   }
 
   /** Brief radial pulse on the FIRE button when shots fire or confirm a hit. */
