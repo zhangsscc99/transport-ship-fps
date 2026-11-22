@@ -125,13 +125,13 @@ var PALETTE = {
   tacStitch: "#6c7c8e",
   // 袖口双排缝线
   // 赛博朋克机器人（全程序化金属 PBR，阵营仅靠发光色区分）
-  robotArmor: "#23262e",
-  // 深灰金属装甲漆面
+  robotArmor: "#2e3542",
+  // 深灰蓝金属装甲漆面（避开 ACES 暗部死黑压暗，兼顾明暗背景对比）
   robotFrame: "#171a21",
   // 机械骨架与关节暗金属
   robotGun: "#2b303a",
   // 机器人脉冲步枪机匣
-  robotEdge: "#5b6678",
+  robotEdge: "#6c7a92",
   // 装甲边缘 1px 弱发光亮边
   robotGlowEnemy: "#ff2d95",
   // 敌方强发光：品红

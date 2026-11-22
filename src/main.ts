@@ -9,6 +9,7 @@ import { applyAtmosphere } from './render/atmosphere';
 import { setAnisotropyCap } from './render/textures';
 import { buildMap } from './render/map';
 import { updateWater } from './render/materials';
+import { setSeaFrozen } from './render/sea';
 import { PlayerCamera } from './render/camera';
 import {
   WeaponView,
@@ -136,6 +137,18 @@ declare global {
       damageEnemy(id: string, dmg: number): void;
       setReloadPreview(pct: number | null): void;
       skipCountdown(): void;
+      setEnemiesVisible(visible: boolean): void;
+      getEnemyScreenBounds(): {
+        id: string;
+        faction: Faction;
+        dist: number;
+        hasLos: boolean;
+        x0: number;
+        y0: number;
+        x1: number;
+        y1: number;
+        onScreen: boolean;
+      }[];
     };
     __match: {
       phase: string;
@@ -922,6 +935,7 @@ window.__test = {
   },
   isInsideWalkable: (x: number, z: number) => world.isInsideWalkable(x, z, PLAYER_RADIUS),
   setPaused: (paused: boolean) => {
+    setSeaFrozen(paused);
     if (paused) engine.pause();
     else engine.resume();
   },
@@ -966,6 +980,39 @@ window.__test = {
       menu.setCountdown(null);
       mdbg.phase = match.phase;
     }
+  },
+  setEnemiesVisible: (visible: boolean) => {
+    enemyRenderer.setVisible(visible);
+    engine.renderOnce(!visible);
+  },
+  getEnemyScreenBounds: () => {
+    const vw = window.innerWidth || 390;
+    const vh = window.innerHeight || 844;
+    const out: {
+      id: string;
+      faction: Faction;
+      dist: number;
+      hasLos: boolean;
+      x0: number;
+      y0: number;
+      x1: number;
+      y1: number;
+      onScreen: boolean;
+    }[] = [];
+    for (const b of enemyMgr.bots) {
+      if (!b.entity.alive || b.state === 'DEAD') continue;
+      const rect = enemyRenderer.projectChassisRect(b.id, view.camera, vw, vh);
+      if (!rect) continue;
+      const dist = Math.hypot(b.entity.pos.x - player.position.x, b.entity.pos.z - player.position.z);
+      out.push({
+        id: b.id,
+        faction: b.faction,
+        dist: Number(dist.toFixed(2)),
+        hasLos: b.hasLos,
+        ...rect,
+      });
+    }
+    return out;
   },
 };
 const mdbg = {

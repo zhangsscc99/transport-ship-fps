@@ -228,6 +228,18 @@ export class EnemyRig {
     return box.min.y;
   }
 
+  /** Compute world-space Box3 of the robot chassis (excludes ground contact shadow). */
+  getChassisWorldBox(out: THREE.Box3): boolean {
+    this.root.updateMatrixWorld(true);
+    out.setFromObject(this.robot.root);
+    return !out.isEmpty();
+  }
+
+  /** Toggle 3D robot chassis visibility while keeping grounded scene shadows intact for A/B diff. */
+  setRobotVisible(visible: boolean): void {
+    this.robot.root.visible = visible;
+  }
+
   /** Read actual world-space head top (top of floating helmet) for overhead distance tags. */
   getHeadTopWorld(out: THREE.Vector3): THREE.Vector3 {
     this.root.updateMatrixWorld(true);
@@ -731,5 +743,71 @@ export class EnemyRenderer {
 
   measureFeetWorldY(botId: string): number | null {
     return this.rigs.get(botId)?.measureFeetWorldY() ?? null;
+  }
+
+  /** Toggle 3D visibility of all enemy robot meshes (for same-frame A/B contrast checks). */
+  setVisible(visible: boolean): void {
+    for (const rig of this.rigs.values()) rig.setRobotVisible(visible);
+    for (const c of this.dyingCorpses) c.setRobotVisible(visible);
+  }
+
+  /** Project a live bot's chassis Box3 (excluding ground shadow) into viewport CSS pixels. */
+  projectChassisRect(
+    botId: string,
+    camera: THREE.Camera,
+    vw: number,
+    vh: number,
+  ): { x0: number; y0: number; x1: number; y1: number; onScreen: boolean } | null {
+    const rig = this.rigs.get(botId);
+    if (!rig) return null;
+    const box = new THREE.Box3();
+    if (!rig.getChassisWorldBox(box)) return null;
+    camera.updateMatrixWorld(true);
+    const viewMat = camera.matrixWorldInverse;
+    const projMat = camera.projectionMatrix;
+    const vPt = new THREE.Vector3();
+    const nearClip = -0.35; // camera looks along -Z in view space
+    const xs = [box.min.x, box.max.x];
+    const ys = [box.min.y, box.max.y];
+    const zs = [box.min.z, box.max.z];
+    let anyInFront = false;
+    for (const x of xs) {
+      for (const y of ys) {
+        for (const z of zs) {
+          vPt.set(x, y, z).applyMatrix4(viewMat);
+          if (vPt.z < nearClip) anyInFront = true;
+        }
+      }
+    }
+    if (!anyInFront) {
+      return { x0: -999, y0: -999, x1: -999, y1: -999, onScreen: false };
+    }
+    let x0 = Infinity;
+    let y0 = Infinity;
+    let x1 = -Infinity;
+    let y1 = -Infinity;
+    for (const x of xs) {
+      for (const y of ys) {
+        for (const z of zs) {
+          vPt.set(x, y, z).applyMatrix4(viewMat);
+          if (vPt.z > nearClip) vPt.z = nearClip;
+          vPt.applyMatrix4(projMat);
+          const sx = (vPt.x * 0.5 + 0.5) * vw;
+          const sy = (-vPt.y * 0.5 + 0.5) * vh;
+          if (sx < x0) x0 = sx;
+          if (sx > x1) x1 = sx;
+          if (sy < y0) y0 = sy;
+          if (sy > y1) y1 = sy;
+        }
+      }
+    }
+    const onScreen = x1 > 0 && x0 < vw && y1 > 0 && y0 < vh;
+    return {
+      x0: Number(x0.toFixed(1)),
+      y0: Number(y0.toFixed(1)),
+      x1: Number(x1.toFixed(1)),
+      y1: Number(y1.toFixed(1)),
+      onScreen,
+    };
   }
 }

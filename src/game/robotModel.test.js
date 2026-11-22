@@ -116,13 +116,13 @@ var PALETTE = {
   tacStitch: "#6c7c8e",
   // 袖口双排缝线
   // 赛博朋克机器人（全程序化金属 PBR，阵营仅靠发光色区分）
-  robotArmor: "#23262e",
-  // 深灰金属装甲漆面
+  robotArmor: "#2e3542",
+  // 深灰蓝金属装甲漆面（避开 ACES 暗部死黑压暗，兼顾明暗背景对比）
   robotFrame: "#171a21",
   // 机械骨架与关节暗金属
   robotGun: "#2b303a",
   // 机器人脉冲步枪机匣
-  robotEdge: "#5b6678",
+  robotEdge: "#6c7a92",
   // 装甲边缘 1px 弱发光亮边
   robotGlowEnemy: "#ff2d95",
   // 敌方强发光：品红
@@ -204,6 +204,14 @@ var PALETTE = {
 };
 
 // src/render/robotModel.ts
+var ARMOR_FRESNEL_CACHE_KEY = "robot-armor-fresnel-v1";
+var ARMOR_EMISSIVE_INTENSITY = 0.16;
+var ARMOR_FRESNEL_K = {
+  enemy: 2.6,
+  ally: 2
+};
+var ARMOR_HIT_FRESNEL_K = 3.6;
+var VISOR_HALO_OPACITY = 0.9;
 var cachedMaterials = null;
 var cachedGeometries = null;
 function countGeoTris(g) {
@@ -268,21 +276,85 @@ function createFlashTexture() {
   tex.needsUpdate = true;
   return tex;
 }
+function createVisorGlowTexture() {
+  if (typeof document === "undefined") {
+    const tex2 = new THREE.DataTexture(new Uint8Array([255, 255, 255, 255]), 1, 1);
+    tex2.needsUpdate = true;
+    return tex2;
+  }
+  const size = 64;
+  const c = document.createElement("canvas");
+  c.width = size;
+  c.height = size;
+  const ctx = c.getContext("2d");
+  const img = ctx.createImageData(size, size);
+  const d = img.data;
+  const half = (size - 1) * 0.5;
+  for (let y = 0; y < size; y++) {
+    const ny = (y - half) / half;
+    for (let x = 0; x < size; x++) {
+      const nx = (x - half) / half;
+      const barDx = Math.max(0, Math.abs(nx) - 0.32) / 0.68;
+      const barR = Math.hypot(barDx, ny * 1.45);
+      const core = Math.exp(-barR * barR * 6.5);
+      const outerR = Math.hypot(nx, ny);
+      const halo = outerR < 1 ? Math.pow(1 - outerR, 2.2) : 0;
+      const edgeFade = outerR < 1 ? Math.min(1, (1 - outerR) * 4.5) : 0;
+      const alpha = Math.max(0, Math.min(1, (core * 0.85 + halo * 0.72) * edgeFade));
+      const idx = (y * size + x) * 4;
+      d[idx] = 255;
+      d[idx + 1] = 255;
+      d[idx + 2] = 255;
+      d[idx + 3] = Math.round(alpha * 255);
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.needsUpdate = true;
+  return tex;
+}
+function applyArmorFresnel(mat, rimHex, rimStrength) {
+  const rimColor = new THREE.Color(rimHex);
+  mat.userData.fresnelRimColor = rimHex;
+  mat.userData.fresnelRimStrength = rimStrength;
+  mat.onBeforeCompile = (shader) => {
+    shader.uniforms.uRimColor = { value: rimColor };
+    shader.uniforms.uRimStrength = rimStrength;
+    shader.fragmentShader = shader.fragmentShader.replace(
+      "#include <common>",
+      "#include <common>\nuniform vec3 uRimColor;\nuniform float uRimStrength;"
+    ).replace(
+      "#include <emissivemap_fragment>",
+      `#include <emissivemap_fragment>
+{
+	float rimNdotV = clamp( dot( normalize( normal ), normalize( vViewPosition ) ), 0.0, 1.0 );
+	float rimFactor = pow( 1.0 - rimNdotV, 3.0 );
+	totalEmissiveRadiance += uRimColor * rimFactor * uRimStrength;
+}`
+    );
+  };
+  mat.customProgramCacheKey = () => ARMOR_FRESNEL_CACHE_KEY;
+}
 function getMaterials() {
   if (cachedMaterials) return cachedMaterials;
-  const armor = new THREE.MeshStandardMaterial({
-    color: PALETTE.robotArmor,
-    emissive: PALETTE.robotEdge,
-    emissiveIntensity: 0.14,
-    metalness: 0.87,
-    roughness: 0.27,
-    envMapIntensity: 2.6,
-    vertexColors: true
-  });
+  const makeArmor = (rimHex, rimK, emissiveHex = PALETTE.robotEdge, emissiveInt = ARMOR_EMISSIVE_INTENSITY) => {
+    const mat = new THREE.MeshStandardMaterial({
+      color: PALETTE.robotArmor,
+      emissive: emissiveHex,
+      emissiveIntensity: emissiveInt,
+      metalness: 0.86,
+      roughness: 0.26,
+      envMapIntensity: 2.9,
+      vertexColors: true
+    });
+    applyArmorFresnel(mat, rimHex, { value: rimK });
+    return mat;
+  };
   const makeGlow = (hex) => new THREE.MeshStandardMaterial({
     color: hex,
     emissive: hex,
-    emissiveIntensity: 4.2,
+    emissiveIntensity: 4.4,
     metalness: 0.85,
     roughness: 0.2,
     envMapIntensity: 1.4
@@ -290,19 +362,31 @@ function getMaterials() {
   const makeEdgeTrim = (hex) => new THREE.MeshStandardMaterial({
     color: PALETTE.robotEdge,
     emissive: hex,
-    emissiveIntensity: 0.42,
+    emissiveIntensity: 0.55,
     metalness: 0.92,
     roughness: 0.22,
-    envMapIntensity: 2
+    envMapIntensity: 2.2
   });
   const makeEdgeLine = (hex) => {
-    const col = new THREE.Color(PALETTE.robotEdge).lerp(new THREE.Color(hex), 0.42);
+    const col = new THREE.Color(PALETTE.robotEdge).lerp(new THREE.Color(hex), 0.48);
     return new THREE.LineBasicMaterial({
       color: col,
       transparent: true,
-      opacity: 0.78
+      opacity: 0.82
     });
   };
+  const visorGlowTex = createVisorGlowTexture();
+  const makeVisorHalo = (hex, opacity) => new THREE.SpriteMaterial({
+    map: visorGlowTex,
+    color: hex,
+    blending: THREE.AdditiveBlending,
+    transparent: true,
+    opacity,
+    depthWrite: false,
+    depthTest: true,
+    fog: false,
+    toneMapped: false
+  });
   const visorFlash = new THREE.MeshStandardMaterial({
     color: PALETTE.robotHitFlash,
     emissive: PALETTE.robotHitFlash,
@@ -311,7 +395,11 @@ function getMaterials() {
     roughness: 0.2
   });
   cachedMaterials = {
-    armor,
+    armor: {
+      enemy: makeArmor(PALETTE.robotGlowEnemy, ARMOR_FRESNEL_K.enemy),
+      ally: makeArmor(PALETTE.robotGlowAlly, ARMOR_FRESNEL_K.ally)
+    },
+    armorHitFlash: makeArmor(PALETTE.robotHitFlash, ARMOR_HIT_FRESNEL_K, PALETTE.robotHitFlash, 0.42),
     glow: {
       enemy: makeGlow(PALETTE.robotGlowEnemy),
       ally: makeGlow(PALETTE.robotGlowAlly)
@@ -325,14 +413,20 @@ function getMaterials() {
       ally: makeEdgeLine(PALETTE.robotGlowAlly)
     },
     visorFlash,
+    visorHalo: {
+      enemy: makeVisorHalo(PALETTE.robotGlowEnemy, VISOR_HALO_OPACITY),
+      ally: makeVisorHalo(PALETTE.robotGlowAlly, VISOR_HALO_OPACITY)
+    },
+    visorHaloFlash: makeVisorHalo(PALETTE.robotHitFlash, 0.98),
+    visorGlowTex,
     flashTex: createFlashTexture()
   };
   return cachedMaterials;
 }
 var TINT_ARMOR = [1, 1, 1];
-var TINT_ARMOR_HI = [1.62, 1.68, 1.78];
-var TINT_FRAME = [0.78, 0.82, 0.88];
-var TINT_GUN = [1.32, 1.38, 1.46];
+var TINT_ARMOR_HI = [1.75, 1.82, 1.95];
+var TINT_FRAME = [0.62, 0.66, 0.74];
+var TINT_GUN = [1.35, 1.42, 1.52];
 function buildUpperArm(side) {
   const pauldronMain = makePart(
     new THREE.BoxGeometry(0.15, 0.125, 0.21),
@@ -577,10 +671,10 @@ function getGeometries() {
     makePart(new THREE.CylinderGeometry(0.048, 0.038, 0.018, 10), [0, -0.105, 0], [0, 0, 0], TINT_FRAME)
   ]);
   const headVisor = mergeStrict([
-    makePart(new THREE.BoxGeometry(0.184, 0.036, 0.026), [0, 8e-3, -0.1], [0, 0, 0], TINT_ARMOR),
+    makePart(new THREE.BoxGeometry(0.186, 0.042, 0.026), [0, 8e-3, -0.1], [0, 0, 0], TINT_ARMOR),
     // Wraparound temple light accents
-    makePart(new THREE.BoxGeometry(0.02, 0.028, 0.074), [-0.09, 8e-3, -0.062], [0, 0, 0], TINT_ARMOR),
-    makePart(new THREE.BoxGeometry(0.02, 0.028, 0.074), [0.09, 8e-3, -0.062], [0, 0, 0], TINT_ARMOR)
+    makePart(new THREE.BoxGeometry(0.02, 0.032, 0.074), [-0.09, 8e-3, -0.062], [0, 0, 0], TINT_ARMOR),
+    makePart(new THREE.BoxGeometry(0.02, 0.032, 0.074), [0.09, 8e-3, -0.062], [0, 0, 0], TINT_ARMOR)
   ]);
   const upperL = buildUpperArm(-1);
   const upperR = buildUpperArm(1);
@@ -627,7 +721,7 @@ function getGeometries() {
     makePart(new THREE.BoxGeometry(0.088, 0.058, 0.085), [0, -0.036, 0.055], [-0.14, 0, 0], TINT_ARMOR_HI)
   ]);
   const muzzleQuad = new THREE.PlaneGeometry(0.38, 0.38);
-  const totalTris = countGeoTris(pelvis) + countGeoTris(torsoArmor) + countGeoTris(torsoEdgeTrim) + countGeoTris(torsoGlow) + countGeoTris(headArmor) + countGeoTris(headVisor) + countGeoTris(upperL.armor) + countGeoTris(upperR.armor) + countGeoTris(forearmL) + countGeoTris(forearmR) + countGeoTris(weaponBody) + countGeoTris(weaponGlow) + countGeoTris(thighL) + countGeoTris(thighR) + countGeoTris(shinL.armor) + countGeoTris(shinR.armor) + countGeoTris(foot) * 2;
+  const totalTris = countGeoTris(pelvis) + countGeoTris(torsoArmor) + countGeoTris(torsoEdgeTrim) + countGeoTris(torsoGlow) + countGeoTris(headArmor) + countGeoTris(headVisor) + countGeoTris(upperL.armor) + countGeoTris(upperR.armor) + countGeoTris(forearmL) + countGeoTris(forearmR) + countGeoTris(weaponBody) + countGeoTris(weaponGlow) + countGeoTris(thighL) + countGeoTris(thighR) + countGeoTris(shinL.armor) + countGeoTris(shinR.armor) + countGeoTris(foot) * 2 + 2;
   cachedGeometries = {
     pelvis,
     torsoArmor,
@@ -656,12 +750,16 @@ function getGeometries() {
 function createRobot(faction = "enemy") {
   const mats = getMaterials();
   const geos = getGeometries();
+  const armorMat = mats.armor[faction];
   const glowMat = mats.glow[faction];
   const edgeTrimMat = mats.edgeTrim[faction];
   const edgeLineMat = mats.edgeLine[faction];
+  const visorHaloMat = mats.visorHalo[faction];
+  const factionGlowHex = faction === "enemy" ? PALETTE.robotGlowEnemy : PALETTE.robotGlowAlly;
   const root = new THREE.Group();
   root.name = `cyber-robot-${faction}`;
   const bodyMeshes = [];
+  const armorMeshes = [];
   const glowMeshes = [];
   const edgeLines = [];
   const addMesh = (parent, geo, mat, isGlow = false, castShadow = true) => {
@@ -671,7 +769,10 @@ function createRobot(faction = "enemy") {
     m.frustumCulled = false;
     parent.add(m);
     if (isGlow) glowMeshes.push(m);
-    else bodyMeshes.push(m);
+    else {
+      bodyMeshes.push(m);
+      if (mat === armorMat) armorMeshes.push(m);
+    }
     return m;
   };
   const addEdge = (parent, geo) => {
@@ -684,12 +785,12 @@ function createRobot(faction = "enemy") {
   bodyPivot.name = "robot-body";
   bodyPivot.position.set(0, 0.96, 0);
   root.add(bodyPivot);
-  addMesh(bodyPivot, geos.pelvis, mats.armor);
+  addMesh(bodyPivot, geos.pelvis, armorMat);
   const torsoPivot = new THREE.Group();
   torsoPivot.name = "robot-torso";
   torsoPivot.position.set(0, 0.08, 0);
   bodyPivot.add(torsoPivot);
-  addMesh(torsoPivot, geos.torsoArmor, mats.armor);
+  addMesh(torsoPivot, geos.torsoArmor, armorMat);
   addMesh(torsoPivot, geos.torsoEdgeTrim, edgeTrimMat, false, false);
   addMesh(torsoPivot, geos.torsoGlow, glowMat, true, false);
   addEdge(torsoPivot, geos.torsoEdgeLine);
@@ -697,10 +798,17 @@ function createRobot(faction = "enemy") {
   headPivot.name = "robot-head";
   headPivot.position.set(0, 0.56, 0);
   torsoPivot.add(headPivot);
-  addMesh(headPivot, geos.headArmor, mats.armor);
+  addMesh(headPivot, geos.headArmor, armorMat);
   addEdge(headPivot, geos.headEdgeLine);
   const visorMesh = addMesh(headPivot, geos.headVisor, glowMat, true, false);
   visorMesh.name = "robot-visor";
+  const visorHalo = new THREE.Sprite(visorHaloMat);
+  visorHalo.name = "robot-visor-halo";
+  visorHalo.position.set(0, 8e-3, -0.124);
+  visorHalo.scale.set(0.46, 0.24, 1);
+  visorHalo.frustumCulled = false;
+  visorHalo.renderOrder = 2;
+  headPivot.add(visorHalo);
   const headTopAnchor = new THREE.Object3D();
   headTopAnchor.position.set(0, 0.16, 0);
   headPivot.add(headTopAnchor);
@@ -708,27 +816,27 @@ function createRobot(faction = "enemy") {
   shoulderL.name = "robot-shoulder-l";
   shoulderL.position.set(-0.245, 0.34, 0);
   torsoPivot.add(shoulderL);
-  addMesh(shoulderL, geos.upperArmL, mats.armor, false, false);
+  addMesh(shoulderL, geos.upperArmL, armorMat, false, false);
   const elbowL = new THREE.Group();
   elbowL.name = "robot-elbow-l";
   elbowL.position.set(-0.01, -0.25, 0);
   shoulderL.add(elbowL);
-  addMesh(elbowL, geos.forearmL, mats.armor, false, false);
+  addMesh(elbowL, geos.forearmL, armorMat, false, false);
   const shoulderR = new THREE.Group();
   shoulderR.name = "robot-shoulder-r";
   shoulderR.position.set(0.245, 0.34, 0);
   torsoPivot.add(shoulderR);
-  addMesh(shoulderR, geos.upperArmR, mats.armor, false, false);
+  addMesh(shoulderR, geos.upperArmR, armorMat, false, false);
   const elbowR = new THREE.Group();
   elbowR.name = "robot-elbow-r";
   elbowR.position.set(0.01, -0.25, 0);
   shoulderR.add(elbowR);
-  addMesh(elbowR, geos.forearmR, mats.armor, false, false);
+  addMesh(elbowR, geos.forearmR, armorMat, false, false);
   const weaponMount = new THREE.Group();
   weaponMount.name = "robot-weapon";
   weaponMount.position.set(-0.01, -0.24, -0.02);
   elbowR.add(weaponMount);
-  addMesh(weaponMount, geos.weaponBody, mats.armor, false, false);
+  addMesh(weaponMount, geos.weaponBody, armorMat, false, false);
   addMesh(weaponMount, geos.weaponGlow, glowMat, true, false);
   const muzzleAnchor = new THREE.Object3D();
   muzzleAnchor.position.set(0, 0.02, -0.76);
@@ -750,17 +858,17 @@ function createRobot(faction = "enemy") {
   hipL.name = "robot-hip-l";
   hipL.position.set(-0.115, -0.02, 0);
   bodyPivot.add(hipL);
-  addMesh(hipL, geos.thighL, mats.armor, false, true);
+  addMesh(hipL, geos.thighL, armorMat, false, true);
   const kneeL = new THREE.Group();
   kneeL.name = "robot-knee-l";
   kneeL.position.set(0, -0.44, 0);
   hipL.add(kneeL);
-  addMesh(kneeL, geos.shinL, mats.armor, false, false);
+  addMesh(kneeL, geos.shinL, armorMat, false, false);
   const ankleL = new THREE.Group();
   ankleL.name = "robot-ankle-l";
   ankleL.position.set(0, -0.42, 0);
   kneeL.add(ankleL);
-  addMesh(ankleL, geos.foot, mats.armor, false, false);
+  addMesh(ankleL, geos.foot, armorMat, false, false);
   const soleProbeL = new THREE.Object3D();
   soleProbeL.position.set(0, -0.08, -0.02);
   ankleL.add(soleProbeL);
@@ -768,34 +876,43 @@ function createRobot(faction = "enemy") {
   hipR.name = "robot-hip-r";
   hipR.position.set(0.115, -0.02, 0);
   bodyPivot.add(hipR);
-  addMesh(hipR, geos.thighR, mats.armor, false, true);
+  addMesh(hipR, geos.thighR, armorMat, false, true);
   const kneeR = new THREE.Group();
   kneeR.name = "robot-knee-r";
   kneeR.position.set(0, -0.44, 0);
   hipR.add(kneeR);
-  addMesh(kneeR, geos.shinR, mats.armor, false, false);
+  addMesh(kneeR, geos.shinR, armorMat, false, false);
   const ankleR = new THREE.Group();
   ankleR.name = "robot-ankle-r";
   ankleR.position.set(0, -0.42, 0);
   kneeR.add(ankleR);
-  addMesh(ankleR, geos.foot, mats.armor, false, false);
+  addMesh(ankleR, geos.foot, armorMat, false, false);
   const soleProbeR = new THREE.Object3D();
   soleProbeR.position.set(0, -0.08, -0.02);
   ankleR.add(soleProbeR);
   let hitFlashOn = false;
   let fadeClones = null;
+  let fadeRimStrength = null;
   const setHitFlash = (active) => {
     if (fadeClones) return;
     if (active === hitFlashOn) return;
     hitFlashOn = active;
     visorMesh.material = active ? mats.visorFlash : glowMat;
+    visorHalo.material = active ? mats.visorHaloFlash : visorHaloMat;
+    const targetArmor = active ? mats.armorHitFlash : armorMat;
+    for (const m of armorMeshes) {
+      m.material = targetArmor;
+    }
   };
   const setDeathFade = (opacity) => {
     const a = Math.max(0, Math.min(1, opacity));
     if (!fadeClones) {
-      const fArmor2 = mats.armor.clone();
+      hitFlashOn = false;
+      const fArmor2 = armorMat.clone();
       fArmor2.transparent = true;
       fArmor2.depthWrite = false;
+      const fRimStrength = { value: ARMOR_FRESNEL_K[faction] };
+      applyArmorFresnel(fArmor2, factionGlowHex, fRimStrength);
       const fTrim2 = edgeTrimMat.clone();
       fTrim2.transparent = true;
       fTrim2.depthWrite = false;
@@ -804,7 +921,11 @@ function createRobot(faction = "enemy") {
       fGlow2.depthWrite = false;
       const fLine2 = edgeLineMat.clone();
       fLine2.transparent = true;
-      fadeClones = [fArmor2, fTrim2, fGlow2, fLine2];
+      const fHalo2 = visorHaloMat.clone();
+      fHalo2.transparent = true;
+      fHalo2.depthWrite = false;
+      fadeClones = [fArmor2, fTrim2, fGlow2, fLine2, fHalo2];
+      fadeRimStrength = fRimStrength;
       for (const m of bodyMeshes) {
         m.material = m.material === edgeTrimMat ? fTrim2 : fArmor2;
       }
@@ -814,20 +935,25 @@ function createRobot(faction = "enemy") {
       for (const ls of edgeLines) {
         ls.material = fLine2;
       }
+      visorHalo.material = fHalo2;
     }
-    const [fArmor, fTrim, fGlow, fLine] = fadeClones;
+    const [fArmor, fTrim, fGlow, fLine, fHalo] = fadeClones;
     fArmor.opacity = a;
+    fArmor.emissiveIntensity = ARMOR_EMISSIVE_INTENSITY * a;
+    if (fadeRimStrength) fadeRimStrength.value = ARMOR_FRESNEL_K[faction] * a;
     fTrim.opacity = a;
-    fTrim.emissiveIntensity = 0.36 * a;
+    fTrim.emissiveIntensity = 0.55 * a;
     fGlow.opacity = a;
     fGlow.emissiveIntensity = 0.45 * a;
-    fLine.opacity = 0.58 * a;
+    fLine.opacity = 0.62 * a;
+    fHalo.opacity = VISOR_HALO_OPACITY * a;
   };
   const dispose = () => {
     muzzleMat.dispose();
     if (fadeClones) {
       for (const m of fadeClones) m.dispose();
       fadeClones = null;
+      fadeRimStrength = null;
     }
   };
   return {
@@ -850,6 +976,7 @@ function createRobot(faction = "enemy") {
       ankleR
     },
     visorMesh,
+    visorHalo,
     glowMeshes,
     edgeLines,
     bodyMeshes,
@@ -892,7 +1019,9 @@ function disposeRobotCache() {
   }
   if (cachedMaterials) {
     const m = cachedMaterials;
-    m.armor.dispose();
+    m.armor.enemy.dispose();
+    m.armor.ally.dispose();
+    m.armorHitFlash.dispose();
     m.glow.enemy.dispose();
     m.glow.ally.dispose();
     m.edgeTrim.enemy.dispose();
@@ -900,6 +1029,10 @@ function disposeRobotCache() {
     m.edgeLine.enemy.dispose();
     m.edgeLine.ally.dispose();
     m.visorFlash.dispose();
+    m.visorHalo.enemy.dispose();
+    m.visorHalo.ally.dispose();
+    m.visorHaloFlash.dispose();
+    m.visorGlowTex.dispose();
     m.flashTex.dispose();
     cachedMaterials = null;
   }
@@ -1141,6 +1274,16 @@ var EnemyRig = class {
     const box = new THREE2.Box3().setFromObject(this.robot.root);
     if (box.isEmpty() || !Number.isFinite(box.min.y)) return null;
     return box.min.y;
+  }
+  /** Compute world-space Box3 of the robot chassis (excludes ground contact shadow). */
+  getChassisWorldBox(out) {
+    this.root.updateMatrixWorld(true);
+    out.setFromObject(this.robot.root);
+    return !out.isEmpty();
+  }
+  /** Toggle 3D robot chassis visibility while keeping grounded scene shadows intact for A/B diff. */
+  setRobotVisible(visible) {
+    this.robot.root.visible = visible;
   }
   /** Read actual world-space head top (top of floating helmet) for overhead distance tags. */
   getHeadTopWorld(out) {
@@ -1609,6 +1752,67 @@ test("EnemyRig: all 6 animation states (idle/walk/aim/fire/hit/death) articulate
     assert.ok(dead.headY < aim.headY - 0.06, "death must drop floating head as magnetic power cuts");
   } finally {
     rig.dispose();
+    disposeRobotCache();
+  }
+});
+test("robotModel: Fresnel rim shader injection, visor additive halo, hit-flash & death-fade clones", () => {
+  disposeRobotCache();
+  const enemy = createRobot("enemy");
+  const enemyPeer = createRobot("enemy");
+  const ally = createRobot("ally");
+  try {
+    const enemyArmor = enemy.bodyMeshes[0].material;
+    const allyArmor = ally.bodyMeshes[0].material;
+    assert.equal(enemyArmor.customProgramCacheKey(), ARMOR_FRESNEL_CACHE_KEY);
+    assert.equal(allyArmor.customProgramCacheKey(), ARMOR_FRESNEL_CACHE_KEY);
+    assert.equal(enemyArmor.userData.fresnelRimColor, PALETTE.robotGlowEnemy);
+    assert.equal(allyArmor.userData.fresnelRimColor, PALETTE.robotGlowAlly);
+    assert.ok(enemyArmor.userData.fresnelRimStrength.value > 0);
+    assert.ok(allyArmor.userData.fresnelRimStrength.value > 0);
+    const mockShader = {
+      uniforms: {},
+      fragmentShader: "#include <common>\nvoid main() {\n#include <emissivemap_fragment>\n}",
+      vertexShader: ""
+    };
+    enemyArmor.onBeforeCompile(mockShader, {});
+    assert.ok(mockShader.uniforms.uRimColor, "uRimColor uniform must be injected");
+    assert.ok(mockShader.uniforms.uRimStrength, "uRimStrength uniform must be injected");
+    assert.match(mockShader.fragmentShader, /pow\(\s*1\.0\s*-\s*rimNdotV,\s*3\.0\s*\)/);
+    assert.match(mockShader.fragmentShader, /totalEmissiveRadiance\s*\+=\s*uRimColor/);
+    const haloMat = enemy.visorHalo.material;
+    assert.equal(haloMat.blending, THREE3.AdditiveBlending);
+    assert.equal(haloMat.depthWrite, false);
+    assert.equal(haloMat.fog, false);
+    assert.equal(haloMat.color.getHex(), new THREE3.Color(PALETTE.robotGlowEnemy).getHex());
+    const allyHaloMat = ally.visorHalo.material;
+    assert.equal(allyHaloMat.color.getHex(), new THREE3.Color(PALETTE.robotGlowAlly).getHex());
+    enemy.setHitFlash(true);
+    const hitArmor = enemy.bodyMeshes[0].material;
+    const hitHalo = enemy.visorHalo.material;
+    assert.equal(hitArmor.userData.fresnelRimColor, PALETTE.robotHitFlash);
+    assert.equal(hitArmor.customProgramCacheKey(), ARMOR_FRESNEL_CACHE_KEY);
+    assert.equal(hitHalo.color.getHex(), new THREE3.Color(PALETTE.robotHitFlash).getHex());
+    assert.equal(enemyPeer.bodyMeshes[0].material, enemyArmor);
+    enemy.setHitFlash(false);
+    assert.equal(enemy.bodyMeshes[0].material, enemyArmor);
+    assert.equal(enemy.visorHalo.material, haloMat);
+    const baseRimK = enemyArmor.userData.fresnelRimStrength.value;
+    enemy.setDeathFade(0.5);
+    const fadeArmor = enemy.bodyMeshes[0].material;
+    const fadeHalo = enemy.visorHalo.material;
+    assert.notEqual(fadeArmor, enemyArmor, "death fade must clone armor material");
+    assert.equal(fadeArmor.transparent, true);
+    assert.equal(fadeArmor.opacity, 0.5);
+    assert.equal(fadeArmor.customProgramCacheKey(), ARMOR_FRESNEL_CACHE_KEY);
+    assert.equal(fadeArmor.userData.fresnelRimColor, PALETTE.robotGlowEnemy);
+    assert.ok(Math.abs(fadeArmor.userData.fresnelRimStrength.value - baseRimK * 0.5) < 1e-6);
+    assert.ok(fadeHalo.opacity < haloMat.opacity && fadeHalo.opacity > 0);
+    assert.equal(enemyPeer.bodyMeshes[0].material.opacity, 1);
+    assert.equal(enemyArmor.userData.fresnelRimStrength.value, baseRimK);
+  } finally {
+    enemy.dispose();
+    enemyPeer.dispose();
+    ally.dispose();
     disposeRobotCache();
   }
 });

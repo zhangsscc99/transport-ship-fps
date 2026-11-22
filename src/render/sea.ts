@@ -121,6 +121,13 @@ const LR = /* glsl */ `
 }
 `;
 
+let seaClockFrozen = false;
+
+/** Freeze/unfreeze sea wave clock (used when the engine is paused for exact same-frame A/B checks). */
+export function setSeaFrozen(frozen: boolean): void {
+  seaClockFrozen = frozen;
+}
+
 export function createSea(): THREE.Mesh {
   const { detail, detailN } = getNoiseTextures();
   const uniforms: { [u: string]: THREE.IUniform } = {
@@ -200,7 +207,7 @@ ${CR}
   sea.frustumCulled = false;
   sea.matrixAutoUpdate = false;
   sea.onBeforeRender = () => {
-    uniforms.uTime.value = performance.now() * 0.001;
+    if (!seaClockFrozen) uniforms.uTime.value = performance.now() * 0.001;
   };
   return sea;
 }
