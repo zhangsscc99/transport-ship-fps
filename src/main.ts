@@ -111,6 +111,12 @@ declare global {
       shotsFired: number;
       lastContactAgoMs: number;
     };
+    __enemiesFeet: () => {
+      id: string;
+      feetY: number;
+      deckY: number;
+      gap: number;
+    }[];
     __test: {
       hurt(dmg: number): void;
       teleport(x: number, z: number, yawDeg: number, pitchDeg: number, y?: number): void;
@@ -862,6 +868,22 @@ window.__enemiesSummary = () => {
     shotsFired: enemyMgr.totalShotsFired,
     lastContactAgoMs,
   };
+};
+window.__enemiesFeet = () => {
+  const out: { id: string; feetY: number; deckY: number; gap: number }[] = [];
+  for (const b of enemyMgr.bots) {
+    if (!b.entity.alive || b.state === 'DEAD') continue;
+    const feetY = enemyRenderer.measureFeetWorldY(b.id);
+    if (feetY === null) continue;
+    const deckY = b.entity.pos.y;
+    out.push({
+      id: b.id,
+      feetY,
+      deckY,
+      gap: feetY - deckY,
+    });
+  }
+  return out;
 };
 window.__enemyTags = enemyTags.telemetry;
 window.__test = {

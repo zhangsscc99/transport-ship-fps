@@ -17,6 +17,7 @@ import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { PALETTE } from './palette';
 import { BOT_TURN_RATE, type EnemyBot, type EnemyClip, type Faction } from '../game/ai';
+import { computeFootLift, sampleClipMinY } from '../game/enemyFoot';
 
 export const SOLDIER_MODEL_SOURCE = 'public/models/soldier.glb';
 export const RIFLE_MODEL_SOURCE = 'public/models/weapon_rifle.glb';
@@ -27,6 +28,14 @@ const RELOAD_CLIP_TARGET_SEC = 2.2;
 const HIT_CLIP_TARGET_SEC = 0.25;
 const CORPSE_HOLD_SEC = 2.5;
 const CORPSE_FADE_SEC = 0.6;
+const DEATH_LIFT_RELAX_SEC = 0.25;
+
+/** Grounded contact shadow disc anchored directly under each enemy's boots. */
+const CONTACT_SHADOW_DIAMETER = 1.0;
+const CONTACT_SHADOW_Y = 0.012;
+const CONTACT_SHADOW_OPACITY = 0.85;
+const CONTACT_SHADOW_RENDER_ORDER = -1;
+const CLIP_MINY_SAMPLES = 32;
 
 const REQUIRED_CLIPS: readonly EnemyClip[] = [
   'idle_rifle',
@@ -40,6 +49,23 @@ const REQUIRED_CLIPS: readonly EnemyClip[] = [
   'die',
 ];
 
+const GROUNDED_CLIPS: readonly EnemyClip[] = [
+  'idle_rifle',
+  'walk_rifle',
+  'run_rifle',
+  'aim_rifle',
+  'fire_rifle',
+  'reload_rifle',
+  'crouch_rifle',
+  'hit',
+];
+
+interface ClipMinYTable {
+  samples: Float32Array;
+  duration: number;
+  loop: boolean;
+}
+
 interface LoadedSoldierAssets {
   soldierScene: THREE.Group;
   clips: Map<EnemyClip, THREE.AnimationClip>;
@@ -47,12 +73,17 @@ interface LoadedSoldierAssets {
   soldierTris: number;
   rifleTris: number;
   dieDurationSec: number;
+  modelMinY: number;
+  bootMeshName: string;
+  clipMinYTables: Map<EnemyClip, ClipMinYTable>;
 }
 
 let cachedAssets: LoadedSoldierAssets | null = null;
 let assetsPromise: Promise<LoadedSoldierAssets> | null = null;
 let sharedFlashTex: THREE.CanvasTexture | null = null;
 let sharedEyeGeo: THREE.SphereGeometry | null = null;
+let sharedShadowTex: THREE.CanvasTexture | null = null;
+let sharedShadowGeo: THREE.PlaneGeometry | null = null;
 
 function countGeoTris(g: THREE.BufferGeometry): number {
   return Math.round(g.index ? g.index.count / 3 : g.getAttribute('position').count / 3);
@@ -74,6 +105,43 @@ function makeEnemyFlashTex(): THREE.CanvasTexture {
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.needsUpdate = true;
   return tex;
+}
+
+/** Local procedural 128² radial-gradient contact shadow texture (created once, no external assets). */
+function makeContactShadowTex(): THREE.CanvasTexture {
+  const size = 128;
+  const half = size / 2;
+  const c = document.createElement('canvas');
+  c.width = size;
+  c.height = size;
+  const ctx = c.getContext('2d')!;
+  const g = ctx.createRadialGradient(half, half, 0, half, half, half - 2);
+  g.addColorStop(0.0, 'rgba(16, 22, 30, 0.72)');
+  g.addColorStop(0.28, 'rgba(16, 22, 30, 0.56)');
+  g.addColorStop(0.54, 'rgba(16, 22, 30, 0.28)');
+  g.addColorStop(0.78, 'rgba(16, 22, 30, 0.08)');
+  g.addColorStop(1.0, 'rgba(16, 22, 30, 0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, size, size);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.needsUpdate = true;
+  return tex;
+}
+
+/** Measure exact current skinned bounding-box minY for a model hierarchy. */
+function measureHierarchyMinY(root: THREE.Object3D): number {
+  root.updateMatrixWorld(true);
+  root.traverse((obj) => {
+    const sm = obj as THREE.SkinnedMesh;
+    if (sm.isSkinnedMesh && sm.skeleton) sm.skeleton.update();
+  });
+  const box = new THREE.Box3().setFromObject(root, true);
+  return box.isEmpty() || !Number.isFinite(box.min.y) ? 0 : box.min.y;
+}
+
+function isOneShotClip(name: EnemyClip): boolean {
+  return name === 'fire_rifle' || name === 'reload_rifle' || name === 'hit' || name === 'die';
 }
 
 /** Merge static rifle child meshes by material (13 meshes -> 3 meshes) to keep draw calls lean. */
@@ -138,10 +206,18 @@ export function preloadEnemyModels(): Promise<LoadedSoldierAssets> {
     loader.loadAsync(`${base}models/weapon_rifle.glb`),
   ]).then(([soldierGltf, rifleGltf]) => {
     let soldierTris = 0;
+    let bootMeshName = '';
+    let lowestGeoY = Infinity;
     soldierGltf.scene.traverse((obj) => {
       const m = obj as THREE.Mesh;
       if (m.isMesh && m.geometry) {
         soldierTris += countGeoTris(m.geometry);
+        if (!m.geometry.boundingBox) m.geometry.computeBoundingBox();
+        const geoMinY = m.geometry.boundingBox?.min.y ?? Infinity;
+        if (geoMinY < lowestGeoY) {
+          lowestGeoY = geoMinY;
+          bootMeshName = m.name;
+        }
       }
     });
 
@@ -150,6 +226,32 @@ export function preloadEnemyModels(): Promise<LoadedSoldierAssets> {
       const found = soldierGltf.animations.find((a) => a.name === name);
       if (found) clips.set(name, found);
     }
+
+    // Measure model-space bind-pose minY and per-clip foot minY curves ONCE at load time
+    const modelMinY = measureHierarchyMinY(soldierGltf.scene);
+    const clipMinYTables = new Map<EnemyClip, ClipMinYTable>();
+    const sampleScene = SkeletonUtils.clone(soldierGltf.scene);
+    const sampleTarget = (bootMeshName && sampleScene.getObjectByName(bootMeshName)) || sampleScene;
+    const sampleMixer = new THREE.AnimationMixer(sampleScene);
+    for (const name of GROUNDED_CLIPS) {
+      const clip = clips.get(name);
+      if (!clip) continue;
+      const action = sampleMixer.clipAction(clip);
+      action.reset().setEffectiveWeight(1).play();
+      const samples = new Float32Array(CLIP_MINY_SAMPLES + 1);
+      for (let i = 0; i <= CLIP_MINY_SAMPLES; i++) {
+        sampleMixer.setTime((clip.duration * i) / CLIP_MINY_SAMPLES);
+        sampleScene.updateMatrixWorld(true);
+        samples[i] = measureHierarchyMinY(sampleTarget);
+      }
+      action.stop();
+      clipMinYTables.set(name, {
+        samples,
+        duration: clip.duration,
+        loop: !isOneShotClip(name),
+      });
+    }
+    sampleMixer.stopAllAction();
 
     const rifle = buildMergedRifleParts(rifleGltf.scene);
     const dieClip = clips.get('die');
@@ -160,6 +262,9 @@ export function preloadEnemyModels(): Promise<LoadedSoldierAssets> {
       soldierTris,
       rifleTris: rifle.tris,
       dieDurationSec: dieClip ? dieClip.duration : 2.333,
+      modelMinY,
+      bootMeshName,
+      clipMinYTables,
     };
     return cachedAssets;
   });
@@ -192,6 +297,14 @@ export class EnemyRig {
   private lastHitAt = -10000;
 
   private headBone: THREE.Object3D | null = null;
+  private bootMesh: THREE.SkinnedMesh | null = null;
+  private shadowMesh: THREE.Mesh | null = null;
+  private shadowMat: THREE.MeshBasicMaterial | null = null;
+  private baseModelMinY = 0;
+  private clipMinYTables: Map<EnemyClip, ClipMinYTable> | null = null;
+  private currentFootLift = 0;
+  private deathStartFootLift = 0;
+  private readonly scratchBox = new THREE.Box3();
   private muzzleAnchor: THREE.Object3D | null = null;
   private muzzleMesh: THREE.Mesh | null = null;
   private muzzleMat: THREE.MeshBasicMaterial | null = null;
@@ -352,6 +465,38 @@ export class EnemyRig {
       cloned.add(eyeOrb);
     }
 
+    // Align model boots with root.position.y using load-time Box3 minY
+    this.baseModelMinY = assets.modelMinY;
+    this.clipMinYTables = assets.clipMinYTables;
+    this.currentFootLift = computeFootLift(assets.modelMinY);
+    cloned.position.y = this.currentFootLift;
+    const bootCandidate = assets.bootMeshName ? cloned.getObjectByName(assets.bootMeshName) : null;
+    this.bootMesh =
+      bootCandidate && (bootCandidate as THREE.SkinnedMesh).isSkinnedMesh
+        ? (bootCandidate as THREE.SkinnedMesh)
+        : null;
+
+    // Soft radial contact shadow disc sitting at entity.pos.y + 0.012 under root (independent of model lift/yaw)
+    if (!sharedShadowTex) sharedShadowTex = makeContactShadowTex();
+    if (!sharedShadowGeo) {
+      sharedShadowGeo = new THREE.PlaneGeometry(CONTACT_SHADOW_DIAMETER, CONTACT_SHADOW_DIAMETER);
+      sharedShadowGeo.rotateX(-Math.PI / 2);
+    }
+    this.shadowMat = new THREE.MeshBasicMaterial({
+      map: sharedShadowTex,
+      transparent: true,
+      opacity: CONTACT_SHADOW_OPACITY,
+      depthWrite: false,
+    });
+    this.shadowMesh = new THREE.Mesh(sharedShadowGeo, this.shadowMat);
+    this.shadowMesh.name = `enemy-shadow-${this.faction}`;
+    this.shadowMesh.position.set(0, CONTACT_SHADOW_Y, 0);
+    this.shadowMesh.renderOrder = CONTACT_SHADOW_RENDER_ORDER;
+    this.shadowMesh.castShadow = false;
+    this.shadowMesh.receiveShadow = false;
+    this.shadowMesh.frustumCulled = false;
+    this.root.add(this.shadowMesh);
+
     this.root.add(cloned);
 
     // Independent AnimationMixer + all 9 state-machine actions
@@ -422,6 +567,64 @@ export class EnemyRig {
     prev.crossFadeTo(next, CROSSFADE_SEC, false);
   }
 
+  /** Measure live model-space boot minY during brief crossfade transitions. */
+  private measureBootModelMinY(): number {
+    if (!this.model || !this.bootMesh) return this.baseModelMinY;
+    this.model.position.y = 0;
+    this.root.updateMatrixWorld(true);
+    this.bootMesh.skeleton.update();
+    this.scratchBox.setFromObject(this.bootMesh, true);
+    if (this.scratchBox.isEmpty() || !Number.isFinite(this.scratchBox.min.y)) {
+      return this.baseModelMinY;
+    }
+    return this.scratchBox.min.y - this.root.position.y;
+  }
+
+  /** Keep soles flush on root.position.y across idle, walk, run, crouch, aim, fire, reload & hit clips. */
+  private updateFootGrounding(): void {
+    if (!this.model) return;
+    let activeCount = 0;
+    let singleClip: EnemyClip | null = null;
+    let singleAction: THREE.AnimationAction | null = null;
+
+    if (this.clipMinYTables) {
+      for (const name of GROUNDED_CLIPS) {
+        const action = this.actions.get(name);
+        if (!action || !action.isScheduled() || action.getEffectiveWeight() <= 0.001) continue;
+        activeCount++;
+        singleClip = name;
+        singleAction = action;
+      }
+    }
+
+    let minY = this.baseModelMinY;
+    if (activeCount === 1 && singleClip && singleAction && this.clipMinYTables) {
+      const table = this.clipMinYTables.get(singleClip);
+      if (table) {
+        minY = sampleClipMinY(table.samples, table.duration, singleAction.time, table.loop);
+      }
+    } else if (activeCount > 1) {
+      // Mid-crossfade (0.18s): measure blended boot pose so transitions never float or sink
+      minY = this.measureBootModelMinY();
+    }
+
+    this.currentFootLift = computeFootLift(minY);
+    this.model.position.y = this.currentFootLift;
+  }
+
+  /** Real-time world-space Box3 lowest Y of the soldier model (excludes contact shadow). Called on demand only. */
+  measureFeetWorldY(): number | null {
+    if (!this.loaded || !this.model) return null;
+    this.root.updateMatrixWorld(true);
+    this.model.traverse((obj) => {
+      const sm = obj as THREE.SkinnedMesh;
+      if (sm.isSkinnedMesh && sm.skeleton) sm.skeleton.update();
+    });
+    const box = new THREE.Box3().setFromObject(this.model, true);
+    if (box.isEmpty() || !Number.isFinite(box.min.y)) return null;
+    return box.min.y;
+  }
+
   /** Read actual world-space head top (0.25m above Head bone) so overhead tags track standing/crouch. */
   getHeadTopWorld(out: THREE.Vector3): THREE.Vector3 {
     if (this.headBone) {
@@ -480,6 +683,7 @@ export class EnemyRig {
     if (this.mixer) {
       this.mixer.update(dt);
     }
+    this.updateFootGrounding();
 
     // Muzzle flash quad visible briefly at the 0.18s shot moment (bot.lastFireAt)
     if (this.muzzleMesh && this.muzzleMat) {
@@ -517,6 +721,7 @@ export class EnemyRig {
     if (!this.deadStarted) {
       this.deadStarted = true;
       this.deadElapsedSec = 0;
+      this.deathStartFootLift = this.currentFootLift;
       this.transitionTo('die', false);
       if (this.muzzleMesh) this.muzzleMesh.visible = false;
       for (const mat of this.bodyMaterials) {
@@ -527,6 +732,12 @@ export class EnemyRig {
     this.deadElapsedSec += dt;
     if (this.mixer) {
       this.mixer.update(dt);
+    }
+    if (this.model) {
+      const relaxT = Math.min(1, this.deadElapsedSec / DEATH_LIFT_RELAX_SEC);
+      const baseLift = computeFootLift(this.baseModelMinY);
+      this.currentFootLift = this.deathStartFootLift + (baseLift - this.deathStartFootLift) * relaxT;
+      this.model.position.y = this.currentFootLift;
     }
 
     const fadeStartSec = this.dieDurationSec + CORPSE_HOLD_SEC;
@@ -553,7 +764,11 @@ export class EnemyRig {
         this.eyeMat.opacity = opacity;
         this.eyeMat.emissiveIntensity = 2.4 * opacity;
       }
+      if (this.shadowMat) {
+        this.shadowMat.opacity = CONTACT_SHADOW_OPACITY * opacity;
+      }
       if (u >= 1) {
+        if (this.shadowMesh) this.shadowMesh.visible = false;
         this.disposed = true;
       }
     }
@@ -564,6 +779,7 @@ export class EnemyRig {
     for (const mat of this.bodyMaterials) mat.dispose();
     this.bodyMaterials.length = 0;
     this.eyeMat?.dispose();
+    this.shadowMat?.dispose();
     this.muzzleMat?.dispose();
     this.muzzleMesh?.geometry.dispose();
   }
@@ -677,5 +893,9 @@ export class EnemyRenderer {
       if (r.triangleCount > mx) mx = r.triangleCount;
     }
     return mx;
+  }
+
+  measureFeetWorldY(botId: string): number | null {
+    return this.rigs.get(botId)?.measureFeetWorldY() ?? null;
   }
 }
