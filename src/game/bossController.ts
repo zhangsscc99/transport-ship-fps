@@ -1,10 +1,17 @@
-// Boss Controller — connects pure-logic BossAI with the procedural CF Red Terminator
-// Boss model (src/render/bossModel.ts), capsule+head raycast hit detection,
-// dynamically scaled part classification (head / core / body), melee state
-// animations (idle / walk / windup / attack / recover / charge), death collapse,
-// and 0.15s / 0.08m hit recoil. Strictly melee-only: zero ranged weapons or projectiles.
+// Boss Controller — connects stationary turret BossAI with the procedural Heavy
+// Armored Mech Boss model (src/render/bossModel.ts), capsule+head raycast hit
+// detection, weakpoint classification (head / core / body), parabolic artillery
+// launches & ground landing telegraphs (src/game/artillery.ts), death collapse,
+// and 0.15s / 0.08m hit recoil. Strictly stationary ranged artillery: zero movement
+// and zero melee damage.
 
 import * as THREE from 'three';
+import {
+  ArtillerySystem,
+  type ArtilleryHitInfo,
+  type ArtilleryOptions,
+  type ArtilleryShotRecord,
+} from './artillery';
 import {
   BossAI,
   BOSS_DEFAULTS,
@@ -29,7 +36,6 @@ export const BOSS_CORE_HEIGHT_RATIO = 0.68;
 export const BOSS_CORE_SURFACE_OFFSET = 0.45;
 export const BOSS_SPAWN_MIN_DIST = 20;
 export const BOSS_SPAWN_MAX_DIST = 25;
-export const BOSS_MELEE_DAMAGE = 20;
 export const BOSS_HIT_RECOIL_MS = 150;
 export const BOSS_HIT_RECOIL_DIST = 0.08;
 
@@ -47,22 +53,18 @@ export interface BossRayHit {
   part: BossHitPart;
 }
 
-export interface BossAttackHitInfo {
-  damage: number;
-  dist: number;
-  bossPos: Vec3;
-}
-
 export interface BossControllerOptions {
   hpMax?: number;
   ai?: BossAIOptions;
+  artillery?: Omit<ArtilleryOptions, 'onImpactHit' | 'onLaunch'>;
   /** Player initial position used to pick a 20-25m Boss spawn from spawnPoint. */
   playerPos?: { x: number; z: number };
   /** Explicit Boss spawn position override. */
   spawnPos?: { x: number; y?: number; z: number };
-  /** Melee damage dealt to player when attack_hit fires inside attackRange. */
-  meleeDamage?: number;
-  onAttackHit?: (info: BossAttackHitInfo) => void;
+  /** Invoked when a parabolic artillery shell explodes with player inside blastRadius. */
+  onArtilleryHit?: (info: ArtilleryHitInfo) => void;
+  /** Invoked when Boss fires an artillery salvo. */
+  onArtilleryLaunch?: (shots: readonly ArtilleryShotRecord[]) => void;
   onPhaseChange?: (phase: 1 | 2) => void;
   onDefeated?: () => void;
 }
@@ -116,7 +118,7 @@ function yawToTarget(fromX: number, fromZ: number, toX: number, toZ: number): nu
 }
 
 function mapStateToAnim(state: BossState): BossAnim {
-  return state === 'chase' ? 'walk' : state;
+  return state;
 }
 
 function countObjectTriangles(root: THREE.Object3D): number {
@@ -371,12 +373,11 @@ export function raycastBoss(
 export class BossController {
   readonly mesh: THREE.Group;
   readonly ai: BossAI;
+  readonly artillery: ArtillerySystem;
   readonly height: number;
   readonly headRatio: number;
   readonly headCenterRatio: number;
   readonly coreHeightRatio: number;
-  readonly attackRange: number;
-  readonly meleeDamage: number;
 
   private readonly scene: THREE.Scene;
   private readonly opts: BossControllerOptions;
@@ -392,6 +393,7 @@ export class BossController {
   private currentYaw = 0;
   private cachedTick: BossTick;
   private lastEventsArr: BossEvent[] = [];
+  private simClockMs = 0;
 
   private hitRecoilTimerMs = 0;
   private currentRecoilZ = 0;
@@ -401,7 +403,6 @@ export class BossController {
   private disposed = false;
 
   private _hitsTaken = 0;
-  private _meleeHitsDealt = 0;
   private _lastHitPart: BossHitPart | null = null;
   private _lastReportedPhase: 1 | 2 = 1;
 
@@ -409,8 +410,11 @@ export class BossController {
     this.scene = scene;
     this.opts = opts;
     this.ai = new BossAI(opts.hpMax ?? BOSS_DEFAULTS.hpMax, opts.ai);
-    this.attackRange = opts.ai?.attackRange ?? BOSS_DEFAULTS.attackRange;
-    this.meleeDamage = opts.meleeDamage ?? BOSS_MELEE_DAMAGE;
+    this.artillery = new ArtillerySystem(this.scene, {
+      ...opts.artillery,
+      onImpactHit: opts.onArtilleryHit,
+      onLaunch: opts.onArtilleryLaunch,
+    });
 
     const defaultPlayer = spawnPoint('A', 0);
     const pPos = opts.playerPos ?? { x: defaultPlayer[0], z: defaultPlayer[2] };
@@ -551,7 +555,11 @@ export class BossController {
   }
 
   get meleeHitsDealt(): number {
-    return this._meleeHitsDealt;
+    return 0;
+  }
+
+  get artilleryTriangleCount(): number {
+    return this.artillery.triangleCount;
   }
 
   get lastHitPart(): BossHitPart | null {
@@ -601,35 +609,48 @@ export class BossController {
     return { dealt, dead };
   }
 
-  /** Advance Boss AI + sync mesh transform + drive procedural Terminator animation & hit recoil. */
-  update(dtMs: number, player: { x: number; z: number }): void {
+  /** Advance stationary BossAI + parabolic artillery shells + procedural mech animation & recoil. */
+  update(
+    dtMs: number,
+    player: { x: number; y?: number; z: number },
+    simNowMs?: number,
+    cameraPos?: Vec3,
+  ): void {
     if (this.disposed) return;
     const safeDtMs = Number.isFinite(dtMs) && dtMs > 0 ? dtMs : 0;
     const dtSec = safeDtMs / 1000;
+    if (simNowMs !== undefined && Number.isFinite(simNowMs)) {
+      this.simClockMs = simNowMs;
+    } else {
+      this.simClockMs += safeDtMs;
+    }
 
-    const prevX = this.worldPos.x;
-    const prevZ = this.worldPos.z;
-    const distBefore = Math.hypot(player.x - prevX, player.z - prevZ);
-
-    const relPlayer = {
-      x: player.x - this.origin.x,
-      z: player.z - this.origin.z,
+    const playerVec: Vec3 = {
+      x: player.x,
+      y: player.y ?? 0,
+      z: player.z,
     };
-    const tick = this.ai.update(safeDtMs, relPlayer, distBefore);
+
+    // Boss is permanently pinned at its spawn origin (zero translation).
+    this.worldPos.x = this.origin.x;
+    this.worldPos.y = this.origin.y;
+    this.worldPos.z = this.origin.z;
+
+    const dist = Math.hypot(playerVec.x - this.worldPos.x, playerVec.z - this.worldPos.z);
+    const relPlayer = {
+      x: playerVec.x - this.origin.x,
+      z: playerVec.z - this.origin.z,
+    };
+    const tick = this.ai.update(safeDtMs, relPlayer, dist);
     this.cachedTick = tick;
     this.lastEventsArr = tick.events;
 
-    this.worldPos.x = this.origin.x + tick.pos.x;
-    this.worldPos.z = this.origin.z + tick.pos.z;
-
-    const distAfter = Math.hypot(player.x - this.worldPos.x, player.z - this.worldPos.z);
-
-    // Facing: use BossAI yaw during active states; keep facing player while alive & not charging
+    // Rotate in place to track player (yaw held briefly during firing impulse).
     if (tick.hp > 0) {
-      if (tick.state === 'charge') {
+      if (tick.state === 'attack') {
         this.currentYaw = tick.yaw;
-      } else if (distAfter > EPS) {
-        this.currentYaw = yawToTarget(this.worldPos.x, this.worldPos.z, player.x, player.z);
+      } else if (dist > EPS) {
+        this.currentYaw = yawToTarget(this.worldPos.x, this.worldPos.z, playerVec.x, playerVec.z);
       } else {
         this.currentYaw = tick.yaw;
       }
@@ -638,7 +659,7 @@ export class BossController {
     this.mesh.position.set(this.worldPos.x, this.worldPos.y, this.worldPos.z);
     this.mesh.rotation.y = this.currentYaw;
 
-    // Dispatch events
+    // Dispatch phase & artillery launch events (melee hit logic completely removed).
     if (tick.phase !== this._lastReportedPhase) {
       this._lastReportedPhase = tick.phase;
       this.opts.onPhaseChange?.(tick.phase);
@@ -648,16 +669,19 @@ export class BossController {
         this._lastReportedPhase = 2;
         this.opts.onPhaseChange?.(2);
       }
-      if (ev === 'attack_hit' && distAfter <= this.attackRange + EPS) {
-        this._meleeHitsDealt++;
-        this.opts.onAttackHit?.({
-          damage: this.meleeDamage,
-          dist: distAfter,
-          bossPos: { x: this.worldPos.x, y: this.worldPos.y, z: this.worldPos.z },
+      if (ev === 'attack_start' && tick.hp > 0) {
+        this.artillery.fireSalvo({
+          bossPos: this.worldPos,
+          bossYaw: this.currentYaw,
+          playerPos: playerVec,
+          salvoCount: tick.salvoCount,
+          enraged: tick.enraged,
+          simNowMs: this.simClockMs,
         });
       }
     }
 
+    this.artillery.update(dtSec, playerVec, this.simClockMs, cameraPos);
     this.stepAnimation(dtSec, safeDtMs, tick.state, tick.hp <= 0);
   }
 
@@ -704,10 +728,11 @@ export class BossController {
     this.deadStarted = false;
     this.deadElapsedSec = 0;
     this._hitsTaken = 0;
-    this._meleeHitsDealt = 0;
     this._lastHitPart = null;
     this._lastReportedPhase = 1;
     this.lastEventsArr = [];
+    this.simClockMs = 0;
+    this.artillery.clear();
 
     this.mesh.position.set(this.worldPos.x, this.worldPos.y, this.worldPos.z);
     this.mesh.rotation.y = this.currentYaw;
@@ -738,10 +763,10 @@ export class BossController {
       this.hitRecoilTimerMs = 0;
       this.currentRecoilZ = 0;
       this._hitsTaken = 0;
-      this._meleeHitsDealt = 0;
       this._lastHitPart = null;
       this._lastReportedPhase = 1;
       this.lastEventsArr = [];
+      this.artillery.clear();
     }
     this.origin = { x, y: 0, z };
     this.worldPos = { x, y: 0, z };
@@ -910,6 +935,7 @@ export class BossController {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.artillery.dispose();
     this.scene.remove(this.mesh);
     this.model.dispose();
     this.shadowMat.dispose();

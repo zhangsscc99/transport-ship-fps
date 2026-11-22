@@ -44,9 +44,9 @@ import { parseDifficulty, type DifficultyId } from './game/difficulty';
 import {
   BossController,
   BOSS_BODY_RADIUS,
-  BOSS_MELEE_DAMAGE,
   hasClearSightline,
 } from './game/bossController';
+import type { ArtilleryTelemetry } from './game/artillery';
 import type { BossHitPart, BossState } from './game/bossAI';
 import { BossHud, type ScreenProjection } from './render/bossHud';
 import type { EnemyTagTelemetry } from './render/enemyTags';
@@ -112,6 +112,7 @@ declare global {
       hitRecoilOffset: number;
       tris: number;
     };
+    __artillery: ArtilleryTelemetry;
     __sceneStats: () => {
       totalObjects: number;
       projectileObjects: string[];
@@ -171,6 +172,7 @@ declare global {
       hasClearLos(x0: number, y0: number, z0: number, x1: number, y1: number, z1: number): boolean;
       setReloadPreview(pct: number | null): void;
       skipCountdown(): void;
+      stepSim(totalMs: number, stepMs?: number, render?: boolean): void;
       setEnemiesVisible(visible: boolean): void;
       getEnemyScreenBounds(): {
         id: string;
@@ -301,18 +303,29 @@ const match = createMatch();
 
 const boss = new BossController(engine.scene, {
   playerPos: { x: sx, z: sz },
-  meleeDamage: BOSS_MELEE_DAMAGE,
-  onAttackHit: ({ damage, bossPos }) => {
+  onArtilleryHit: ({ damage, impactPos }) => {
     if (!playerEnt.alive) return;
     const fwd = player.forward();
     const rightX = -fwd.z;
     const rightZ = fwd.x;
-    const dx = bossPos.x - player.position.x;
-    const dz = bossPos.z - player.position.z;
+    const dx = impactPos.x - player.position.x;
+    const dz = impactPos.z - player.position.z;
     const localF = dx * fwd.x + dz * fwd.z;
     const localR = dx * rightX + dz * rightZ;
     const angleRad = Math.atan2(localR, localF);
     hurtPlayer(damage, angleRad);
+  },
+  onArtilleryLaunch: () => {
+    const bp = boss.pos;
+    const dist = Math.hypot(bp.x - player.position.x, bp.z - player.position.z);
+    const fwd = player.forward();
+    const rightX = -fwd.z;
+    const rightZ = fwd.x;
+    const pan =
+      dist > 0.1
+        ? ((bp.x - player.position.x) * rightX + (bp.z - player.position.z) * rightZ) / dist
+        : 0;
+    sfx.play('shotEnemy', { distance: dist, maxRange: 65, pan, volume: 0.95 });
   },
   onPhaseChange: (phase) => {
     lastBossPhase = phase;
@@ -773,9 +786,14 @@ engine.onFrame = (dt) => {
     }
   }
 
-  // --- Single Melee Boss AI update & Boss HUD sync ---
+  // --- Stationary Artillery Boss AI update & Boss HUD sync ---
   if (match.phase === 'playing') {
-    boss.update(dt * 1000, { x: player.position.x, z: player.position.z });
+    boss.update(
+      dt * 1000,
+      { x: player.position.x, y: player.position.y, z: player.position.z },
+      simNowMs,
+      view.camera.position,
+    );
   } else {
     boss.updateVisualOnly(dt * 1000, { x: player.position.x, z: player.position.z });
   }
@@ -906,7 +924,7 @@ engine.onFrame = (dt) => {
     faction: 'enemy',
     state: boss.state,
     alive: boss.alive,
-    advancing: boss.state === 'chase' || boss.state === 'charge',
+    advancing: false,
     dist: bossDist,
     anim: boss.state,
     clip: boss.state,
@@ -916,7 +934,7 @@ engine.onFrame = (dt) => {
     hp: boss.hp,
     maxHp: boss.hpMax,
     ammo: 0,
-    shotsFired: 0,
+    shotsFired: boss.artillery.totalShotsFired,
     hasLos: hasBossLos(),
     firstSightAt: 0,
     firstShotAt: -1,
@@ -1000,6 +1018,7 @@ const bossDbg: Window['__boss'] = {
   tris: boss.triangleCount,
 };
 window.__boss = bossDbg;
+window.__artillery = boss.artillery.telemetry;
 window.__sceneStats = () => {
   let totalObjects = 0;
   const projectileObjects: string[] = [];
@@ -1046,7 +1065,7 @@ window.__enemiesSummary = () => ({
     ? Math.hypot(boss.pos.x - player.position.x, boss.pos.z - player.position.z)
     : Infinity,
   engaged: boss.alive && boss.state !== 'idle' ? 1 : 0,
-  shotsFired: 0,
+  shotsFired: boss.artillery.totalShotsFired,
   lastContactAgoMs: 0,
 });
 window.__enemiesFeet = () => {
@@ -1134,6 +1153,16 @@ window.__test = {
       menu.setCountdown(null);
       mdbg.phase = match.phase;
     }
+  },
+  stepSim: (totalMs: number, stepMs = 50, render = true) => {
+    const dtMs = Math.max(5, Math.min(100, stepMs));
+    let remaining = Math.max(0, totalMs);
+    while (remaining > 0) {
+      const slice = Math.min(dtMs, remaining);
+      engine.onFrame(slice / 1000);
+      remaining -= slice;
+    }
+    if (render) engine.renderOnce(false);
   },
   setEnemiesVisible: (visible: boolean) => {
     boss.setVisible(visible);
