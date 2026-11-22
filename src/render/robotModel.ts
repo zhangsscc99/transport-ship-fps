@@ -72,13 +72,20 @@ interface MaterialCache {
 }
 
 export const ARMOR_FRESNEL_CACHE_KEY = 'robot-armor-fresnel-v1';
+export const ARMOR_FRESNEL_POWER = 4.5;
 const ARMOR_EMISSIVE_INTENSITY = 0.16;
-const ARMOR_FRESNEL_K: Record<RobotFaction, number> = {
-  enemy: 2.6,
-  ally: 2.0,
+export const ARMOR_FRESNEL_K: Record<RobotFaction, number> = {
+  enemy: 0.72,
+  ally: 0.48,
 };
-const ARMOR_HIT_FRESNEL_K = 3.6;
-const VISOR_HALO_OPACITY = 0.90;
+export const ARMOR_HIT_FRESNEL_K = 2.0;
+export const GLOW_EMISSIVE_INTENSITY: Record<RobotFaction, number> = {
+  enemy: 0.68,
+  ally: 0.25,
+};
+export const VISOR_HALO_OPACITY = 0.30;
+export const VISOR_HALO_FLASH_OPACITY = 0.98;
+export const VISOR_HALO_SCALE: readonly [number, number] = [0.30, 0.16];
 
 interface GeometryCache {
   pelvis: THREE.BufferGeometry;
@@ -224,7 +231,7 @@ function createVisorGlowTexture(): THREE.Texture {
 
 /**
  * Inject view-dependent Fresnel silhouette rim glow into a MeshStandardMaterial:
- *   totalEmissiveRadiance += rimColor * pow(1.0 - dot(N, V), 3.0) * k
+ *   totalEmissiveRadiance += rimColor * pow(1.0 - dot(N, V), 4.5) * k
  * Uses uniform uRimColor + uRimStrength so enemy/ally/hit/death-fade clones share one program.
  */
 function applyArmorFresnel(
@@ -248,7 +255,7 @@ function applyArmorFresnel(
         `#include <emissivemap_fragment>
 {
 	float rimNdotV = clamp( dot( normalize( normal ), normalize( vViewPosition ) ), 0.0, 1.0 );
-	float rimFactor = pow( 1.0 - rimNdotV, 3.0 );
+	float rimFactor = pow( 1.0 - rimNdotV, ${ARMOR_FRESNEL_POWER.toFixed(1)} );
 	totalEmissiveRadiance += uRimColor * rimFactor * uRimStrength;
 }`,
       );
@@ -266,21 +273,21 @@ function getMaterials(): MaterialCache {
       emissiveIntensity: emissiveInt,
       metalness: 0.86,
       roughness: 0.26,
-      envMapIntensity: 2.9,
+      envMapIntensity: 2.1,
       vertexColors: true,
     });
     applyArmorFresnel(mat, rimHex, { value: rimK });
     return mat;
   };
 
-  const makeGlow = (hex: string): THREE.MeshStandardMaterial =>
+  const makeGlow = (hex: string, emissiveIntensity: number): THREE.MeshStandardMaterial =>
     new THREE.MeshStandardMaterial({
       color: hex,
       emissive: hex,
-      emissiveIntensity: 4.4,
+      emissiveIntensity,
       metalness: 0.85,
       roughness: 0.20,
-      envMapIntensity: 1.4,
+      envMapIntensity: 0.4,
     });
 
   const makeEdgeTrim = (hex: string): THREE.MeshStandardMaterial =>
@@ -331,8 +338,8 @@ function getMaterials(): MaterialCache {
     },
     armorHitFlash: makeArmor(PALETTE.robotHitFlash, ARMOR_HIT_FRESNEL_K, PALETTE.robotHitFlash, 0.42),
     glow: {
-      enemy: makeGlow(PALETTE.robotGlowEnemy),
-      ally: makeGlow(PALETTE.robotGlowAlly),
+      enemy: makeGlow(PALETTE.robotGlowEnemy, GLOW_EMISSIVE_INTENSITY.enemy),
+      ally: makeGlow(PALETTE.robotGlowAlly, GLOW_EMISSIVE_INTENSITY.ally),
     },
     edgeTrim: {
       enemy: makeEdgeTrim(PALETTE.robotGlowEnemy),
@@ -347,18 +354,18 @@ function getMaterials(): MaterialCache {
       enemy: makeVisorHalo(PALETTE.robotGlowEnemy, VISOR_HALO_OPACITY),
       ally: makeVisorHalo(PALETTE.robotGlowAlly, VISOR_HALO_OPACITY),
     },
-    visorHaloFlash: makeVisorHalo(PALETTE.robotHitFlash, 0.98),
+    visorHaloFlash: makeVisorHalo(PALETTE.robotHitFlash, VISOR_HALO_FLASH_OPACITY),
     visorGlowTex,
     flashTex: createFlashTexture(),
   };
   return cachedMaterials;
 }
 
-// Vertex tint multipliers against PALETTE.robotArmor
-const TINT_ARMOR: [number, number, number] = [1.0, 1.0, 1.0];
-const TINT_ARMOR_HI: [number, number, number] = [1.75, 1.82, 1.95]; // machined bright chamfer panels
-const TINT_FRAME: [number, number, number] = [0.62, 0.66, 0.74]; // inner hydraulic dark gunmetal
-const TINT_GUN: [number, number, number] = [1.35, 1.42, 1.52]; // machined pulse carbine steel
+// Vertex tint multipliers against PALETTE.robotArmor (brushed gunmetal metallic IBL reflectance)
+const TINT_ARMOR: [number, number, number] = [5.2, 5.3, 5.5];
+const TINT_ARMOR_HI: [number, number, number] = [5.8, 5.9, 6.2]; // machined bright chamfer panels
+const TINT_FRAME: [number, number, number] = [3.0, 3.1, 3.3]; // inner hydraulic dark gunmetal
+const TINT_GUN: [number, number, number] = [4.6, 4.8, 5.0]; // machined pulse carbine steel
 
 function buildUpperArm(side: -1 | 1): {
   armor: THREE.BufferGeometry;
@@ -818,7 +825,7 @@ export function createRobot(faction: RobotFaction = 'enemy'): RobotInstance {
   const visorHalo = new THREE.Sprite(visorHaloMat);
   visorHalo.name = 'robot-visor-halo';
   visorHalo.position.set(0, 0.008, -0.124);
-  visorHalo.scale.set(0.46, 0.24, 1);
+  visorHalo.scale.set(VISOR_HALO_SCALE[0], VISOR_HALO_SCALE[1], 1);
   visorHalo.frustumCulled = false;
   visorHalo.renderOrder = 2;
   headPivot.add(visorHalo);
@@ -987,7 +994,7 @@ export function createRobot(faction: RobotFaction = 'enemy'): RobotInstance {
     fTrim.opacity = a;
     fTrim.emissiveIntensity = 0.55 * a;
     fGlow.opacity = a;
-    fGlow.emissiveIntensity = 0.45 * a;
+    fGlow.emissiveIntensity = GLOW_EMISSIVE_INTENSITY[faction] * a;
     fLine.opacity = 0.62 * a;
     fHalo.opacity = VISOR_HALO_OPACITY * a;
   };

@@ -205,13 +205,20 @@ var PALETTE = {
 
 // src/render/robotModel.ts
 var ARMOR_FRESNEL_CACHE_KEY = "robot-armor-fresnel-v1";
+var ARMOR_FRESNEL_POWER = 4.5;
 var ARMOR_EMISSIVE_INTENSITY = 0.16;
 var ARMOR_FRESNEL_K = {
-  enemy: 2.6,
-  ally: 2
+  enemy: 0.72,
+  ally: 0.48
 };
-var ARMOR_HIT_FRESNEL_K = 3.6;
-var VISOR_HALO_OPACITY = 0.9;
+var ARMOR_HIT_FRESNEL_K = 2;
+var GLOW_EMISSIVE_INTENSITY = {
+  enemy: 0.68,
+  ally: 0.25
+};
+var VISOR_HALO_OPACITY = 0.3;
+var VISOR_HALO_FLASH_OPACITY = 0.98;
+var VISOR_HALO_SCALE = [0.3, 0.16];
 var cachedMaterials = null;
 var cachedGeometries = null;
 function countGeoTris(g) {
@@ -329,7 +336,7 @@ function applyArmorFresnel(mat, rimHex, rimStrength) {
       `#include <emissivemap_fragment>
 {
 	float rimNdotV = clamp( dot( normalize( normal ), normalize( vViewPosition ) ), 0.0, 1.0 );
-	float rimFactor = pow( 1.0 - rimNdotV, 3.0 );
+	float rimFactor = pow( 1.0 - rimNdotV, ${ARMOR_FRESNEL_POWER.toFixed(1)} );
 	totalEmissiveRadiance += uRimColor * rimFactor * uRimStrength;
 }`
     );
@@ -345,19 +352,19 @@ function getMaterials() {
       emissiveIntensity: emissiveInt,
       metalness: 0.86,
       roughness: 0.26,
-      envMapIntensity: 2.9,
+      envMapIntensity: 2.1,
       vertexColors: true
     });
     applyArmorFresnel(mat, rimHex, { value: rimK });
     return mat;
   };
-  const makeGlow = (hex) => new THREE.MeshStandardMaterial({
+  const makeGlow = (hex, emissiveIntensity) => new THREE.MeshStandardMaterial({
     color: hex,
     emissive: hex,
-    emissiveIntensity: 4.4,
+    emissiveIntensity,
     metalness: 0.85,
     roughness: 0.2,
-    envMapIntensity: 1.4
+    envMapIntensity: 0.4
   });
   const makeEdgeTrim = (hex) => new THREE.MeshStandardMaterial({
     color: PALETTE.robotEdge,
@@ -401,8 +408,8 @@ function getMaterials() {
     },
     armorHitFlash: makeArmor(PALETTE.robotHitFlash, ARMOR_HIT_FRESNEL_K, PALETTE.robotHitFlash, 0.42),
     glow: {
-      enemy: makeGlow(PALETTE.robotGlowEnemy),
-      ally: makeGlow(PALETTE.robotGlowAlly)
+      enemy: makeGlow(PALETTE.robotGlowEnemy, GLOW_EMISSIVE_INTENSITY.enemy),
+      ally: makeGlow(PALETTE.robotGlowAlly, GLOW_EMISSIVE_INTENSITY.ally)
     },
     edgeTrim: {
       enemy: makeEdgeTrim(PALETTE.robotGlowEnemy),
@@ -417,16 +424,16 @@ function getMaterials() {
       enemy: makeVisorHalo(PALETTE.robotGlowEnemy, VISOR_HALO_OPACITY),
       ally: makeVisorHalo(PALETTE.robotGlowAlly, VISOR_HALO_OPACITY)
     },
-    visorHaloFlash: makeVisorHalo(PALETTE.robotHitFlash, 0.98),
+    visorHaloFlash: makeVisorHalo(PALETTE.robotHitFlash, VISOR_HALO_FLASH_OPACITY),
     visorGlowTex,
     flashTex: createFlashTexture()
   };
   return cachedMaterials;
 }
-var TINT_ARMOR = [1, 1, 1];
-var TINT_ARMOR_HI = [1.75, 1.82, 1.95];
-var TINT_FRAME = [0.62, 0.66, 0.74];
-var TINT_GUN = [1.35, 1.42, 1.52];
+var TINT_ARMOR = [5.2, 5.3, 5.5];
+var TINT_ARMOR_HI = [5.8, 5.9, 6.2];
+var TINT_FRAME = [3, 3.1, 3.3];
+var TINT_GUN = [4.6, 4.8, 5];
 function buildUpperArm(side) {
   const pauldronMain = makePart(
     new THREE.BoxGeometry(0.15, 0.125, 0.21),
@@ -805,7 +812,7 @@ function createRobot(faction = "enemy") {
   const visorHalo = new THREE.Sprite(visorHaloMat);
   visorHalo.name = "robot-visor-halo";
   visorHalo.position.set(0, 8e-3, -0.124);
-  visorHalo.scale.set(0.46, 0.24, 1);
+  visorHalo.scale.set(VISOR_HALO_SCALE[0], VISOR_HALO_SCALE[1], 1);
   visorHalo.frustumCulled = false;
   visorHalo.renderOrder = 2;
   headPivot.add(visorHalo);
@@ -944,7 +951,7 @@ function createRobot(faction = "enemy") {
     fTrim.opacity = a;
     fTrim.emissiveIntensity = 0.55 * a;
     fGlow.opacity = a;
-    fGlow.emissiveIntensity = 0.45 * a;
+    fGlow.emissiveIntensity = GLOW_EMISSIVE_INTENSITY[faction] * a;
     fLine.opacity = 0.62 * a;
     fHalo.opacity = VISOR_HALO_OPACITY * a;
   };
@@ -1670,7 +1677,10 @@ test("robotModel: single robot <= 2500 tris, metallic PBR bounds, shared cache, 
     assert.ok(enemyGlow.roughness >= 0.2 && enemyGlow.roughness <= 0.35, `glow roughness=${enemyGlow.roughness}`);
     assert.equal(enemyGlow.emissive.getHex(), new THREE3.Color(PALETTE.robotGlowEnemy).getHex());
     assert.equal(allyGlow.emissive.getHex(), new THREE3.Color(PALETTE.robotGlowAlly).getHex());
-    assert.ok(enemyGlow.emissiveIntensity >= 3, `strong emissive expected, got ${enemyGlow.emissiveIntensity}`);
+    assert.equal(enemyGlow.emissiveIntensity, GLOW_EMISSIVE_INTENSITY.enemy);
+    assert.equal(allyGlow.emissiveIntensity, GLOW_EMISSIVE_INTENSITY.ally);
+    assert.ok(enemyGlow.emissiveIntensity > 0 && enemyGlow.emissiveIntensity <= 2, `restrained enemy glow expected, got ${enemyGlow.emissiveIntensity}`);
+    assert.ok(allyGlow.emissiveIntensity > 0 && allyGlow.emissiveIntensity <= 1, `restrained ally glow expected, got ${allyGlow.emissiveIntensity}`);
     assert.ok(enemy1.joints.headPivot.position.y >= 0.54, "head must float above torso collar");
     enemy1.setHitFlash(true);
     const flashMat = enemy1.visorMesh.material;
@@ -1767,8 +1777,12 @@ test("robotModel: Fresnel rim shader injection, visor additive halo, hit-flash &
     assert.equal(allyArmor.customProgramCacheKey(), ARMOR_FRESNEL_CACHE_KEY);
     assert.equal(enemyArmor.userData.fresnelRimColor, PALETTE.robotGlowEnemy);
     assert.equal(allyArmor.userData.fresnelRimColor, PALETTE.robotGlowAlly);
-    assert.ok(enemyArmor.userData.fresnelRimStrength.value > 0);
-    assert.ok(allyArmor.userData.fresnelRimStrength.value > 0);
+    assert.equal(ARMOR_FRESNEL_POWER, 4.5);
+    assert.equal(enemyArmor.userData.fresnelRimStrength.value, ARMOR_FRESNEL_K.enemy);
+    assert.equal(allyArmor.userData.fresnelRimStrength.value, ARMOR_FRESNEL_K.ally);
+    assert.ok(ARMOR_FRESNEL_K.enemy > 0 && ARMOR_FRESNEL_K.enemy <= 1, `enemy K=${ARMOR_FRESNEL_K.enemy}`);
+    assert.ok(ARMOR_FRESNEL_K.ally > 0 && ARMOR_FRESNEL_K.ally <= 0.75, `ally K=${ARMOR_FRESNEL_K.ally}`);
+    assert.equal(enemyArmor.emissiveIntensity, 0.16, "armor emissiveIntensity must stay at 0.16");
     const mockShader = {
       uniforms: {},
       fragmentShader: "#include <common>\nvoid main() {\n#include <emissivemap_fragment>\n}",
@@ -1777,21 +1791,31 @@ test("robotModel: Fresnel rim shader injection, visor additive halo, hit-flash &
     enemyArmor.onBeforeCompile(mockShader, {});
     assert.ok(mockShader.uniforms.uRimColor, "uRimColor uniform must be injected");
     assert.ok(mockShader.uniforms.uRimStrength, "uRimStrength uniform must be injected");
-    assert.match(mockShader.fragmentShader, /pow\(\s*1\.0\s*-\s*rimNdotV,\s*3\.0\s*\)/);
+    assert.match(mockShader.fragmentShader, /pow\(\s*1\.0\s*-\s*rimNdotV,\s*4\.5\s*\)/);
     assert.match(mockShader.fragmentShader, /totalEmissiveRadiance\s*\+=\s*uRimColor/);
     const haloMat = enemy.visorHalo.material;
     assert.equal(haloMat.blending, THREE3.AdditiveBlending);
     assert.equal(haloMat.depthWrite, false);
     assert.equal(haloMat.fog, false);
+    assert.equal(haloMat.opacity, VISOR_HALO_OPACITY);
+    assert.equal(VISOR_HALO_OPACITY, 0.3);
+    assert.equal(enemy.visorHalo.scale.x, VISOR_HALO_SCALE[0]);
+    assert.equal(enemy.visorHalo.scale.y, VISOR_HALO_SCALE[1]);
+    assert.equal(VISOR_HALO_SCALE[0], 0.3);
+    assert.equal(VISOR_HALO_SCALE[1], 0.16);
     assert.equal(haloMat.color.getHex(), new THREE3.Color(PALETTE.robotGlowEnemy).getHex());
     const allyHaloMat = ally.visorHalo.material;
     assert.equal(allyHaloMat.color.getHex(), new THREE3.Color(PALETTE.robotGlowAlly).getHex());
+    assert.equal(allyHaloMat.opacity, VISOR_HALO_OPACITY);
     enemy.setHitFlash(true);
     const hitArmor = enemy.bodyMeshes[0].material;
     const hitHalo = enemy.visorHalo.material;
     assert.equal(hitArmor.userData.fresnelRimColor, PALETTE.robotHitFlash);
+    assert.equal(hitArmor.userData.fresnelRimStrength.value, ARMOR_HIT_FRESNEL_K);
+    assert.equal(ARMOR_HIT_FRESNEL_K, 2);
     assert.equal(hitArmor.customProgramCacheKey(), ARMOR_FRESNEL_CACHE_KEY);
     assert.equal(hitHalo.color.getHex(), new THREE3.Color(PALETTE.robotHitFlash).getHex());
+    assert.ok(hitHalo.opacity >= 0.8 && hitHalo.opacity === VISOR_HALO_FLASH_OPACITY, `hit halo opacity=${hitHalo.opacity}`);
     assert.equal(enemyPeer.bodyMeshes[0].material, enemyArmor);
     enemy.setHitFlash(false);
     assert.equal(enemy.bodyMeshes[0].material, enemyArmor);

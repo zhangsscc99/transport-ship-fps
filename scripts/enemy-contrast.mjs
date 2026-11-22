@@ -9,10 +9,12 @@
 //        - For every visible enemy in 8–15m:
 //            |meanLuma(silhouette) - meanLuma(12px outer ring)| >= 14 luma
 //            stdLuma(silhouette) >= 6 luma (rich volumetric shading, not a dead black block)
+//            silP99Luma <= 205 luma (no overexposed washed-out body)
+//            hotFrac <= 0.06 (fraction of silhouette pixels with max(R,G,B) >= 235 && (max-min) >= 55)
 //   4. Captures 2 required screenshots to e2e/shots/ via CDP Page.captureScreenshot (and asserts
-//      silhouette contrast on them as well):
-//        - e2e/shots/enemy-contrast-portrait-combat.png  (390×844 portrait combat with 3+ enemies)
-//        - e2e/shots/enemy-contrast-8m-closeup.png       (390×844 portrait 8m close-up)
+//      silhouette contrast & overexposure bounds on them as well):
+//        - e2e/shots/enemy-rim-portrait.png  (390×844 portrait combat with 3+ enemies)
+//        - e2e/shots/enemy-rim-8m.png        (390×844 portrait 8m close-up)
 //
 // Exits non-zero on any failure.
 // Usage: node scripts/enemy-contrast.mjs   (defaults to http://127.0.0.1:3028/transport/)
@@ -28,6 +30,10 @@ mkdirSync(SHOTS_DIR, { recursive: true });
 const VIEWPORT = { width: 390, height: 844 };
 const MIN_DELTA_LUMA = 14;
 const MIN_SIL_STD = 6;
+const MAX_SIL_P99_LUMA = 205;
+const MAX_HOT_FRAC = 0.06;
+const HOT_MAX_RGB = 235;
+const HOT_MIN_CHROMA = 55;
 const RING_RADIUS_PX = 12;
 const DIFF_THRESH = 8; // RGB max-channel diff defining enemy silhouette pixels
 const MAX_NON_ENEMY_MEAN_DIFF = 0.25;
@@ -94,7 +100,7 @@ async function measureSceneAB(page, cdp, label, savePath = null, targetDistRange
   await renderPausedVisibility(page, true);
 
   const metrics = await page.evaluate(
-    async ({ b64A, b64B, enemyBounds, ringR, diffThresh, distMin, distMax }) => {
+    async ({ b64A, b64B, enemyBounds, ringR, diffThresh, distMin, distMax, hotMaxRgb, hotMinChroma }) => {
       const decode = async (b64) => {
         const img = new Image();
         await new Promise((res, rej) => {
@@ -207,9 +213,11 @@ async function measureSceneAB(page, cdp, label, savePath = null, targetDistRange
         const by1 = Math.min(H - 1, Math.ceil(eb.y1 + 2));
 
         const silCoords = [];
+        const silLumas = [];
         const localSil = new Uint8Array(N);
         let silSum = 0;
         let silSqSum = 0;
+        let hotPx = 0;
 
         for (let y = by0; y <= by1; y++) {
           const row = y * W;
@@ -219,8 +227,16 @@ async function measureSceneAB(page, cdp, label, savePath = null, targetDistRange
               localSil[idx] = 1;
               silCoords.push([x, y]);
               const l = lumaA[idx];
+              silLumas.push(l);
               silSum += l;
               silSqSum += l * l;
+              const o = idx * 4;
+              const r = dA[o], g = dA[o + 1], b = dA[o + 2];
+              const maxC = Math.max(r, g, b);
+              const minC = Math.min(r, g, b);
+              if (maxC >= hotMaxRgb && maxC - minC >= hotMinChroma) {
+                hotPx++;
+              }
             }
           }
         }
@@ -234,6 +250,12 @@ async function measureSceneAB(page, cdp, label, savePath = null, targetDistRange
         const silMean = silSum / silPx;
         const silVar = Math.max(0, silSqSum / silPx - silMean * silMean);
         const silStd = Math.sqrt(silVar);
+        silLumas.sort((a, b) => a - b);
+        const p99Pos = (silPx - 1) * 0.99;
+        const p99Lo = Math.floor(p99Pos);
+        const p99Hi = Math.min(silPx - 1, p99Lo + 1);
+        const silP99Luma = silLumas[p99Lo] + (silLumas[p99Hi] - silLumas[p99Lo]) * (p99Pos - p99Lo);
+        const hotFrac = hotPx / silPx;
 
         // Dilate silhouette by 12px; exclude silhouette pixels and any other enemy's diff pixels
         const ringMask = new Uint8Array(N);
@@ -268,6 +290,9 @@ async function measureSceneAB(page, cdp, label, savePath = null, targetDistRange
           silPx,
           silMean: Number(silMean.toFixed(2)),
           silStd: Number(silStd.toFixed(2)),
+          silP99Luma: Number(silP99Luma.toFixed(2)),
+          hotPx,
+          hotFrac: Number(hotFrac.toFixed(4)),
           ringPx,
           ringMean: Number(ringMeanA.toFixed(2)),
           ringMeanB: Number(ringMeanB.toFixed(2)),
@@ -303,6 +328,8 @@ async function measureSceneAB(page, cdp, label, savePath = null, targetDistRange
       diffThresh: DIFF_THRESH,
       distMin: targetDistRange[0],
       distMax: targetDistRange[1],
+      hotMaxRgb: HOT_MAX_RGB,
+      hotMinChroma: HOT_MIN_CHROMA,
     },
   );
 
@@ -312,7 +339,7 @@ async function measureSceneAB(page, cdp, label, savePath = null, targetDistRange
   log(
     `${label}: meanA=${metrics.meanA} meanB=${metrics.meanB} globalDiffPx=${metrics.globalDiffPx} ` +
       `nonEnemyCov=${metrics.nonEnemy.coverageFrac} meanDiff=${metrics.nonEnemy.meanDiff} changedFrac=${metrics.nonEnemy.changedFrac} maxDiff=${metrics.nonEnemy.maxDiff} ` +
-      `enemies=${measured.map((e) => `${e.id}@${e.dist}m(sil=${e.silMean},ring=${e.ringMean},|Δ|=${e.deltaLuma},std=${e.silStd},px=${e.silPx})`).join(' ')}`,
+      `enemies=${measured.map((e) => `${e.id}@${e.dist}m(sil=${e.silMean},ring=${e.ringMean},|Δ|=${e.deltaLuma},std=${e.silStd},p99=${e.silP99Luma},hot=${(e.hotFrac * 100).toFixed(2)}%,px=${e.silPx})`).join(' ')}`,
   );
   if (
     metrics.nonEnemy.coverageFrac < 0.5 ||
@@ -354,6 +381,14 @@ async function measureSceneAB(page, cdp, label, savePath = null, targetDistRange
     assert.ok(
       e.silStd >= MIN_SIL_STD,
       `${label} [${e.id} @ ${e.dist}m]: silStd=${e.silStd} < ${MIN_SIL_STD} (dead dark block)`,
+    );
+    assert.ok(
+      e.silP99Luma <= MAX_SIL_P99_LUMA,
+      `${label} [${e.id} @ ${e.dist}m]: silP99Luma=${e.silP99Luma} > ${MAX_SIL_P99_LUMA} (overexposed silhouette)`,
+    );
+    assert.ok(
+      e.hotFrac <= MAX_HOT_FRAC,
+      `${label} [${e.id} @ ${e.dist}m]: hotFrac=${e.hotFrac} > ${MAX_HOT_FRAC} (hotPx=${e.hotPx}/${e.silPx}, neon rim overexposure)`,
     );
   }
 
@@ -537,7 +572,7 @@ async function runGateAttempt(attempt) {
       return { e1, e2, e3, a1 };
     });
     await waitFrames(page, 2);
-    const combatShotPath = `${SHOTS_DIR}/enemy-contrast-portrait-combat.png`;
+    const combatShotPath = `${SHOTS_DIR}/enemy-rim-portrait.png`;
     const combatResult = await measureSceneAB(page, cdp, 'portrait-combat-3plus', combatShotPath, [8.0, 15.5]);
     assert.ok(
       combatResult.measuredCount >= 3,
@@ -552,7 +587,7 @@ async function runGateAttempt(attempt) {
       window.__test.spawnEnemyAt(1.35, 5.2, 200, 'ally'); // ~8.9m companion (ally cyan)
     });
     await waitFrames(page, 2);
-    const closeupShotPath = `${SHOTS_DIR}/enemy-contrast-8m-closeup.png`;
+    const closeupShotPath = `${SHOTS_DIR}/enemy-rim-8m.png`;
     const closeupResult = await measureSceneAB(page, cdp, 'portrait-8m-closeup', closeupShotPath, [7.5, 10.0]);
 
     assert.deepEqual(errors, [], `JS/console errors: ${errors.join('\n')}`);
@@ -561,6 +596,10 @@ async function runGateAttempt(attempt) {
       thresholds: {
         minDeltaLuma: MIN_DELTA_LUMA,
         minSilhouetteStd: MIN_SIL_STD,
+        maxSilP99Luma: MAX_SIL_P99_LUMA,
+        maxHotFrac: MAX_HOT_FRAC,
+        hotMaxRgb: HOT_MAX_RGB,
+        hotMinChroma: HOT_MIN_CHROMA,
         ringRadiusPx: RING_RADIUS_PX,
         maxNonEnemyMeanDiff: MAX_NON_ENEMY_MEAN_DIFF,
       },
