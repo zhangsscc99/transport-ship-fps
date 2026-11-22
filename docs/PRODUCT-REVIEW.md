@@ -152,3 +152,36 @@ fill 0.85 + camFill 后该区域从 luma≈5 升到可见灰阶，连通块 5896
 5. **公网源站仍旧**：`openfolio.uk/transport/` 还指向旧 bundle（需运维，非编码范畴）。
 6. **闸门在宿主高负载下会偶发崩浏览器**：本轮 landscape 第 1 次尝试 `Target page closed`（load 19–23，
    同时有 bbq / seer-observatory 两条车道在跑），脚本靠 retry 第 2 次通过。若继续并跑，建议闸门串行且错峰。
+
+## 2026-11-22 10:07 轮次（只做侦察，未开编码车道）
+
+**环境**：本轮开工时宿主机已被 web3A ×2、yunnan-bbq ×2 共 5 个 agy 进程占满（`vmstat` 15 次采样 88–94% us、
+1–2% idle、run queue 19–26），按用户「CPU 高就不并发」的既定规则**没有派编码车道**。浏览器探针能跑但极慢
+（页面初始化 85s，一次闸门 5.5min，第二次探针 120s 未完成 `window.__match` 初始化即超时）。
+
+### 实测发现（构建 069592b，光照校准后）
+
+1. **Boss 剪影闸门结构性失效（真 bug，不是抖动）**：`scripts/enemy-contrast.mjs` 的 natural-advance 在
+   Boss @ 8.59m 时断言 `non-enemy region too small (0.316)` 失败。原因是闸门的距离区间（8–15m）是按
+   2.5k tris 小机器人写的；4m Boss 在 8.6m 时投影包围盒 `x:-20.3…385.8 / y:127…588`，即**铺满整个
+   390×844 竖屏的 55%**，12px 外环几乎压不出有效对比区。→ 闸门需要按 Boss 体量改区间（建议 14–22m），
+   否则 Boss 阶段的剪影对比永远测不出来。
+2. **同帧 A/B 隐藏 Boss 后像素零变化**：`meanA=112.84 == meanB=112.84`、`changedBox=null`、
+   两张 debug 截图 md5 完全相同。要么 `BossController.setVisible()`（只设 `modelWrap.visible`）在新的
+   程序化模型上没落到渲染，要么 SwiftShader 在 90% CPU 占用下返回了陈旧合成帧。**本轮无法区分**，
+   必须在低负载下复跑一次才能定性——这条决定了 Boss 视觉能不能被机器验收。
+3. **视觉：Boss 皮肤读起来是「土黄/浅褐肉墙」**（390×844 @ 8.6m，见 `/tmp/debug-natural-advance-A.png`：
+   整屏被土黄色带暗红斑点的表面填满，无自发光橙红裂纹）。与用户 07:5x 确认的「暗红岩浆 + 自发光橙红
+   裂纹 + 外露骨肋」不符。**高度怀疑**是 10:09 刚合入的曝光校准（exposure 1.45 / 主光 4.8 / 画面均值 +37%）
+   把暗红岩浆皮肤洗白，但这只是假设——需要一张 15–20m 全景才能定性（本轮取不到）。
+4. **「竖屏倒计时 10s 后仍在屏上」已定性为误报**：`engine.pause()` 后帧循环停止 → `match.tick` 不再推进
+   → `lastNow` 冻结 → `match.countdownLeftMs` 恒 >0 → `menu.setCountdown()` 的数字 DOM 保留在暂停帧里。
+   真实对局 `setCountdown(null)` 会把 `visibility` 置 hidden，3s 后正常消失。若想让截图/评审干净，
+   可以在 `setPaused(true)` 分支里顺手 `menu.setCountdown(null)`（1 行，非必需）。
+
+### 下一轮唯一一件事（建议）
+
+低负载时先做「Boss 在最终画面里重新读得出来」：① 按 Boss 体量把 `enemy-contrast.mjs` 的探测区间改到
+14–22m 并让 A/B 隐藏真的生效（低负载下确认是 `setVisible` 失效还是陈旧帧）；② 用闸门数字把 Boss 的
+|Δluma| 拉到 ≥14、同时守住 `p99Luma ≤ 205` 与 `hotFrac ≤ 0.06`（即「洗白」不能靠堆亮度解决，要靠
+暗红底 + 更硬的自发光裂纹对比）。验收必须在低负载窗口跑，且连跑 2 次都过。
