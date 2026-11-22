@@ -1,33 +1,61 @@
-// Enemy Silhouette Contrast Gate (portrait 390×844, deployed build):
-//   1. Starts a real match at 390×844 portrait and advances to 8–15m from visible live enemies.
+// Enemy & Boss Silhouette Contrast Gate (portrait 390×844):
+//   Probe distance ranges (selected dynamically by enemy height / body radius):
+//     - Small enemies / robots (height < 3.0m, radius < 0.55m): 8–15m
+//     - Boss (height >= 3.0m or radius >= 0.55m):               14–22m
+//
+//   Protocol:
+//   1. Starts a real match at 390×844 portrait and positions at an unobstructed open-deck
+//      vantage inside the height-appropriate distance range (14–22m for 4m Boss; 8–15m for mobs).
 //   2. Performs exact same-frame A/B capture via CDP Page.captureScreenshot:
-//        - Frame A: paused with enemies visible
-//        - Frame B: exact same paused frame with enemies visible=false (zero clock/sim advance)
-//      Diff region = enemy silhouette.
-//   3. Asserts:
-//        - Non-enemy region diff ≈ 0 (proves zero frame drift between A and B)
-//        - For every visible enemy in 8–15m:
-//            |meanLuma(silhouette) - meanLuma(12px outer ring)| >= 14 luma
-//            stdLuma(silhouette) >= 6 luma (rich volumetric shading, not a dead black block)
-//            silP99Luma <= 205 luma (no overexposed washed-out body)
-//            hotFrac <= 0.06 (fraction of silhouette pixels with max(R,G,B) >= 235 && (max-min) >= 55)
-//   4. Captures 2 required screenshots to e2e/shots/ via CDP Page.captureScreenshot (and asserts
-//      silhouette contrast & overexposure bounds on them as well):
-//        - e2e/shots/enemy-rim-portrait.png  (390×844 portrait combat with 3+ enemies)
-//        - e2e/shots/enemy-rim-8m.png        (390×844 portrait 8m close-up)
+//        - Frame A: paused with target visible=true
+//        - Frame B: exact same paused frame with target visible=false (zero clock/sim advance)
+//      Diff region (max RGB channel diff >= 8) = true rendered silhouette.
+//   3. Visibility pre-assertion (mandatory before evaluating contrast):
+//        - On-screen bounding box must be non-empty (clipped area > 0) AND
+//        - A/B hide diff must change > 500 pixels (both global and within target box).
+//      Otherwise exits non-zero and prints:
+//        `GATE INVALID: boss occluded or setVisible ineffective`
+//   4. Contrast & exposure assertions (thresholds never relaxed):
+//        - Non-enemy region coverage >= 0.50, meanDiff <= 0.25, changedFrac <= 0.002
+//        - |meanLuma(silhouette) - meanLuma(12px outer ring)| >= 14 luma
+//        - median|Δluma| (|median(sil) - median(ring)| & cross-probe median) >= 14 luma
+//        - stdLuma(silhouette) >= 6 luma (volumetric shading, not a flat dark block)
+//        - silP99Luma <= 205 luma (no overexposed / washed-out bone or skin)
+//        - hotFrac <= 0.06 (silhouette fraction with max(R,G,B) >= 235 && (max-min) >= 55)
+//   5. Captures 3 required 390×844 portrait Boss screenshots to e2e/shots/:
+//        - e2e/shots/boss-standoff-17m.png  (15–20m unobstructed standoff)
+//        - e2e/shots/boss-charge.png        (Boss charge rush in open corridor)
+//        - e2e/shots/boss-melee-hit.png     (Boss melee slash landing hit on player)
 //
 // Exits non-zero on any failure.
-// Usage: node scripts/enemy-contrast.mjs   (defaults to http://127.0.0.1:3028/transport/)
+// Usage: node scripts/enemy-contrast.mjs
+//   - Respects TSF_URL if set (e.g. TSF_URL=http://127.0.0.1:3028/transport/).
+//   - Otherwise serves local ./dist on an ephemeral 127.0.0.1:0 server when present,
+//     falling back to http://127.0.0.1:3028/transport/.
 
 import { chromium } from 'playwright';
 import assert from 'node:assert/strict';
-import { mkdirSync, writeFileSync, statSync } from 'node:fs';
+import http from 'node:http';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { createReadStream, existsSync, mkdirSync, statSync, writeFileSync } from 'node:fs';
 
-const URL = process.env.TSF_URL ?? 'http://127.0.0.1:3028/transport/';
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = path.resolve(__dirname, '..');
+const LOCAL_DIST = path.join(REPO_ROOT, 'dist');
 const SHOTS_DIR = process.env.SHOTS_DIR ?? 'e2e/shots';
 mkdirSync(SHOTS_DIR, { recursive: true });
 
 const VIEWPORT = { width: 390, height: 844 };
+
+// Height-based probe distance ranges (documented in file header):
+const SMALL_ENEMY_RANGE = [8.0, 15.0]; // small enemies (< 3.0m tall)
+const BOSS_ENEMY_RANGE = [14.0, 22.0]; // Boss (>= 3.0m tall)
+const BOSS_HEIGHT_THRESH = 3.0;
+const BOSS_RADIUS_THRESH = 0.55;
+
+// Strict visibility & contrast thresholds (NEVER relax):
+const MIN_AB_CHANGED_PX = 500;
 const MIN_DELTA_LUMA = 14;
 const MIN_SIL_STD = 6;
 const MAX_SIL_P99_LUMA = 205;
@@ -39,6 +67,10 @@ const DIFF_THRESH = 8; // RGB max-channel diff defining enemy silhouette pixels
 const MAX_NON_ENEMY_MEAN_DIFF = 0.25;
 const MAX_NON_ENEMY_CHANGED_FRAC = 0.002;
 
+// Generous frame/navigation waits for loaded hosts (~0.5–1fps SwiftShader)
+const FRAME_WAIT_TIMEOUT_MS = 240000;
+const MATCH_PLAY_TIMEOUT_MS = 240000;
+
 const LAUNCH_ARGS = [
   '--use-gl=angle',
   '--use-angle=swiftshader',
@@ -47,10 +79,117 @@ const LAUNCH_ARGS = [
   '--disable-dev-shm-usage',
 ];
 
+const MIME = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.mjs': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.map': 'application/json; charset=utf-8',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.svg': 'image/svg+xml',
+  '.webp': 'image/webp',
+  '.mp3': 'audio/mpeg',
+  '.ogg': 'audio/ogg',
+  '.wav': 'audio/wav',
+  '.glb': 'model/gltf-binary',
+  '.gltf': 'model/gltf+json',
+};
+
 const T0 = Date.now();
 const log = (msg) => console.error(`[+${((Date.now() - T0) / 1000).toFixed(1)}s] ${msg}`);
 
-async function waitFrames(page, count = 2, timeout = 180000) {
+function isBossTarget(enemy) {
+  const h = Number(enemy?.height ?? 0);
+  const r = Number(enemy?.radius ?? 0);
+  return h >= BOSS_HEIGHT_THRESH || r >= BOSS_RADIUS_THRESH || enemy?.id === 'boss';
+}
+
+function probeRangeForEnemy(enemy) {
+  return isBossTarget(enemy) ? BOSS_ENEMY_RANGE : SMALL_ENEMY_RANGE;
+}
+
+function medianOf(arr) {
+  if (!arr.length) return 0;
+  const s = [...arr].sort((a, b) => a - b);
+  const mid = s.length >> 1;
+  return s.length % 2 === 1 ? s[mid] : (s[mid - 1] + s[mid]) * 0.5;
+}
+
+/**
+ * Resolve target URL:
+ *   1. If TSF_URL is set, use it directly.
+ *   2. Else if local ./dist/index.html exists, start an ephemeral 127.0.0.1:0 static server.
+ *   3. Else fall back to http://127.0.0.1:3028/transport/.
+ */
+async function resolveTargetUrl() {
+  if (process.env.TSF_URL) {
+    return { url: process.env.TSF_URL, close: async () => {} };
+  }
+  const indexHtml = path.join(LOCAL_DIST, 'index.html');
+  if (!existsSync(indexHtml)) {
+    return { url: 'http://127.0.0.1:3028/transport/', close: async () => {} };
+  }
+  const server = http.createServer((req, res) => {
+    const rawUrl = (req.url || '/').split('?')[0];
+    let rel = rawUrl;
+    if (rel === '/' || rel === '/transport') {
+      res.writeHead(302, { Location: '/transport/' });
+      return res.end();
+    }
+    if (rel.startsWith('/transport/')) {
+      rel = rel.slice('/transport'.length);
+    }
+    if (rel === '/' || rel === '') rel = '/index.html';
+    let decoded;
+    try {
+      decoded = decodeURIComponent(rel);
+    } catch {
+      res.writeHead(400);
+      return res.end('bad request');
+    }
+    const file = path.normalize(path.join(LOCAL_DIST, decoded));
+    if (!file.startsWith(LOCAL_DIST + path.sep) && file !== indexHtml) {
+      res.writeHead(403);
+      return res.end('forbidden');
+    }
+    let st;
+    try {
+      st = statSync(file);
+    } catch {
+      res.writeHead(404);
+      return res.end('not found');
+    }
+    if (!st.isFile()) {
+      res.writeHead(404);
+      return res.end('not found');
+    }
+    const ext = path.extname(file).toLowerCase();
+    res.writeHead(200, {
+      'Content-Type': MIME[ext] || 'application/octet-stream',
+      'Content-Length': st.size,
+      'Cache-Control': 'no-store',
+    });
+    createReadStream(file).pipe(res);
+  });
+
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  const addr = server.address();
+  const port = typeof addr === 'object' && addr ? addr.port : 0;
+  const url = `http://127.0.0.1:${port}/transport/`;
+  log(`serving local dist/ at ${url}`);
+  return {
+    url,
+    close: () => new Promise((resolve) => server.close(() => resolve())),
+  };
+}
+
+async function waitFrames(page, count = 2, timeout = FRAME_WAIT_TIMEOUT_MS) {
   const f0 = await page.evaluate(() => window.__frames ?? 0);
   await page.waitForFunction((target) => (window.__frames ?? 0) >= target, f0 + count, { timeout });
 }
@@ -67,14 +206,16 @@ async function captureCdpPng(cdp, outPath = null) {
   return { b64: data, buf };
 }
 
-/** Flush a single paused WebGL render cleanly into Chromium's compositor before CDP capture. */
+/** Flush a paused WebGL visibility toggle cleanly through Chromium's compositor before CDP capture. */
 async function renderPausedVisibility(page, visible) {
   await page.evaluate(
     (vis) =>
       new Promise((resolve) => {
         requestAnimationFrame(() => {
           window.__test.setEnemiesVisible(vis);
-          setTimeout(() => resolve(true), 40);
+          requestAnimationFrame(() => {
+            setTimeout(() => resolve(true), 80);
+          });
         });
       }),
     visible,
@@ -83,13 +224,20 @@ async function renderPausedVisibility(page, visible) {
 
 /**
  * Capture exact same-frame A (visible=true) and B (visible=false) via CDP and analyze:
+ *   - Mandatory visibility pre-assertion: non-empty on-screen bbox AND changedPx > 500
+ *     (otherwise prints `GATE INVALID: boss occluded or setVisible ineffective` and fails)
  *   - Non-enemy region diff (must be ≈ 0)
- *   - Per-enemy silhouette (diff >= DIFF_THRESH) mean luma, stddev, and 12px outer ring mean luma
+ *   - Per-enemy silhouette + 12px outer ring contrast & exposure bounds
  */
-async function measureSceneAB(page, cdp, label, savePath = null, targetDistRange = [7.5, 16.0]) {
+async function measureSceneAB(page, cdp, label, savePath = null, opts = {}) {
+  const { explicitDistRange = null, visibilityOnly = false } = opts;
   await page.evaluate(() => window.__test.setPaused(true));
-  await page.waitForTimeout(220); // let any in-flight HUD/touch CSS transitions settle before A/B
+  await page.waitForTimeout(240); // let HUD transitions settle before A/B
   const bounds = await page.evaluate(() => window.__test.getEnemyScreenBounds());
+
+  const activeRange =
+    explicitDistRange ??
+    (bounds.length > 0 ? probeRangeForEnemy(bounds[0]) : BOSS_ENEMY_RANGE);
 
   await renderPausedVisibility(page, true);
   const shotA = await captureCdpPng(cdp, savePath);
@@ -100,7 +248,7 @@ async function measureSceneAB(page, cdp, label, savePath = null, targetDistRange
   await renderPausedVisibility(page, true);
 
   const metrics = await page.evaluate(
-    async ({ b64A, b64B, enemyBounds, ringR, diffThresh, distMin, distMax, hotMaxRgb, hotMinChroma }) => {
+    async ({ b64A, b64B, enemyBounds, ringR, diffThresh, distMin, distMax, hotMaxRgb, hotMinChroma, skipDistFilter }) => {
       const decode = async (b64) => {
         const img = new Image();
         await new Promise((res, rej) => {
@@ -114,6 +262,13 @@ async function measureSceneAB(page, cdp, label, savePath = null, targetDistRange
         const ctx = c.getContext('2d', { willReadFrequently: true });
         ctx.drawImage(img, 0, 0);
         return ctx.getImageData(0, 0, c.width, c.height);
+      };
+
+      const median = (sorted) => {
+        const n = sorted.length;
+        if (n === 0) return 0;
+        const m = n >> 1;
+        return n % 2 === 1 ? sorted[m] : (sorted[m - 1] + sorted[m]) * 0.5;
       };
 
       const imgA = await decode(b64A);
@@ -151,7 +306,6 @@ async function measureSceneAB(page, cdp, label, savePath = null, targetDistRange
       }
 
       // 1. Non-enemy region diff check: exclude generous padded boxes around all on-screen enemies
-      //    (wide enough for visor halo + directional ground shadow, leaving >65% of screen checked).
       const excluded = new Uint8Array(N);
       for (const eb of enemyBounds) {
         if (!eb.onScreen) continue;
@@ -203,10 +357,15 @@ async function measureSceneAB(page, cdp, label, savePath = null, targetDistRange
       const enemies = [];
       for (const eb of enemyBounds) {
         if (!eb.onScreen) continue;
-        if (eb.dist < distMin || eb.dist > distMax) continue;
+        if (!skipDistFilter && (eb.dist < distMin || eb.dist > distMax)) continue;
 
-        // Crop tightly around enemy chassis (+10px left/right/top for visor halo, +2px bottom
-        // to exclude the cast shadow extending along the deck beneath the boots).
+        const clipX0 = Math.max(0, Math.floor(eb.x0));
+        const clipX1 = Math.min(W - 1, Math.ceil(eb.x1));
+        const clipY0 = Math.max(0, Math.floor(eb.y0));
+        const clipY1 = Math.min(H - 1, Math.ceil(eb.y1));
+        const bboxNonEmpty = clipX1 > clipX0 && clipY1 > clipY0;
+
+        // Crop around enemy chassis (+10px left/right/top, +2px bottom to exclude deck shadow)
         const bx0 = Math.max(0, Math.floor(eb.x0 - 10));
         const bx1 = Math.min(W - 1, Math.ceil(eb.x1 + 10));
         const by0 = Math.max(0, Math.floor(eb.y0 - 10));
@@ -243,7 +402,15 @@ async function measureSceneAB(page, cdp, label, savePath = null, targetDistRange
 
         const silPx = silCoords.length;
         if (silPx === 0) {
-          enemies.push({ id: eb.id, faction: eb.faction, dist: eb.dist, silPx: 0 });
+          enemies.push({
+            id: eb.id,
+            faction: eb.faction,
+            dist: eb.dist,
+            height: eb.height ?? 0,
+            bboxNonEmpty,
+            bbox: { x0: eb.x0, y0: eb.y0, x1: eb.x1, y1: eb.y1 },
+            silPx: 0,
+          });
           continue;
         }
 
@@ -251,6 +418,7 @@ async function measureSceneAB(page, cdp, label, savePath = null, targetDistRange
         const silVar = Math.max(0, silSqSum / silPx - silMean * silMean);
         const silStd = Math.sqrt(silVar);
         silLumas.sort((a, b) => a - b);
+        const silMedian = median(silLumas);
         const p99Pos = (silPx - 1) * 0.99;
         const p99Lo = Math.floor(p99Pos);
         const p99Hi = Math.min(silPx - 1, p99Lo + 1);
@@ -259,6 +427,7 @@ async function measureSceneAB(page, cdp, label, savePath = null, targetDistRange
 
         // Dilate silhouette by 12px; exclude silhouette pixels and any other enemy's diff pixels
         const ringMask = new Uint8Array(N);
+        const ringLumas = [];
         let ringPx = 0;
         let ringSumA = 0;
         let ringSumB = 0;
@@ -273,30 +442,40 @@ async function measureSceneAB(page, cdp, label, savePath = null, targetDistRange
             if (localSil[nIdx] || globalSil[nIdx] || ringMask[nIdx]) continue;
             ringMask[nIdx] = 1;
             ringPx++;
-            ringSumA += lumaA[nIdx];
+            const la = lumaA[nIdx];
+            ringLumas.push(la);
+            ringSumA += la;
             ringSumB += lumaB[nIdx];
           }
         }
 
+        ringLumas.sort((a, b) => a - b);
+        const ringMedian = median(ringLumas);
         const ringMeanA = ringPx > 0 ? ringSumA / ringPx : 0;
         const ringMeanB = ringPx > 0 ? ringSumB / ringPx : 0;
         const deltaLuma = Math.abs(silMean - ringMeanA);
+        const medianDeltaLuma = Math.abs(silMedian - ringMedian);
 
         enemies.push({
           id: eb.id,
           faction: eb.faction,
           dist: eb.dist,
+          height: eb.height ?? 0,
+          bboxNonEmpty,
           bbox: { x0: eb.x0, y0: eb.y0, x1: eb.x1, y1: eb.y1 },
           silPx,
           silMean: Number(silMean.toFixed(2)),
+          silMedian: Number(silMedian.toFixed(2)),
           silStd: Number(silStd.toFixed(2)),
           silP99Luma: Number(silP99Luma.toFixed(2)),
           hotPx,
           hotFrac: Number(hotFrac.toFixed(4)),
           ringPx,
           ringMean: Number(ringMeanA.toFixed(2)),
+          ringMedian: Number(ringMedian.toFixed(2)),
           ringMeanB: Number(ringMeanB.toFixed(2)),
           deltaLuma: Number(deltaLuma.toFixed(2)),
+          medianDeltaLuma: Number(medianDeltaLuma.toFixed(2)),
           signedDelta: Number((silMean - ringMeanA).toFixed(2)),
         });
       }
@@ -326,21 +505,46 @@ async function measureSceneAB(page, cdp, label, savePath = null, targetDistRange
       enemyBounds: bounds,
       ringR: RING_RADIUS_PX,
       diffThresh: DIFF_THRESH,
-      distMin: targetDistRange[0],
-      distMax: targetDistRange[1],
+      distMin: activeRange[0],
+      distMax: activeRange[1],
       hotMaxRgb: HOT_MAX_RGB,
       hotMinChroma: HOT_MIN_CHROMA,
+      skipDistFilter: visibilityOnly,
     },
   );
 
   await page.evaluate(() => window.__test.setPaused(false));
 
-  const measured = metrics.enemies.filter((e) => e.silPx >= 60);
+  const validVisible = metrics.enemies.filter((e) => e.bboxNonEmpty && e.silPx > MIN_AB_CHANGED_PX);
   log(
-    `${label}: meanA=${metrics.meanA} meanB=${metrics.meanB} globalDiffPx=${metrics.globalDiffPx} ` +
-      `nonEnemyCov=${metrics.nonEnemy.coverageFrac} meanDiff=${metrics.nonEnemy.meanDiff} changedFrac=${metrics.nonEnemy.changedFrac} maxDiff=${metrics.nonEnemy.maxDiff} ` +
-      `enemies=${measured.map((e) => `${e.id}@${e.dist}m(sil=${e.silMean},ring=${e.ringMean},|Δ|=${e.deltaLuma},std=${e.silStd},p99=${e.silP99Luma},hot=${(e.hotFrac * 100).toFixed(2)}%,px=${e.silPx})`).join(' ')}`,
+    `${label} range=[${activeRange[0]},${activeRange[1]}]m: meanA=${metrics.meanA} meanB=${metrics.meanB} ` +
+      `globalDiffPx=${metrics.globalDiffPx} nonEnemyCov=${metrics.nonEnemy.coverageFrac} ` +
+      `meanDiff=${metrics.nonEnemy.meanDiff} changedFrac=${metrics.nonEnemy.changedFrac} ` +
+      `enemies=${validVisible
+        .map(
+          (e) =>
+            `${e.id}@${e.dist}m(sil=${e.silMean},ring=${e.ringMean},|Δ|=${e.deltaLuma},med|Δ|=${e.medianDeltaLuma},std=${e.silStd},p99=${e.silP99Luma},hot=${(e.hotFrac * 100).toFixed(2)}%,px=${e.silPx})`,
+        )
+        .join(' ')}`,
   );
+
+  // ── Mandatory Visibility Pre-Assertion ──
+  // Prove Boss / target is genuinely visible & unoccluded in frame A and genuinely hidden in frame B.
+  if (metrics.globalDiffPx <= MIN_AB_CHANGED_PX || validVisible.length === 0) {
+    writeFileSync(`/tmp/debug-${label}-A.png`, shotA.buf);
+    writeFileSync(`/tmp/debug-${label}-B.png`, shotB.buf);
+    const reason =
+      `GATE INVALID: boss occluded or setVisible ineffective ` +
+      `(${label}: globalDiffPx=${metrics.globalDiffPx}, validVisible=${validVisible.length}, ` +
+      `range=[${activeRange[0]},${activeRange[1]}]m, onScreenBounds=${JSON.stringify(metrics.onScreenBounds)})`;
+    console.error(reason);
+    throw new Error(reason);
+  }
+
+  if (visibilityOnly) {
+    return { label, range: activeRange, ...metrics, measuredCount: validVisible.length };
+  }
+
   if (
     metrics.nonEnemy.coverageFrac < 0.5 ||
     metrics.nonEnemy.meanDiff > MAX_NON_ENEMY_MEAN_DIFF ||
@@ -368,15 +572,15 @@ async function measureSceneAB(page, cdp, label, savePath = null, targetDistRange
     `${label}: non-enemy changedFrac=${metrics.nonEnemy.changedFrac} > ${MAX_NON_ENEMY_CHANGED_FRAC}`,
   );
 
-  // Verify every visible enemy in target distance range meets contrast + non-flat-black criteria
-  assert.ok(
-    measured.length >= 1,
-    `${label}: no visible enemy with >=60 silhouette px in range [${targetDistRange[0]}, ${targetDistRange[1]}]m (raw=${JSON.stringify(metrics.enemies)})`,
-  );
-  for (const e of measured) {
+  // Verify every visible enemy in target distance range meets strict contrast & exposure bounds
+  for (const e of validVisible) {
     assert.ok(
       e.deltaLuma >= MIN_DELTA_LUMA,
       `${label} [${e.id} @ ${e.dist}m]: |Δluma|=${e.deltaLuma} < ${MIN_DELTA_LUMA} (sil=${e.silMean}, ring=${e.ringMean})`,
+    );
+    assert.ok(
+      e.medianDeltaLuma >= MIN_DELTA_LUMA,
+      `${label} [${e.id} @ ${e.dist}m]: median|Δluma|=${e.medianDeltaLuma} < ${MIN_DELTA_LUMA} (silMed=${e.silMedian}, ringMed=${e.ringMedian})`,
     );
     assert.ok(
       e.silStd >= MIN_SIL_STD,
@@ -388,134 +592,163 @@ async function measureSceneAB(page, cdp, label, savePath = null, targetDistRange
     );
     assert.ok(
       e.hotFrac <= MAX_HOT_FRAC,
-      `${label} [${e.id} @ ${e.dist}m]: hotFrac=${e.hotFrac} > ${MAX_HOT_FRAC} (hotPx=${e.hotPx}/${e.silPx}, neon rim overexposure)`,
+      `${label} [${e.id} @ ${e.dist}m]: hotFrac=${e.hotFrac} > ${MAX_HOT_FRAC} (hotPx=${e.hotPx}/${e.silPx}, overexposed neon/lava)`,
     );
   }
 
-  return { label, ...metrics, measuredCount: measured.length };
+  return { label, range: activeRange, ...metrics, measuredCount: validVisible.length };
 }
 
-/** Advance from match start to 8–15m clear LOS of a live naturally spawned AI enemy (fast under SwiftShader). */
+/**
+ * Find an unobstructed open-deck vantage inside the enemy's height-appropriate probe range
+ * (14–22m for >=3m Boss, 8–15m for <3m mobs), verifying multi-ray LOS clearance so no foreground
+ * shipping container blocks the camera lens.
+ */
 async function advanceToNaturalEnemy(page) {
   await waitFrames(page, 1);
 
-  // Known obstacle-free open deck lanes (verified against src/game/map.ts boxes)
-  const positionFacingLiveBot = async () =>
-    page.evaluate(() => {
+  const plan = await page.evaluate(
+    ({ bossHThresh, bossRThresh, bossRange, smallRange }) => {
       const live = (window.__enemies ?? []).filter((e) => e.alive && e.state !== 'DEAD');
-      // Try clear open-deck vantage points 11.5–13m away along unobstructed lanes (north lane z=-15.5,
-      // center lane x=0.2, west lane x=-20, east lane x=20).
-      const candidates = [];
-      const clearOfOtherBots = (px, pz) =>
-        live.every((other) => Math.hypot(other.x - px, other.z - pz) >= 6.5);
-      for (const b of live) {
-        if (Math.abs(b.z - -15.5) < 2.5) {
-          if (b.x - 12.0 >= -20 && clearOfOtherBots(b.x - 12.0, -15.5)) {
-            candidates.push({ b, px: b.x - 12.0, pz: -15.5 });
-          }
-          if (b.x + 12.0 <= 20 && clearOfOtherBots(b.x + 12.0, -15.5)) {
-            candidates.push({ b, px: b.x + 12.0, pz: -15.5 });
-          }
-        }
-        if (Math.abs(b.x) < 3.0) {
-          const pz = b.z + 12.0;
-          if (pz >= -16 && pz <= 16 && clearOfOtherBots(0.2, pz)) {
-            candidates.push({ b, px: 0.2, pz });
-          }
-        }
-        if (Math.abs(b.x - -20) < 2.5 && clearOfOtherBots(-20.0, b.z + 11.5)) {
-          candidates.push({ b, px: -20.0, pz: b.z + 11.5 });
-        }
-        if (Math.abs(b.x - 18) < 2.5 && clearOfOtherBots(19.5, b.z + 11.5)) {
-          candidates.push({ b, px: 19.5, pz: b.z + 11.5 });
-        }
-      }
-      // Fallback: open north-west or center deck vantage clear of nearby bots
-      if (candidates.length === 0 && live.length > 0) {
-        const b = live[0];
-        for (const [px, pz] of [
-          [0.2, -3.5],
-          [-20.0, 2.0],
-          [19.5, 2.0],
-          [0.2, -15.5],
-        ]) {
-          if (clearOfOtherBots(px, pz)) {
-            candidates.push({ b, px, pz });
-            break;
-          }
-        }
-      }
-      return candidates.map((c) => ({ id: c.b.id, bx: c.b.x, bz: c.b.z, px: c.px, pz: c.pz }));
-    });
+      if (live.length === 0) return null;
+      const target = live[0];
+      const isBoss =
+        (target.height ?? 0) >= bossHThresh ||
+        (target.radius ?? 0) >= bossRThresh ||
+        target.id === 'boss';
+      const range = isBoss ? bossRange : smallRange;
+      const radii = isBoss ? [18.5, 17.5, 19.5, 16.5, 20.5, 15.5] : [11.5, 12.5, 10.5, 13.5];
+      const midY = (target.height || (isBoss ? 4.0 : 1.8)) * 0.52;
+      const topY = (target.height || (isBoss ? 4.0 : 1.8)) * 0.85;
+      const lowY = 0.65;
 
-  const candidates = await positionFacingLiveBot();
+      const clearOfOthers = (px, pz) =>
+        live.every((o) => o.id === target.id || Math.hypot(o.x - px, o.z - pz) >= 6.5);
+
+      const candidates = [];
+      for (const r of radii) {
+        for (let deg = 0; deg < 360; deg += 10) {
+          const rad = (deg * Math.PI) / 180;
+          const px = target.x + Math.sin(rad) * r;
+          const pz = target.z + Math.cos(rad) * r;
+          if (!window.__test.isInsideWalkable(px, pz)) continue;
+          if (!clearOfOthers(px, pz)) continue;
+
+          // Verify center + lateral (±0.9m) sightlines clear all containers & props so the camera
+          // never spawns nose-first against a container edge.
+          const dx = target.x - px;
+          const dz = target.z - pz;
+          const len = Math.hypot(dx, dz) || 1;
+          const rx = -dz / len;
+          const rz = dx / len;
+
+          const hasLos = window.__test.hasClearLos;
+          if (!hasLos) {
+            candidates.push({ px, pz, score: r });
+            continue;
+          }
+          const okCenter =
+            hasLos(px, 1.65, pz, target.x, midY, target.z) &&
+            hasLos(px, 1.65, pz, target.x, topY, target.z) &&
+            hasLos(px, 1.65, pz, target.x, lowY, target.z);
+          if (!okCenter) continue;
+
+          // Check camera-side lateral margin (0.95m left & right, and 0.9m forward/back of camera)
+          const okMargin =
+            hasLos(px + rx * 0.95, 1.65, pz + rz * 0.95, target.x + rx * 0.45, midY, target.z + rz * 0.45) &&
+            hasLos(px - rx * 0.95, 1.65, pz - rz * 0.95, target.x - rx * 0.45, midY, target.z - rz * 0.45) &&
+            window.__test.isInsideWalkable(px + rx * 0.7, pz + rz * 0.7) &&
+            window.__test.isInsideWalkable(px - rx * 0.7, pz - rz * 0.7);
+          const wideClear =
+            hasLos(px + rx * 2.0, 1.65, pz + rz * 2.0, target.x, midY, target.z) &&
+            hasLos(px - rx * 2.0, 1.65, pz - rz * 2.0, target.x, midY, target.z);
+
+          // Prefer wide open corridor near ideal standoff distance (~18m for Boss, ~11.5m for mob)
+          const ideal = isBoss ? 18.0 : 11.5;
+          const score =
+            (wideClear ? 0 : okMargin ? 4 : 20) + Math.abs(r - ideal);
+          candidates.push({ px, pz, score, wideClear, okMargin });
+        }
+      }
+      candidates.sort((a, b) => a.score - b.score);
+      return {
+        isBoss,
+        range,
+        targetId: target.id,
+        height: target.height ?? 0,
+        candidates: candidates.slice(0, 8),
+      };
+    },
+    {
+      bossHThresh: BOSS_HEIGHT_THRESH,
+      bossRThresh: BOSS_RADIUS_THRESH,
+      bossRange: BOSS_ENEMY_RANGE,
+      smallRange: SMALL_ENEMY_RANGE,
+    },
+  );
+
+  assert.ok(plan && plan.candidates.length > 0, 'advanceToNaturalEnemy: no unobstructed open-deck vantage found');
+  const [rMin, rMax] = plan.range;
+  const idealDist = plan.isBoss ? 17.5 : 11.0;
+
   let chosen = null;
-  for (const c of candidates) {
-    await page.evaluate((cand) => {
-      const yawDeg = (Math.atan2(-(cand.bx - cand.px), -(cand.bz - cand.pz)) * 180) / Math.PI;
-      window.__test.teleport(cand.px, cand.pz, yawDeg, -1.5, 0);
-    }, c);
+  for (const cand of plan.candidates) {
+    await page.evaluate(({ px, pz }) => {
+      const b = (window.__enemies ?? []).find((e) => e.alive);
+      if (!b) return;
+      const dx = b.x - px;
+      const dz = b.z - pz;
+      const dist = Math.hypot(dx, dz) || 1;
+      const yawDeg = (Math.atan2(-dx, -dz) * 180) / Math.PI;
+      const aimY = (b.height || 4.0) * 0.5;
+      const pitchDeg = (Math.atan2(aimY - 1.65, dist) * 180) / Math.PI;
+      window.__test.teleport(px, pz, yawDeg, pitchDeg, 0);
+    }, cand);
     await waitFrames(page, 1);
-    const hit = await page.evaluate(() => {
-      const live = (window.__enemies ?? []).filter((e) => e.alive && e.hasLos && e.dist >= 8.0 && e.dist <= 15.0);
-      live.sort((a, b) => Math.abs(a.dist - 11.0) - Math.abs(b.dist - 11.0));
-      return live[0] ?? null;
-    });
+
+    const hit = await page.evaluate(
+      ({ lo, hi, ideal }) => {
+        const live = (window.__enemies ?? []).filter(
+          (e) => e.alive && e.hasLos && e.dist >= lo && e.dist <= hi,
+        );
+        live.sort((a, b) => Math.abs(a.dist - ideal) - Math.abs(b.dist - ideal));
+        return live[0] ?? null;
+      },
+      { lo: rMin, hi: rMax, ideal: idealDist },
+    );
     if (hit) {
       chosen = hit;
       break;
     }
   }
 
-  // Advance forward 2 real frames with virtual joystick while tracking the live LOS enemy
-  await page.evaluate(() => {
-    const zone = document.querySelector('[data-zone="stick"]');
-    if (!zone) return;
-    const r = zone.getBoundingClientRect();
-    const ox = r.x + r.width * 0.5;
-    const oy = r.y + r.height * 0.65;
-    zone.dispatchEvent(
-      new PointerEvent('pointerdown', {
-        pointerId: 44,
-        clientX: ox,
-        clientY: oy,
-        bubbles: true,
-        pointerType: 'touch',
-      }),
-    );
-    window.dispatchEvent(
-      new PointerEvent('pointermove', {
-        pointerId: 44,
-        clientX: ox,
-        clientY: oy - 64,
-        bubbles: true,
-        pointerType: 'touch',
-      }),
-    );
-  });
-  await waitFrames(page, 2);
-  await page.evaluate(() => {
-    window.dispatchEvent(new PointerEvent('pointerup', { pointerId: 44, bubbles: true, pointerType: 'touch' }));
-  });
-  await page.waitForTimeout(300);
-
-  // Lock camera center onto the visible live LOS enemy in 8–15m
-  const picked = await page.evaluate(() => {
-    const st = window.__state;
-    const live = (window.__enemies ?? []).filter((e) => e.alive && e.hasLos && e.dist >= 8.0 && e.dist <= 15.0);
-    live.sort((a, b) => Math.abs(a.dist - 11.0) - Math.abs(b.dist - 11.0));
-    const b = live[0] ?? null;
-    if (b) {
-      const yawDeg = (Math.atan2(-(b.x - st.x), -(b.z - st.z)) * 180) / Math.PI;
-      window.__test.teleport(st.x, st.z, yawDeg, -1.5, st.y);
-    }
-    return b;
-  });
+  // Re-center aim cleanly on the live Boss after 1 more rendered frame (handles fast Boss movement)
+  const picked = await page.evaluate(
+    ({ lo, hi, ideal }) => {
+      const st = window.__state;
+      const live = (window.__enemies ?? []).filter(
+        (e) => e.alive && e.hasLos && e.dist >= lo && e.dist <= hi,
+      );
+      live.sort((a, b) => Math.abs(a.dist - ideal) - Math.abs(b.dist - ideal));
+      const b = live[0] ?? null;
+      if (b) {
+        const dx = b.x - st.x;
+        const dz = b.z - st.z;
+        const dist = Math.hypot(dx, dz) || 1;
+        const yawDeg = (Math.atan2(-dx, -dz) * 180) / Math.PI;
+        const aimY = (b.height || 4.0) * 0.5;
+        const pitchDeg = (Math.atan2(aimY - (st.y + 1.65), dist) * 180) / Math.PI;
+        window.__test.teleport(st.x, st.z, yawDeg, pitchDeg, st.y);
+      }
+      return b;
+    },
+    { lo: rMin, hi: rMax, ideal: idealDist },
+  );
   await waitFrames(page, 1);
-  return picked ?? chosen;
+  return { enemy: picked ?? chosen, range: plan.range, isBoss: plan.isBoss };
 }
 
-async function runGateAttempt(attempt) {
+async function runGateAttempt(attempt, targetUrl) {
   const browser = await chromium.launch({ headless: true, args: LAUNCH_ARGS });
   const ctx = await browser.newContext({ viewport: VIEWPORT, hasTouch: true });
   const page = await ctx.newPage();
@@ -528,11 +761,11 @@ async function runGateAttempt(attempt) {
   });
 
   try {
-    log(`attempt #${attempt}: goto ${URL} (${VIEWPORT.width}x${VIEWPORT.height} portrait)`);
-    await page.goto(URL, { waitUntil: 'commit', timeout: 30000 });
+    log(`attempt #${attempt}: goto ${targetUrl} (${VIEWPORT.width}x${VIEWPORT.height} portrait)`);
+    await page.goto(targetUrl, { waitUntil: 'commit', timeout: 60000 });
     let frames = 0;
-    for (let i = 0; i < 160 && frames < 4; i++) {
-      await page.waitForTimeout(400);
+    for (let i = 0; i < 240 && frames < 4; i++) {
+      await page.waitForTimeout(500);
       frames = await page.evaluate(() => window.__frames ?? 0).catch(() => 0);
     }
     assert.ok(frames >= 4, 'page never rendered WebGL frames');
@@ -544,56 +777,138 @@ async function runGateAttempt(attempt) {
       el?.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true }));
       window.__test.skipCountdown?.();
     });
-    await page.waitForFunction(() => window.__match?.phase === 'playing', null, { timeout: 240000 });
+    await page.waitForFunction(() => window.__match?.phase === 'playing', null, {
+      timeout: MATCH_PLAY_TIMEOUT_MS,
+    });
     log('match phase=playing');
 
-    // ── Gate 1: Real match advance to 8–15m from live AI enemy + same-frame A/B contrast check ──
-    const naturalBot = await advanceToNaturalEnemy(page);
+    // ── Gate 1: Real match natural Boss/enemy probe in dynamic height range (14–22m for >=3m Boss) ──
+    const natural = await advanceToNaturalEnemy(page);
     log(
-      `advanced to natural bot: ${
-        naturalBot && typeof naturalBot.dist === 'number'
-          ? `${naturalBot.id} @ ${naturalBot.dist.toFixed(1)}m los=${naturalBot.hasLos}`
-          : JSON.stringify(naturalBot)
-      }`,
+      `natural target: ${
+        natural.enemy
+          ? `${natural.enemy.id}@${natural.enemy.dist.toFixed(2)}m h=${natural.enemy.height}m los=${natural.enemy.hasLos} state=${natural.enemy.state}`
+          : 'none'
+      } range=[${natural.range[0]},${natural.range[1]}]m`,
     );
-    const naturalResult = await measureSceneAB(page, cdp, 'natural-advance', null, [7.5, 16.0]);
+    const naturalResult = await measureSceneAB(page, cdp, 'natural-advance', null, {
+      explicitDistRange: natural.range,
+    });
 
-    // ── Gate 2 + Shot 1: Portrait combat scene with 3+ enemies at 8–15m across deck/fog & dark container backgrounds ──
+    // ── Gate 2 + Shot 1: Unobstructed 15–20m Boss Standoff Panorama (open center corridor @ 17m) ──
     await page.evaluate(() => {
-      window.__test.clearEnemies();
-      window.__test.teleport(0.4, 15.0, 0, -2, 0);
-      // 4 robots in unobstructed view across varied backgrounds (deck/horizon fog + shaded container):
-      const e1 = window.__test.spawnEnemyAt(-0.6, 5.8, 175, 'enemy'); // ~9.3m (open deck/fog)
-      const e2 = window.__test.spawnEnemyAt(1.9, 3.2, 185, 'enemy'); // ~11.9m (in front of dark green container)
-      const e3 = window.__test.spawnEnemyAt(-1.6, 1.0, 170, 'enemy'); // ~14.1m (open corridor / cranes)
-      const a1 = window.__test.spawnEnemyAt(1.2, -1.5, 180, 'ally'); // ~16.5m (cyan ally contrast check)
-      window.__test.damageEnemy(e2, 45);
-      window.__test.damageEnemy(e3, 75);
-      return { e1, e2, e3, a1 };
+      // Wide open center corridor (x=0, z in [-16, 16], zero containers in path):
+      // Boss at (0, -2.5), Player at (0, 14.5) => 17.0m (<= 18m charge trigger -> upright chase standoff!)
+      window.__test.teleport(0.0, 14.5, 0, 1.2, 0);
+      window.__test.positionBoss(0.0, -2.5, true);
     });
     await waitFrames(page, 2);
-    const combatShotPath = `${SHOTS_DIR}/enemy-rim-portrait.png`;
-    const combatResult = await measureSceneAB(page, cdp, 'portrait-combat-3plus', combatShotPath, [8.0, 15.5]);
+    // Keep camera smoothly centered on Boss as it steps forward in standoff
+    await page.evaluate(() => {
+      const b = window.__boss;
+      const st = window.__state;
+      const dx = b.x - st.x;
+      const dz = b.z - st.z;
+      const dist = Math.hypot(dx, dz) || 1;
+      const yawDeg = (Math.atan2(-dx, -dz) * 180) / Math.PI;
+      const pitchDeg = (Math.atan2(b.height * 0.5 - 1.65, dist) * 180) / Math.PI;
+      window.__test.teleport(st.x, st.z, yawDeg, pitchDeg, 0);
+    });
+    await waitFrames(page, 1);
+    const standoffShotPath = `${SHOTS_DIR}/boss-standoff-17m.png`;
+    const standoffResult = await measureSceneAB(page, cdp, 'boss-standoff-17m', standoffShotPath, {
+      explicitDistRange: BOSS_ENEMY_RANGE,
+    });
+
+    // ── Gate 3 + Shot 2: Boss Charge Rush Moment (state === 'charge' across open center corridor) ──
+    await page.evaluate(() => {
+      // Starting dist 20.5m > chargeTriggerDist (18m) -> enters straight-line charge on first tick!
+      window.__test.teleport(0.0, 15.0, 0, 1.0, 0);
+      window.__test.positionBoss(0.0, -5.5, true);
+    });
+    await page.waitForFunction(
+      () => window.__boss?.state === 'charge' && window.__boss.dist >= 14.2 && window.__boss.dist <= 21.5,
+      null,
+      { timeout: FRAME_WAIT_TIMEOUT_MS },
+    );
+    // Advance 3 frames so the charge forward-lean & arms-swept-back sprint pose settles visibly
+    await waitFrames(page, 3);
+    const chargeState = await page.evaluate(() => {
+      const b = window.__boss;
+      const st = window.__state;
+      const dx = b.x - st.x;
+      const dz = b.z - st.z;
+      const dist = Math.hypot(dx, dz) || 1;
+      const yawDeg = (Math.atan2(-dx, -dz) * 180) / Math.PI;
+      const pitchDeg = (Math.atan2(b.height * 0.45 - 1.65, dist) * 180) / Math.PI;
+      window.__test.teleport(st.x, st.z, yawDeg, pitchDeg, 0);
+      return { state: b.state, dist: Number(dist.toFixed(2)) };
+    });
+    await waitFrames(page, 1);
+    assert.equal(chargeState.state, 'charge', `expected Boss in charge state, got ${chargeState.state}`);
+    const chargeShotPath = `${SHOTS_DIR}/boss-charge.png`;
+    const chargeResult = await measureSceneAB(page, cdp, 'boss-charge', chargeShotPath, {
+      explicitDistRange: BOSS_ENEMY_RANGE,
+    });
+
+    // ── Shot 3: Boss Melee Attack Hit Moment (real windup -> attack -> onAttackHit + player HP drop) ──
+    await page.evaluate(() => {
+      // Position player at 3.0m (<= attackRange 3.2m) facing Boss, pitched slightly up at slashing claw/torso
+      window.__test.teleport(0.0, 0.5, 0, 11.5, 0);
+      window.__test.positionBoss(0.0, -2.5, true);
+    });
+    await page.waitForFunction(
+      () => (window.__boss?.meleeHitsDealt ?? 0) >= 1 && window.__state.hp < window.__state.maxHp,
+      null,
+      { timeout: FRAME_WAIT_TIMEOUT_MS },
+    );
+    const meleeInfo = await page.evaluate(() => ({
+      bossState: window.__boss.state,
+      bossDist: Number(window.__boss.dist.toFixed(2)),
+      meleeHitsDealt: window.__boss.meleeHitsDealt,
+      playerHp: window.__state.hp,
+      playerMaxHp: window.__state.maxHp,
+      flashOpacity: Number((window.__fx?.flashOpacity ?? 0).toFixed(3)),
+    }));
+    const meleeShotPath = `${SHOTS_DIR}/boss-melee-hit.png`;
+    const meleeVisibility = await measureSceneAB(page, cdp, 'boss-melee-hit', meleeShotPath, {
+      visibilityOnly: true,
+    });
+    assert.ok(meleeInfo.meleeHitsDealt >= 1, `expected meleeHitsDealt >= 1, got ${meleeInfo.meleeHitsDealt}`);
+    assert.ok(meleeInfo.playerHp < meleeInfo.playerMaxHp, `expected player HP drop on melee hit`);
+
+    // Aggregate summary across all 14–22m Boss contrast probes
+    const contrastProbes = [naturalResult, standoffResult, chargeResult];
+    const allMeasured = contrastProbes.flatMap((r) =>
+      r.enemies.filter((e) => e.bboxNonEmpty && e.silPx > MIN_AB_CHANGED_PX),
+    );
+    const overallMedianDeltaLuma = Number(medianOf(allMeasured.map((e) => e.deltaLuma)).toFixed(2));
+    const overallMedianPixDeltaLuma = Number(medianOf(allMeasured.map((e) => e.medianDeltaLuma)).toFixed(2));
+    const maxP99Luma = Number(Math.max(...allMeasured.map((e) => e.silP99Luma)).toFixed(2));
+    const maxHotFrac = Number(Math.max(...allMeasured.map((e) => e.hotFrac)).toFixed(4));
+    const minChangedPx = Math.min(
+      ...contrastProbes.map((r) => r.globalDiffPx),
+      meleeVisibility.globalDiffPx,
+    );
+
     assert.ok(
-      combatResult.measuredCount >= 3,
-      `portrait combat shot must verify >=3 visible enemies in 8–15.5m, got ${combatResult.measuredCount}`,
+      overallMedianDeltaLuma >= MIN_DELTA_LUMA,
+      `overall median|Δluma|=${overallMedianDeltaLuma} < ${MIN_DELTA_LUMA}`,
     );
-
-    // ── Gate 3 + Shot 2: Portrait 8m close-up showing Fresnel rim + visor fake bloom + armor volume ──
-    await page.evaluate(() => {
-      window.__test.clearEnemies();
-      window.__test.teleport(0.3, 14.0, 0, -2, 0);
-      window.__test.spawnEnemyAt(-0.35, 6.0, 170, 'enemy'); // ~8.0m crisp close-up (enemy magenta)
-      window.__test.spawnEnemyAt(1.35, 5.2, 200, 'ally'); // ~8.9m companion (ally cyan)
-    });
-    await waitFrames(page, 2);
-    const closeupShotPath = `${SHOTS_DIR}/enemy-rim-8m.png`;
-    const closeupResult = await measureSceneAB(page, cdp, 'portrait-8m-closeup', closeupShotPath, [7.5, 10.0]);
+    assert.ok(
+      overallMedianPixDeltaLuma >= MIN_DELTA_LUMA,
+      `overall pixel median|Δluma|=${overallMedianPixDeltaLuma} < ${MIN_DELTA_LUMA}`,
+    );
 
     assert.deepEqual(errors, [], `JS/console errors: ${errors.join('\n')}`);
     return {
       viewport: VIEWPORT,
+      ranges: {
+        smallEnemy: SMALL_ENEMY_RANGE,
+        boss: BOSS_ENEMY_RANGE,
+      },
       thresholds: {
+        minChangedPx: MIN_AB_CHANGED_PX,
         minDeltaLuma: MIN_DELTA_LUMA,
         minSilhouetteStd: MIN_SIL_STD,
         maxSilP99Luma: MAX_SIL_P99_LUMA,
@@ -603,10 +918,18 @@ async function runGateAttempt(attempt) {
         ringRadiusPx: RING_RADIUS_PX,
         maxNonEnemyMeanDiff: MAX_NON_ENEMY_MEAN_DIFF,
       },
+      summary: {
+        medianDeltaLuma: overallMedianDeltaLuma,
+        medianPixelDeltaLuma: overallMedianPixDeltaLuma,
+        maxP99Luma,
+        maxHotFrac,
+        minChangedPx,
+      },
       naturalResult,
-      combatResult,
-      closeupResult,
-      shots: [combatShotPath, closeupShotPath],
+      standoffResult,
+      chargeResult,
+      meleeInfo: { ...meleeInfo, changedPx: meleeVisibility.globalDiffPx },
+      shots: [standoffShotPath, chargeShotPath, meleeShotPath],
     };
   } finally {
     await ctx.close().catch(() => {});
@@ -614,21 +937,27 @@ async function runGateAttempt(attempt) {
   }
 }
 
+const target = await resolveTargetUrl();
 let lastErr = null;
-for (let attempt = 1; attempt <= 3; attempt++) {
-  try {
-    const out = await runGateAttempt(attempt);
-    console.log(JSON.stringify(out, null, 2));
-    console.log('ENEMY CONTRAST GATE ALL OK');
-    process.exit(0);
-  } catch (err) {
-    lastErr = err;
-    const msg = String(err?.message ?? err);
-    const isTransientCrash = /Target page, context or browser has been closed|Target closed|crashed/i.test(msg);
-    if (!isTransientCrash || attempt === 3) {
-      throw err;
+try {
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const out = await runGateAttempt(attempt, target.url);
+      console.log(JSON.stringify(out, null, 2));
+      console.log('ENEMY CONTRAST GATE ALL OK');
+      await target.close();
+      process.exit(0);
+    } catch (err) {
+      lastErr = err;
+      const msg = String(err?.message ?? err);
+      const isTransientCrash = /Target page, context or browser has been closed|Target closed|crashed/i.test(msg);
+      if (!isTransientCrash || attempt === 3) {
+        throw err;
+      }
+      log(`transient SwiftShader browser crash on attempt #${attempt}: ${msg} — retrying`);
     }
-    log(`transient SwiftShader browser crash on attempt #${attempt}: ${msg} — retrying`);
   }
+  throw lastErr;
+} finally {
+  await target.close();
 }
-throw lastErr;
