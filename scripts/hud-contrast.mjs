@@ -21,8 +21,10 @@ const URL = process.env.TSF_URL ?? 'http://127.0.0.1:3028/transport/';
 const OUT = process.env.OUT ?? 'e2e/shots';
 const SHOT_TIMEOUT = 150000;
 const ACTION_BTNS = ['fire', 'reload', 'swap', 'jump', 'crouch'];
+const ALL_HUD_BTNS = ['fire', 'reload', 'swap', 'jump', 'crouch', 'mute'];
 const SECONDARY_BTNS = ['reload', 'swap', 'jump', 'crouch'];
 const STICK_R = 56;
+const ACCENT_RGB = 'rgb(255, 70, 85)';
 
 // Recorded pre-F217 landscape rifle viewmodel baseline (docs/HUD-BASELINE.md,
 // rest midpoint across the ±1.5px idle breathe/sway cycle)
@@ -33,6 +35,15 @@ const LANDSCAPE_BTN_BASELINE = {
   swap: { x: 712, y: 254, w: 48, h: 48 },
   jump: { x: 770, y: 248, w: 48, h: 48 },
   crouch: { x: 772, y: 196, w: 44, h: 44 },
+};
+const LANDSCAPE_MUTE_BASELINE = { x: 788, y: 12, w: 44, h: 44 };
+const PORTRAIT_BTN_BASELINE = {
+  fire: { x: 290, y: 744, w: 76, h: 76 },
+  reload: { x: 16, y: 590, w: 52, h: 52 },
+  swap: { x: 16, y: 530, w: 52, h: 52 },
+  jump: { x: 76, y: 590, w: 52, h: 52 },
+  crouch: { x: 76, y: 530, w: 52, h: 52 },
+  mute: { x: 334, y: 12, w: 44, h: 44 },
 };
 
 const LAUNCH_ARGS = [
@@ -177,6 +188,31 @@ async function runViewport(vp) {
       const contrast = await analyzeContrast(page, pngOn.toString('base64'), pngOff.toString('base64'), specs);
       log(`contrast analyzed`);
 
+      // 2b. F218 static telemetry on the clean resting frame (before live action shot)
+      const f218Static = await page.evaluate((allIds) => {
+        const states = {};
+        const labelPad = {};
+        for (const id of allIds) {
+          states[id] = typeof window.__hudBtnState === 'function' ? window.__hudBtnState(id) : null;
+          const el =
+            document.querySelector(`#touch-ui [data-btn="${id}"]`) ??
+            document.querySelector(`[data-btn="${id}"]`);
+          if (!el) continue;
+          const lbl = el.querySelector('[data-role="label"]');
+          if (lbl) {
+            const br = el.getBoundingClientRect();
+            const lr = lbl.getBoundingClientRect();
+            labelPad[id] = {
+              left: Number((lr.left - br.left).toFixed(2)),
+              right: Number((br.right - lr.right).toFixed(2)),
+              top: Number((lr.top - br.top).toFixed(2)),
+              bottom: Number((br.bottom - lr.bottom).toFixed(2)),
+            };
+          }
+        }
+        return { states, labelPad };
+      }, ALL_HUD_BTNS);
+
       // 3. For portrait, also capture a live "moving + firing" action frame
       let actionShot = null;
       if (vp.name === 'portrait') {
@@ -250,7 +286,74 @@ async function runViewport(vp) {
         log(`captured action frame ${actionPath} (moved=${actionShot.movedDist}m, shots=${actionShot.shotsFired})`);
       }
 
-      return { dom, contrast, errors, shotPath, actionShot };
+      // 4. F218 interactive state checks (pressed stroke == accent, reloadPct 0/50/100 ring monotonicity)
+      //    Run while paused at the end of the viewport pass so pointerdown cannot perturb actionShot.
+      const f218Interactive = await page.evaluate((allIds) => {
+        const pressedChecks = {};
+        for (const id of allIds) {
+          const el =
+            document.querySelector(`#touch-ui [data-btn="${id}"]`) ??
+            document.querySelector(`[data-btn="${id}"]`);
+          if (!el) continue;
+          const pid = 90 + allIds.indexOf(id);
+          const br = el.getBoundingClientRect();
+          el.dispatchEvent(
+            new PointerEvent('pointerdown', {
+              pointerId: pid,
+              clientX: br.x + br.width / 2,
+              clientY: br.y + br.height / 2,
+              bubbles: true,
+              cancelable: true,
+              pointerType: 'touch',
+            }),
+          );
+          const downState = window.__hudBtnState(id);
+          const borderEl = el.querySelector('[data-role="border"]');
+          const pressedStroke = borderEl
+            ? getComputedStyle(borderEl).stroke
+            : getComputedStyle(el).borderTopColor;
+          window.dispatchEvent(
+            new PointerEvent('pointerup', {
+              pointerId: pid,
+              bubbles: true,
+              pointerType: 'touch',
+            }),
+          );
+          const upState = window.__hudBtnState(id);
+          pressedChecks[id] = {
+            pressedDown: Boolean(downState?.pressed),
+            pressedUp: Boolean(upState?.pressed),
+            pressedStroke,
+          };
+        }
+
+        const reloadSweep = [];
+        for (const pct of [0, 50, 100]) {
+          window.__test?.setReloadPreview?.(pct);
+          const rEl = document.querySelector('#touch-ui [data-btn="reload"]');
+          const arcEl = rEl?.querySelector('[data-role="reload-arc"]');
+          const dashOff = arcEl ? parseFloat(getComputedStyle(arcEl).strokeDashoffset) : NaN;
+          const ringDeg = Number.isFinite(dashOff) ? Number((360 - dashOff).toFixed(2)) : NaN;
+          const rState = window.__hudBtnState('reload');
+          const fState = window.__hudBtnState('fire');
+          reloadSweep.push({
+            pct,
+            reloadPct: rState?.reloadPct ?? NaN,
+            ringDeg,
+            fireDisabled: Boolean(fState?.disabled),
+          });
+        }
+        window.__test?.setReloadPreview?.(null);
+        const reloadReset = {
+          reloadPct: window.__hudBtnState('reload')?.reloadPct ?? NaN,
+          fireDisabled: Boolean(window.__hudBtnState('fire')?.disabled),
+        };
+        return { pressedChecks, reloadSweep, reloadReset };
+      }, ALL_HUD_BTNS);
+      const f218 = { ...f218Static, ...f218Interactive };
+      log(`f218 state/stroke/reload checked`);
+
+      return { dom, contrast, f218, errors, shotPath, actionShot };
     } catch (e) {
       lastErr = e;
       log(`FAILED attempt ${attempt}: ${String(e).split('\n')[0]}`);
@@ -365,7 +468,7 @@ for (const vp of [
   { name: 'portrait', vw: 390, vh: 844 },
   { name: 'landscape', vw: 844, vh: 390 },
 ]) {
-  const { dom, contrast, errors, shotPath, actionShot } = await runViewport(vp);
+  const { dom, contrast, f218, errors, shotPath, actionShot } = await runViewport(vp);
 
   if (dom.btns.length !== ACTION_BTNS.length) {
     failures.push(`${vp.name}: expected ${ACTION_BTNS.length} action buttons, found ${dom.btns.length}`);
@@ -541,6 +644,60 @@ for (const vp of [
 
   if (errors.length) failures.push(`${vp.name}: page errors: ${errors.join('; ')}`);
 
+  // F218 assertions: 6-key baseline rect, stroke >= 1.5px, labelFontPx >= 8 + >=4px padding,
+  // pressed stroke == accent, reloadPct 0/50/100 ring angle monotonic
+  const expected6 =
+    vp.name === 'portrait'
+      ? PORTRAIT_BTN_BASELINE
+      : { ...LANDSCAPE_BTN_BASELINE, mute: LANDSCAPE_MUTE_BASELINE };
+  for (const id of ALL_HUD_BTNS) {
+    const st = f218.states[id];
+    if (!st) {
+      failures.push(`${vp.name}/${id}: missing window.__hudBtnState('${id}')`);
+      continue;
+    }
+    const exp = expected6[id];
+    for (const k of ['x', 'y', 'w', 'h']) {
+      if (Math.abs(st.rect[k] - exp[k]) > 0.5) {
+        failures.push(`${vp.name}/${id}: __hudBtnState rect.${k}=${st.rect[k]} !== baseline ${exp[k]}`);
+      }
+    }
+    if (st.strokePx < 1.5) {
+      failures.push(`${vp.name}/${id}: strokePx ${st.strokePx} < 1.5`);
+    }
+    if (ACTION_BTNS.includes(id)) {
+      if (st.labelFontPx < 8) {
+        failures.push(`${vp.name}/${id}: labelFontPx ${st.labelFontPx} < 8`);
+      }
+      const pad = f218.labelPad[id];
+      if (!pad || pad.left < 4 || pad.right < 4 || pad.top < 4 || pad.bottom < 4) {
+        failures.push(
+          `${vp.name}/${id}: label 4-side padding < 4px (${JSON.stringify(pad)})`,
+        );
+      }
+    }
+    const pc = f218.pressedChecks[id];
+    if (!pc || !pc.pressedDown || pc.pressedUp) {
+      failures.push(`${vp.name}/${id}: pressed state did not toggle (${JSON.stringify(pc)})`);
+    }
+    if (pc && pc.pressedStroke !== ACCENT_RGB) {
+      failures.push(`${vp.name}/${id}: pressed stroke ${pc.pressedStroke} !== accent ${ACCENT_RGB}`);
+    }
+  }
+  const sw = f218.reloadSweep;
+  if (
+    sw.length !== 3 ||
+    !(sw[0].ringDeg < sw[1].ringDeg && sw[1].ringDeg < sw[2].ringDeg) ||
+    !sw[0].fireDisabled ||
+    !sw[1].fireDisabled ||
+    !sw[2].fireDisabled
+  ) {
+    failures.push(`${vp.name}: reloadPct 0/50/100 ring not monotonic or FIRE not disabled (${JSON.stringify(sw)})`);
+  }
+  if (f218.reloadReset.reloadPct !== 0 || f218.reloadReset.fireDisabled) {
+    failures.push(`${vp.name}: reload did not reset cleanly (${JSON.stringify(f218.reloadReset)})`);
+  }
+
   report[vp.name] = {
     shot: shotPath,
     ...(actionShot ? { actionShot } : {}),
@@ -550,6 +707,7 @@ for (const vp of [
     ...(composition ? { composition } : {}),
     minAlpha: Number(minAlpha.toFixed(4)),
     maxAlpha: Number(maxAlpha.toFixed(4)),
+    f218,
     buttons: dom.btns.map((b, i) => ({
       id: b.id,
       rect: b.rect,

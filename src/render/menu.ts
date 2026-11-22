@@ -159,7 +159,7 @@ export class Menu {
     div(
       `font-size:10px;font-weight:700;letter-spacing:0.14em;color:${PALETTE.uiDim};`,
       titleRow,
-      'TRANSPORT SHIP · 保卫者视角',
+      'TRANSPORT SHIP · TACTICAL FPS',
     );
 
     // Match result block (populated by showResult, hidden in start mode)
@@ -276,11 +276,11 @@ export class Menu {
     });
     this.paintToggles();
 
-    // --- Primary CTA: 开始游戏 (≥56×56, ≤120px width for mobile hit-rect test) ---
+    // --- Primary CTA: 开始游戏 (≥56px height hit target) ---
     this.primary = div(
-      `align-self:center;width:116px;height:48px;display:flex;align-items:center;` +
+      `align-self:center;width:120px;height:56px;display:flex;align-items:center;` +
         `justify-content:center;border-radius:8px;font-size:16px;font-weight:800;` +
-        `letter-spacing:2px;background:${PALETTE.accent};color:#ffffff;cursor:pointer;` +
+        `letter-spacing:2px;background:${PALETTE.accent};color:${PALETTE.uiText};cursor:pointer;` +
         `touch-action:none;margin-top:2px;box-shadow:0 4px 16px rgba(255,70,85,0.35);`,
       this.panel,
       '开始游戏',
@@ -346,8 +346,8 @@ export class Menu {
 
     const deathBtns = div(`display:flex;gap:10px;justify-content:center;margin-top:4px;`, this.deathPanel);
     const retryBtn = div(
-      `flex:1;height:46px;display:flex;align-items:center;justify-content:center;border-radius:8px;` +
-        `background:${PALETTE.accent};color:#ffffff;font-size:15px;font-weight:800;letter-spacing:2px;` +
+      `flex:1;height:56px;display:flex;align-items:center;justify-content:center;border-radius:8px;` +
+        `background:${PALETTE.accent};color:${PALETTE.uiText};font-size:15px;font-weight:800;letter-spacing:2px;` +
         `cursor:pointer;touch-action:none;`,
       deathBtns,
       '重试',
@@ -362,7 +362,7 @@ export class Menu {
     });
 
     const backBtn = div(
-      `flex:1;height:46px;display:flex;align-items:center;justify-content:center;border-radius:8px;` +
+      `flex:1;height:56px;display:flex;align-items:center;justify-content:center;border-radius:8px;` +
         `background:rgba(255,255,255,0.08);border:1px solid ${PALETTE.uiBorder};` +
         `color:${PALETTE.uiText};font-size:15px;font-weight:700;letter-spacing:1px;` +
         `cursor:pointer;touch-action:none;`,

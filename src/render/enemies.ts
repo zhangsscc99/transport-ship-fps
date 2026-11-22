@@ -1,113 +1,34 @@
-// Rigged Humanoid AI Enemy Renderer (CC0 Low-poly Squad Kit — toolbenchdev.com):
-//   - Loads public/models/soldier.glb (3368 tris, 22 bones, 53 clips) &
-//     public/models/weapon_rifle.glb (300 tris) ONCE via GLTFLoader,
-//     reused per enemy via SkeletonUtils.clone().
-//   - Rifle attached directly to bone Socket_Hand_R at (0,0,0), rotation (0,0,0).
-//   - Faction dyeing:
-//       潜伏者 (bl): TeamColour -> #b3221f, other materials darkened x0.55 + RED emissive eye orb on Head
-//       保卫者 (gr): TeamColour -> #2f6fb0, other materials brightened x1.05 + BLUE emissive eye orb on Head
-//   - Per-enemy AnimationMixer driving strict 9-clip FSM with 0.18s crossFadeTo transitions:
-//       idle_rifle / walk_rifle / run_rifle / aim_rifle / fire_rifle / reload_rifle / crouch_rifle / hit / die
-//   - Model facing smoothly interpolated via model.rotation.y at 8 rad/s.
-//   - Death: die clip plays to completion, holds last frame for 2.5s, then fades out cleanly.
+// Procedural Cyberpunk Robot Enemy Renderer (zero external models/GLBs):
+//   - Built from src/render/robotModel.ts (shared geometry & PBR material cache, <= 2500 tris/unit).
+//   - Faction distinction strictly by emissive glow color: enemy (#FF2D95) / ally (#22E0FF).
+//   - Smooth damped joint-rotation + translation animation across all 6+ states:
+//       idle / walk (run) / aim (crouch / reload) / fire / hit (0.12s armor compress + white visor flash) / death
+//   - Real-time sole-to-deck grounding so boots stay flush on deck y=0.
+//   - Death: articulated robotic collapse, 2.5s hold on deck, then 0.6s clean dissolve.
 
 import * as THREE from 'three';
-import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
-import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { PALETTE } from './palette';
 import { BOT_TURN_RATE, type EnemyBot, type EnemyClip, type Faction } from '../game/ai';
-import { computeFootLift, sampleClipMinY } from '../game/enemyFoot';
+import { createRobot, type RobotInstance } from './robotModel';
 
-export const SOLDIER_MODEL_SOURCE = 'public/models/soldier.glb';
-export const RIFLE_MODEL_SOURCE = 'public/models/weapon_rifle.glb';
+export const ROBOT_MODEL_SOURCE = 'procedural:cyberpunk-robot';
 
-const CROSSFADE_SEC = 0.18;
-const FIRE_CLIP_TARGET_SEC = 0.35;
-const RELOAD_CLIP_TARGET_SEC = 2.2;
-const HIT_CLIP_TARGET_SEC = 0.25;
+const HIT_FLASH_MS = 120; // exact 0.12s armor compression + white visor flash
+const FIRE_RECOIL_MS = 220;
+const DEATH_COLLAPSE_SEC = 0.72;
 const CORPSE_HOLD_SEC = 2.5;
 const CORPSE_FADE_SEC = 0.6;
-const DEATH_LIFT_RELAX_SEC = 0.25;
 
-/** Grounded contact shadow disc anchored directly under each enemy's boots. */
-const CONTACT_SHADOW_DIAMETER = 1.0;
+/** Grounded contact shadow disc anchored directly under each robot's feet. */
+const CONTACT_SHADOW_DIAMETER = 1.05;
 const CONTACT_SHADOW_Y = 0.012;
-const CONTACT_SHADOW_OPACITY = 0.85;
+const CONTACT_SHADOW_OPACITY = 0.82;
 const CONTACT_SHADOW_RENDER_ORDER = -1;
-const CLIP_MINY_SAMPLES = 32;
 
-const REQUIRED_CLIPS: readonly EnemyClip[] = [
-  'idle_rifle',
-  'walk_rifle',
-  'run_rifle',
-  'aim_rifle',
-  'fire_rifle',
-  'reload_rifle',
-  'crouch_rifle',
-  'hit',
-  'die',
-];
-
-const GROUNDED_CLIPS: readonly EnemyClip[] = [
-  'idle_rifle',
-  'walk_rifle',
-  'run_rifle',
-  'aim_rifle',
-  'fire_rifle',
-  'reload_rifle',
-  'crouch_rifle',
-  'hit',
-];
-
-interface ClipMinYTable {
-  samples: Float32Array;
-  duration: number;
-  loop: boolean;
-}
-
-interface LoadedSoldierAssets {
-  soldierScene: THREE.Group;
-  clips: Map<EnemyClip, THREE.AnimationClip>;
-  rifleParts: { geo: THREE.BufferGeometry; mat: THREE.MeshStandardMaterial }[];
-  soldierTris: number;
-  rifleTris: number;
-  dieDurationSec: number;
-  modelMinY: number;
-  bootMeshName: string;
-  clipMinYTables: Map<EnemyClip, ClipMinYTable>;
-}
-
-let cachedAssets: LoadedSoldierAssets | null = null;
-let assetsPromise: Promise<LoadedSoldierAssets> | null = null;
-let sharedFlashTex: THREE.CanvasTexture | null = null;
-let sharedEyeGeo: THREE.SphereGeometry | null = null;
 let sharedShadowTex: THREE.CanvasTexture | null = null;
 let sharedShadowGeo: THREE.PlaneGeometry | null = null;
 
-function countGeoTris(g: THREE.BufferGeometry): number {
-  return Math.round(g.index ? g.index.count / 3 : g.getAttribute('position').count / 3);
-}
-
-function makeEnemyFlashTex(): THREE.CanvasTexture {
-  const c = document.createElement('canvas');
-  c.width = 64;
-  c.height = 64;
-  const ctx = c.getContext('2d')!;
-  const g = ctx.createRadialGradient(32, 32, 0, 32, 32, 30);
-  g.addColorStop(0.0, '#ffffff');
-  g.addColorStop(0.3, PALETTE.flashCore);
-  g.addColorStop(0.65, PALETTE.flashMid);
-  g.addColorStop(1.0, 'rgba(255, 80, 18, 0)');
-  ctx.fillStyle = g;
-  ctx.fillRect(0, 0, 64, 64);
-  const tex = new THREE.CanvasTexture(c);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  tex.needsUpdate = true;
-  return tex;
-}
-
-/** Local procedural 128² radial-gradient contact shadow texture (created once, no external assets). */
+/** Local procedural 128² radial-gradient contact shadow texture (created once). */
 function makeContactShadowTex(): THREE.CanvasTexture {
   const size = 128;
   const half = size / 2;
@@ -116,159 +37,17 @@ function makeContactShadowTex(): THREE.CanvasTexture {
   c.height = size;
   const ctx = c.getContext('2d')!;
   const g = ctx.createRadialGradient(half, half, 0, half, half, half - 2);
-  g.addColorStop(0.0, 'rgba(16, 22, 30, 0.72)');
-  g.addColorStop(0.28, 'rgba(16, 22, 30, 0.56)');
-  g.addColorStop(0.54, 'rgba(16, 22, 30, 0.28)');
-  g.addColorStop(0.78, 'rgba(16, 22, 30, 0.08)');
-  g.addColorStop(1.0, 'rgba(16, 22, 30, 0)');
+  g.addColorStop(0.0, 'rgba(12, 16, 24, 0.74)');
+  g.addColorStop(0.32, 'rgba(12, 16, 24, 0.56)');
+  g.addColorStop(0.58, 'rgba(12, 16, 24, 0.26)');
+  g.addColorStop(0.82, 'rgba(12, 16, 24, 0.07)');
+  g.addColorStop(1.0, 'rgba(12, 16, 24, 0)');
   ctx.fillStyle = g;
   ctx.fillRect(0, 0, size, size);
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.needsUpdate = true;
   return tex;
-}
-
-/** Measure exact current skinned bounding-box minY for a model hierarchy. */
-function measureHierarchyMinY(root: THREE.Object3D): number {
-  root.updateMatrixWorld(true);
-  root.traverse((obj) => {
-    const sm = obj as THREE.SkinnedMesh;
-    if (sm.isSkinnedMesh && sm.skeleton) sm.skeleton.update();
-  });
-  const box = new THREE.Box3().setFromObject(root, true);
-  return box.isEmpty() || !Number.isFinite(box.min.y) ? 0 : box.min.y;
-}
-
-function isOneShotClip(name: EnemyClip): boolean {
-  return name === 'fire_rifle' || name === 'reload_rifle' || name === 'hit' || name === 'die';
-}
-
-/** Merge static rifle child meshes by material (13 meshes -> 3 meshes) to keep draw calls lean. */
-function buildMergedRifleParts(
-  rifleScene: THREE.Group,
-): { parts: { geo: THREE.BufferGeometry; mat: THREE.MeshStandardMaterial }[]; tris: number } {
-  rifleScene.updateMatrixWorld(true);
-  const byMat = new Map<
-    string,
-    { mat: THREE.MeshStandardMaterial; geos: THREE.BufferGeometry[] }
-  >();
-  let totalTris = 0;
-
-  rifleScene.traverse((obj) => {
-    const mesh = obj as THREE.Mesh;
-    if (!mesh.isMesh || !mesh.geometry) return;
-    const rawMat = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
-    const std = (rawMat as THREE.MeshStandardMaterial) ?? new THREE.MeshStandardMaterial();
-    const key = std.name || std.uuid;
-    const g = mesh.geometry.clone();
-    g.applyMatrix4(mesh.matrixWorld);
-    const nonIdx = g.index ? g.toNonIndexed() : g;
-    // Strip inconsistent optional attributes so mergeGeometries always succeeds
-    for (const attrName of Object.keys(nonIdx.attributes)) {
-      if (attrName !== 'position' && attrName !== 'normal') {
-        nonIdx.deleteAttribute(attrName);
-      }
-    }
-    if (!nonIdx.getAttribute('normal')) nonIdx.computeVertexNormals();
-    totalTris += countGeoTris(nonIdx);
-    let bucket = byMat.get(key);
-    if (!bucket) {
-      bucket = { mat: std, geos: [] };
-      byMat.set(key, bucket);
-    }
-    bucket.geos.push(nonIdx);
-  });
-
-  const parts: { geo: THREE.BufferGeometry; mat: THREE.MeshStandardMaterial }[] = [];
-  for (const { mat, geos } of byMat.values()) {
-    const merged = geos.length === 1 ? geos[0] : mergeGeometries(geos, false);
-    if (merged) {
-      parts.push({ geo: merged, mat });
-    }
-  }
-  return { parts, tris: totalTris };
-}
-
-function resolveModelBase(): string {
-  const env = (import.meta as unknown as { env?: { BASE_URL?: string } }).env;
-  return env?.BASE_URL ?? '/transport/';
-}
-
-export function preloadEnemyModels(): Promise<LoadedSoldierAssets> {
-  if (cachedAssets) return Promise.resolve(cachedAssets);
-  if (assetsPromise) return assetsPromise;
-
-  const loader = new GLTFLoader();
-  const base = resolveModelBase();
-  assetsPromise = Promise.all([
-    loader.loadAsync(`${base}models/soldier.glb`),
-    loader.loadAsync(`${base}models/weapon_rifle.glb`),
-  ]).then(([soldierGltf, rifleGltf]) => {
-    let soldierTris = 0;
-    let bootMeshName = '';
-    let lowestGeoY = Infinity;
-    soldierGltf.scene.traverse((obj) => {
-      const m = obj as THREE.Mesh;
-      if (m.isMesh && m.geometry) {
-        soldierTris += countGeoTris(m.geometry);
-        if (!m.geometry.boundingBox) m.geometry.computeBoundingBox();
-        const geoMinY = m.geometry.boundingBox?.min.y ?? Infinity;
-        if (geoMinY < lowestGeoY) {
-          lowestGeoY = geoMinY;
-          bootMeshName = m.name;
-        }
-      }
-    });
-
-    const clips = new Map<EnemyClip, THREE.AnimationClip>();
-    for (const name of REQUIRED_CLIPS) {
-      const found = soldierGltf.animations.find((a) => a.name === name);
-      if (found) clips.set(name, found);
-    }
-
-    // Measure model-space bind-pose minY and per-clip foot minY curves ONCE at load time
-    const modelMinY = measureHierarchyMinY(soldierGltf.scene);
-    const clipMinYTables = new Map<EnemyClip, ClipMinYTable>();
-    const sampleScene = SkeletonUtils.clone(soldierGltf.scene);
-    const sampleTarget = (bootMeshName && sampleScene.getObjectByName(bootMeshName)) || sampleScene;
-    const sampleMixer = new THREE.AnimationMixer(sampleScene);
-    for (const name of GROUNDED_CLIPS) {
-      const clip = clips.get(name);
-      if (!clip) continue;
-      const action = sampleMixer.clipAction(clip);
-      action.reset().setEffectiveWeight(1).play();
-      const samples = new Float32Array(CLIP_MINY_SAMPLES + 1);
-      for (let i = 0; i <= CLIP_MINY_SAMPLES; i++) {
-        sampleMixer.setTime((clip.duration * i) / CLIP_MINY_SAMPLES);
-        sampleScene.updateMatrixWorld(true);
-        samples[i] = measureHierarchyMinY(sampleTarget);
-      }
-      action.stop();
-      clipMinYTables.set(name, {
-        samples,
-        duration: clip.duration,
-        loop: !isOneShotClip(name),
-      });
-    }
-    sampleMixer.stopAllAction();
-
-    const rifle = buildMergedRifleParts(rifleGltf.scene);
-    const dieClip = clips.get('die');
-    cachedAssets = {
-      soldierScene: soldierGltf.scene,
-      clips,
-      rifleParts: rifle.parts,
-      soldierTris,
-      rifleTris: rifle.tris,
-      dieDurationSec: dieClip ? dieClip.duration : 2.333,
-      modelMinY,
-      bootMeshName,
-      clipMinYTables,
-    };
-    return cachedAssets;
-  });
-  return assetsPromise;
 }
 
 function wrapPi(a: number): number {
@@ -284,43 +63,106 @@ function turnAngleToward(current: number, target: number, maxStep: number): numb
   return wrapPi(current + Math.sign(diff) * maxStep);
 }
 
+function dampVal(cur: number, target: number, lambda: number, dt: number): number {
+  if (dt <= 0) return target;
+  return cur + (target - cur) * (1 - Math.exp(-lambda * dt));
+}
+
+function clamp01(v: number): number {
+  return v < 0 ? 0 : v > 1 ? 1 : v;
+}
+
+interface JointTargets {
+  bodyY: number;
+  bodyPitch: number;
+  bodyRoll: number;
+  torsoPitch: number;
+  torsoYaw: number;
+  headY: number;
+  headPitch: number;
+  headYaw: number;
+  shLX: number;
+  shLY: number;
+  shLZ: number;
+  elLX: number;
+  elLY: number;
+  shRX: number;
+  shRY: number;
+  shRZ: number;
+  elRX: number;
+  elRZ: number;
+  wpnX: number;
+  wpnY: number;
+  wpnZ: number;
+  wpnPosZ: number;
+  hipLX: number;
+  hipLZ: number;
+  kneeLX: number;
+  ankleLX: number;
+  hipRX: number;
+  hipRZ: number;
+  kneeRX: number;
+  ankleRX: number;
+}
+
+function defaultTargets(): JointTargets {
+  return {
+    bodyY: 0.96,
+    bodyPitch: 0,
+    bodyRoll: 0,
+    torsoPitch: 0,
+    torsoYaw: 0,
+    headY: 0.56,
+    headPitch: 0,
+    headYaw: 0,
+    shLX: 0.34,
+    shLY: -0.22,
+    shLZ: 0.14,
+    elLX: 0.62,
+    elLY: 0.18,
+    shRX: 0.24,
+    shRY: 0.18,
+    shRZ: -0.06,
+    elRX: 0.66,
+    elRZ: 0.04,
+    wpnX: -1.10,
+    wpnY: -0.24,
+    wpnZ: -0.06,
+    wpnPosZ: -0.02,
+    hipLX: 0.04,
+    hipLZ: 0.04,
+    kneeLX: -0.08,
+    ankleLX: 0.04,
+    hipRX: -0.04,
+    hipRZ: -0.04,
+    kneeRX: -0.08,
+    ankleRX: 0.12,
+  };
+}
+
 export class EnemyRig {
   readonly root = new THREE.Group();
   readonly faction: Faction;
 
-  private model: THREE.Object3D | null = null;
-  private mixer: THREE.AnimationMixer | null = null;
-  private actions = new Map<EnemyClip, THREE.AnimationAction>();
-  private activeClip: EnemyClip | null = null;
-  private activeAction: THREE.AnimationAction | null = null;
-  private lastFireAnimStartAt = -10000;
-  private lastHitAt = -10000;
+  private readonly robot: RobotInstance;
+  private readonly shadowMesh: THREE.Mesh;
+  private readonly shadowMat: THREE.MeshBasicMaterial;
+  private readonly pose: JointTargets = defaultTargets();
+  private readonly targetPose: JointTargets = defaultTargets();
 
-  private headBone: THREE.Object3D | null = null;
-  private bootMesh: THREE.SkinnedMesh | null = null;
-  private shadowMesh: THREE.Mesh | null = null;
-  private shadowMat: THREE.MeshBasicMaterial | null = null;
-  private baseModelMinY = 0;
-  private clipMinYTables: Map<EnemyClip, ClipMinYTable> | null = null;
-  private currentFootLift = 0;
-  private deathStartFootLift = 0;
-  private readonly scratchBox = new THREE.Box3();
-  private muzzleAnchor: THREE.Object3D | null = null;
-  private muzzleMesh: THREE.Mesh | null = null;
-  private muzzleMat: THREE.MeshBasicMaterial | null = null;
-  private bodyMaterials: THREE.MeshStandardMaterial[] = [];
-  private eyeMat: THREE.MeshStandardMaterial | null = null;
-  private hitFlash = 0;
-
+  private activeClip: EnemyClip = 'idle_rifle';
   private modelYaw = 0;
   private yawInitialized = false;
-  private loaded = false;
-  private triCount = 0;
-  private dieDurationSec = 2.333;
-  private deadElapsedSec = 0;
+  private animTime = 0;
+  private reloadStartMs = -10000;
+  private wasReloading = false;
   private deadStarted = false;
-  private fadePrepared = false;
+  private deadElapsedSec = 0;
+  private deathSideSign = 1;
   private disposed = false;
+
+  private readonly tmpSoleL = new THREE.Vector3();
+  private readonly tmpSoleR = new THREE.Vector3();
 
   /** Clips played by this enemy instance (diagnostic telemetry for e2e). */
   readonly clipsPlayed = new Set<EnemyClip>();
@@ -328,155 +170,11 @@ export class EnemyRig {
   constructor(faction: Faction) {
     this.faction = faction;
     this.root.name = `enemy-rig-${faction}`;
-    if (cachedAssets) {
-      this.hydrate(cachedAssets);
-    }
-  }
 
-  get triangleCount(): number {
-    return this.triCount;
-  }
+    this.robot = createRobot(faction);
+    this.root.add(this.robot.root);
 
-  get isLoaded(): boolean {
-    return this.loaded;
-  }
-
-  get currentClip(): EnemyClip {
-    return this.activeClip ?? 'idle_rifle';
-  }
-
-  get isFinishedCorpse(): boolean {
-    return this.disposed;
-  }
-
-  /** Build the cloned soldier, faction materials, rifle on Socket_Hand_R, eye orb on Head, and AnimationMixer. */
-  hydrate(assets: LoadedSoldierAssets): void {
-    if (this.loaded) return;
-    const isBL = this.faction === 'bl';
-    const eyeCol = isBL ? PALETTE.blEye : PALETTE.grEye;
-
-    // Clone rigged humanoid via SkeletonUtils.clone() (never re-parses GLB)
-    const cloned = SkeletonUtils.clone(assets.soldierScene);
-    cloned.name = `soldier-${this.faction}`;
-    this.model = cloned;
-    this.dieDurationSec = assets.dieDurationSec;
-
-    // Faction dyeing:
-    //   潜伏者 (bl): TeamColour -> #b3221f, other materials darkened to 0.55 brightness
-    //   保卫者 (gr): TeamColour -> #2f6fb0, other materials brightened to 1.05 brightness
-    const seenMats = new Map<THREE.Material, THREE.MeshStandardMaterial>();
-    const dyeMaterial = (orig: THREE.Material): THREE.MeshStandardMaterial => {
-      const existing = seenMats.get(orig);
-      if (existing) return existing;
-      const mat = (orig as THREE.MeshStandardMaterial).clone();
-      if (mat.name === 'TeamColour') {
-        mat.color.set(isBL ? PALETTE.blTeam : PALETTE.grTeam);
-      } else {
-        const mult = isBL ? 0.55 : 1.05;
-        mat.color.r = Math.min(1, mat.color.r * mult);
-        mat.color.g = Math.min(1, mat.color.g * mult);
-        mat.color.b = Math.min(1, mat.color.b * mult);
-      }
-      mat.envMapIntensity = 0.85;
-      mat.emissive.set('#000000');
-      mat.emissiveIntensity = 0;
-      seenMats.set(orig, mat);
-      this.bodyMaterials.push(mat);
-      return mat;
-    };
-
-    cloned.traverse((obj) => {
-      const mesh = obj as THREE.Mesh;
-      if (!mesh.isMesh) return;
-      mesh.castShadow = true;
-      mesh.receiveShadow = true;
-      mesh.frustumCulled = false;
-      if (Array.isArray(mesh.material)) {
-        mesh.material = mesh.material.map(dyeMaterial);
-      } else if (mesh.material) {
-        mesh.material = dyeMaterial(mesh.material);
-      }
-    });
-
-    // Attach weapon_rifle.glb onto Socket_Hand_R at position (0,0,0), rotation (0,0,0)
-    const handSocket = cloned.getObjectByName('Socket_Hand_R') ?? cloned.getObjectByName('Hand_R');
-    const rifleGroup = new THREE.Group();
-    rifleGroup.name = 'enemy-rifle';
-    rifleGroup.position.set(0, 0, 0);
-    rifleGroup.rotation.set(0, 0, 0);
-    for (const part of assets.rifleParts) {
-      const rMat = part.mat.clone();
-      rMat.envMapIntensity = 0.9;
-      this.bodyMaterials.push(rMat);
-      const rMesh = new THREE.Mesh(part.geo, rMat);
-      rMesh.castShadow = false;
-      rMesh.receiveShadow = true;
-      rMesh.frustumCulled = false;
-      rifleGroup.add(rMesh);
-    }
-
-    // Muzzle anchor & muzzle flash quad at brake tip (+0.64, 0, -0.062) in weapon_rifle local space
-    this.muzzleAnchor = new THREE.Object3D();
-    this.muzzleAnchor.position.set(0.64, 0, -0.062);
-    rifleGroup.add(this.muzzleAnchor);
-
-    if (!sharedFlashTex) sharedFlashTex = makeEnemyFlashTex();
-    this.muzzleMat = new THREE.MeshBasicMaterial({
-      map: sharedFlashTex,
-      transparent: true,
-      opacity: 0,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false,
-      side: THREE.DoubleSide,
-    });
-    this.muzzleMesh = new THREE.Mesh(new THREE.PlaneGeometry(0.42, 0.42), this.muzzleMat);
-    this.muzzleMesh.position.set(0.66, 0, -0.062);
-    this.muzzleMesh.rotation.y = Math.PI / 2;
-    this.muzzleMesh.visible = false;
-    this.muzzleMesh.frustumCulled = false;
-    rifleGroup.add(this.muzzleMesh);
-
-    if (handSocket) {
-      handSocket.add(rifleGroup);
-    } else {
-      cloned.add(rifleGroup);
-    }
-
-    // Glowing emissive eye lamp orb mounted on Head bone (red for BL, blue for GR)
-    this.headBone = cloned.getObjectByName('Head') ?? null;
-    if (!sharedEyeGeo) sharedEyeGeo = new THREE.SphereGeometry(0.038, 10, 8);
-    this.eyeMat = new THREE.MeshStandardMaterial({
-      color: eyeCol,
-      emissive: eyeCol,
-      emissiveIntensity: 2.4,
-      roughness: 0.2,
-      metalness: 0.1,
-    });
-    const eyeOrb = new THREE.Mesh(sharedEyeGeo, this.eyeMat);
-    eyeOrb.name = `eye-lamp-${this.faction}`;
-    // Head world y=1.55; visor front sits at local (0, +0.112, +0.128) along +Z face direction
-    eyeOrb.position.set(0, 0.112, 0.128);
-    eyeOrb.castShadow = false;
-    eyeOrb.frustumCulled = false;
-    if (this.headBone) {
-      this.headBone.add(eyeOrb);
-    } else {
-      eyeOrb.position.set(0, 1.662, 0.128);
-      cloned.add(eyeOrb);
-    }
-
-    // Align model boots with root.position.y using load-time Box3 minY
-    this.baseModelMinY = assets.modelMinY;
-    this.clipMinYTables = assets.clipMinYTables;
-    this.currentFootLift = computeFootLift(assets.modelMinY);
-    cloned.position.y = this.currentFootLift;
-    const bootCandidate = assets.bootMeshName ? cloned.getObjectByName(assets.bootMeshName) : null;
-    this.bootMesh =
-      bootCandidate && (bootCandidate as THREE.SkinnedMesh).isSkinnedMesh
-        ? (bootCandidate as THREE.SkinnedMesh)
-        : null;
-
-    // Soft radial contact shadow disc sitting at entity.pos.y + 0.012 under root (independent of model lift/yaw)
+    // Contact shadow disc under feet
     if (!sharedShadowTex) sharedShadowTex = makeContactShadowTex();
     if (!sharedShadowGeo) {
       sharedShadowGeo = new THREE.PlaneGeometry(CONTACT_SHADOW_DIAMETER, CONTACT_SHADOW_DIAMETER);
@@ -489,7 +187,7 @@ export class EnemyRig {
       depthWrite: false,
     });
     this.shadowMesh = new THREE.Mesh(sharedShadowGeo, this.shadowMat);
-    this.shadowMesh.name = `enemy-shadow-${this.faction}`;
+    this.shadowMesh.name = `enemy-shadow-${faction}`;
     this.shadowMesh.position.set(0, CONTACT_SHADOW_Y, 0);
     this.shadowMesh.renderOrder = CONTACT_SHADOW_RENDER_ORDER;
     this.shadowMesh.castShadow = false;
@@ -497,319 +195,450 @@ export class EnemyRig {
     this.shadowMesh.frustumCulled = false;
     this.root.add(this.shadowMesh);
 
-    this.root.add(cloned);
-
-    // Independent AnimationMixer + all 9 state-machine actions
-    this.mixer = new THREE.AnimationMixer(cloned);
-    for (const [clipName, clip] of assets.clips) {
-      const action = this.mixer.clipAction(clip);
-      if (clipName === 'fire_rifle') {
-        action.setLoop(THREE.LoopOnce, 1);
-        action.clampWhenFinished = true;
-        action.timeScale = clip.duration / FIRE_CLIP_TARGET_SEC;
-      } else if (clipName === 'reload_rifle') {
-        action.setLoop(THREE.LoopOnce, 1);
-        action.clampWhenFinished = true;
-        action.timeScale = clip.duration / RELOAD_CLIP_TARGET_SEC;
-      } else if (clipName === 'hit') {
-        action.setLoop(THREE.LoopOnce, 1);
-        action.clampWhenFinished = true;
-        action.timeScale = clip.duration / HIT_CLIP_TARGET_SEC;
-      } else if (clipName === 'die') {
-        action.setLoop(THREE.LoopOnce, 1);
-        action.clampWhenFinished = true;
-        action.timeScale = 1.0;
-      } else {
-        action.setLoop(THREE.LoopRepeat, Infinity);
-        action.timeScale = 1.0;
-      }
-      this.actions.set(clipName, action);
-    }
-
-    this.triCount = assets.soldierTris + assets.rifleTris + countGeoTris(sharedEyeGeo);
-    this.loaded = true;
+    this.applyJointsToRig();
+    this.groundFeet();
   }
 
-  /** Smoothly crossFadeTo target clip over 0.18s (never instant cut). */
-  private transitionTo(clip: EnemyClip, forceRestart = false): void {
-    if (!this.mixer) return;
-    const next = this.actions.get(clip);
-    if (!next) return;
-
-    if (this.activeClip === clip && !forceRestart) return;
-
-    const prev = this.activeAction;
-    this.activeClip = clip;
-    this.activeAction = next;
-    this.clipsPlayed.add(clip);
-
-    if (!prev) {
-      next.enabled = true;
-      next.reset();
-      next.setEffectiveWeight(1);
-      next.play();
-      return;
-    }
-
-    if (prev === next) {
-      // Re-trigger same one-shot clip (e.g., consecutive hits) cleanly
-      next.enabled = true;
-      next.reset();
-      next.setEffectiveWeight(1);
-      next.play();
-      return;
-    }
-
-    next.enabled = true;
-    next.reset();
-    next.setEffectiveWeight(1);
-    next.play();
-    prev.crossFadeTo(next, CROSSFADE_SEC, false);
+  get triangleCount(): number {
+    return this.robot.triangleCount;
   }
 
-  /** Measure live model-space boot minY during brief crossfade transitions. */
-  private measureBootModelMinY(): number {
-    if (!this.model || !this.bootMesh) return this.baseModelMinY;
-    this.model.position.y = 0;
-    this.root.updateMatrixWorld(true);
-    this.bootMesh.skeleton.update();
-    this.scratchBox.setFromObject(this.bootMesh, true);
-    if (this.scratchBox.isEmpty() || !Number.isFinite(this.scratchBox.min.y)) {
-      return this.baseModelMinY;
-    }
-    return this.scratchBox.min.y - this.root.position.y;
+  get isLoaded(): boolean {
+    return true;
   }
 
-  /** Keep soles flush on root.position.y across idle, walk, run, crouch, aim, fire, reload & hit clips. */
-  private updateFootGrounding(): void {
-    if (!this.model) return;
-    let activeCount = 0;
-    let singleClip: EnemyClip | null = null;
-    let singleAction: THREE.AnimationAction | null = null;
-
-    if (this.clipMinYTables) {
-      for (const name of GROUNDED_CLIPS) {
-        const action = this.actions.get(name);
-        if (!action || !action.isScheduled() || action.getEffectiveWeight() <= 0.001) continue;
-        activeCount++;
-        singleClip = name;
-        singleAction = action;
-      }
-    }
-
-    let minY = this.baseModelMinY;
-    if (activeCount === 1 && singleClip && singleAction && this.clipMinYTables) {
-      const table = this.clipMinYTables.get(singleClip);
-      if (table) {
-        minY = sampleClipMinY(table.samples, table.duration, singleAction.time, table.loop);
-      }
-    } else if (activeCount > 1) {
-      // Mid-crossfade (0.18s): measure blended boot pose so transitions never float or sink
-      minY = this.measureBootModelMinY();
-    }
-
-    this.currentFootLift = computeFootLift(minY);
-    this.model.position.y = this.currentFootLift;
+  get currentClip(): EnemyClip {
+    return this.activeClip;
   }
 
-  /** Real-time world-space Box3 lowest Y of the soldier model (excludes contact shadow). Called on demand only. */
+  get isFinishedCorpse(): boolean {
+    return this.disposed;
+  }
+
+  /** Real-time world-space Box3 lowest Y of the robot chassis (excludes contact shadow). */
   measureFeetWorldY(): number | null {
-    if (!this.loaded || !this.model) return null;
     this.root.updateMatrixWorld(true);
-    this.model.traverse((obj) => {
-      const sm = obj as THREE.SkinnedMesh;
-      if (sm.isSkinnedMesh && sm.skeleton) sm.skeleton.update();
-    });
-    const box = new THREE.Box3().setFromObject(this.model, true);
+    const box = new THREE.Box3().setFromObject(this.robot.root);
     if (box.isEmpty() || !Number.isFinite(box.min.y)) return null;
     return box.min.y;
   }
 
-  /** Read actual world-space head top (0.25m above Head bone) so overhead tags track standing/crouch. */
+  /** Read actual world-space head top (top of floating helmet) for overhead distance tags. */
   getHeadTopWorld(out: THREE.Vector3): THREE.Vector3 {
-    if (this.headBone) {
-      this.headBone.getWorldPosition(out);
-      out.y += 0.25;
-      return out;
-    }
-    return out.set(this.root.position.x, this.root.position.y + 1.8, this.root.position.z);
+    this.root.updateMatrixWorld(true);
+    this.robot.headTopAnchor.getWorldPosition(out);
+    return out;
   }
 
-  /** Read actual rifle barrel tip world position for enemy bullet tracers. */
+  /** Read actual pulse carbine muzzle world position for enemy tracers. */
   getMuzzleWorld(out: THREE.Vector3): boolean {
-    if (!this.muzzleAnchor || !this.loaded) return false;
-    this.muzzleAnchor.getWorldPosition(out);
+    this.root.updateMatrixWorld(true);
+    this.robot.muzzleAnchor.getWorldPosition(out);
     return true;
   }
 
-  /** Synchronize position, smooth model.rotation.y (8 rad/s), AnimationMixer, muzzle flash & death fade. */
+  private applyJointsToRig(): void {
+    const j = this.robot.joints;
+    const p = this.pose;
+    j.bodyPivot.position.set(0, p.bodyY, 0);
+    j.bodyPivot.rotation.set(p.bodyPitch, 0, p.bodyRoll);
+    j.torsoPivot.rotation.set(p.torsoPitch, p.torsoYaw, 0);
+    j.headPivot.position.set(0, p.headY, 0);
+    j.headPivot.rotation.set(p.headPitch, p.headYaw, 0);
+    j.shoulderL.rotation.set(p.shLX, p.shLY, p.shLZ);
+    j.elbowL.rotation.set(p.elLX, p.elLY, 0);
+    j.shoulderR.rotation.set(p.shRX, p.shRY, p.shRZ);
+    j.elbowR.rotation.set(p.elRX, 0, p.elRZ);
+    j.weaponMount.rotation.set(p.wpnX, p.wpnY, p.wpnZ);
+    j.weaponMount.position.set(-0.01, -0.24, p.wpnPosZ);
+    j.hipL.rotation.set(p.hipLX, 0, p.hipLZ);
+    j.kneeL.rotation.set(p.kneeLX, 0, 0);
+    j.ankleL.rotation.set(p.ankleLX, 0, 0);
+    j.hipR.rotation.set(p.hipRX, 0, p.hipRZ);
+    j.kneeR.rotation.set(p.kneeRX, 0, 0);
+    j.ankleR.rotation.set(p.ankleRX, 0, 0);
+  }
+
+  /** Keep the supporting boot sole flush with root.position.y (deck y=0) across all live poses. */
+  private groundFeet(): void {
+    this.robot.root.position.y = 0;
+    this.root.updateMatrixWorld(true);
+    this.robot.soleProbeL.getWorldPosition(this.tmpSoleL);
+    this.robot.soleProbeR.getWorldPosition(this.tmpSoleR);
+    const minWorldY = Math.min(this.tmpSoleL.y, this.tmpSoleR.y);
+    const localMinY = minWorldY - this.root.position.y;
+    if (Number.isFinite(localMinY)) {
+      this.robot.root.position.y = -localMinY;
+    }
+  }
+
+  private computeTargetPose(bot: EnemyBot, nowMs: number): void {
+    const t = this.targetPose;
+    const base = defaultTargets();
+    Object.assign(t, base);
+
+    const clip = bot.anim;
+    const phase = bot.walkPhase;
+    const idleT = this.animTime;
+    const hoverBob = Math.sin(idleT * 3.1 + bot.slotIndex * 1.3) * 0.016;
+    t.headY = 0.56 + hoverBob;
+
+    // Derive primary locomotion/combat posture (note: 'hit' overlays onto movement/combat!)
+    const baseClip: EnemyClip =
+      clip === 'hit'
+        ? bot.state === 'PATROL'
+          ? bot.advancing
+            ? 'run_rifle'
+            : 'walk_rifle'
+          : bot.state === 'CHASE'
+            ? 'run_rifle'
+            : bot.state === 'COVER'
+              ? 'crouch_rifle'
+              : bot.state === 'RELOAD'
+                ? 'reload_rifle'
+                : bot.state === 'ENGAGE' || bot.state === 'ALERT'
+                  ? 'aim_rifle'
+                  : 'idle_rifle'
+        : clip;
+
+    if (baseClip === 'idle_rifle') {
+      // Tactical cyber idle: gentle chassis breathing + floating head scan + low-ready carbine
+      const breathe = Math.sin(idleT * 2.1 + bot.slotIndex) * 0.012;
+      t.bodyY = 0.96 + breathe;
+      t.torsoPitch = -0.03 + Math.sin(idleT * 1.6) * 0.018;
+      t.torsoYaw = Math.sin(idleT * 0.9 + bot.slotIndex) * 0.07;
+      t.headYaw = Math.sin(idleT * 1.35 + bot.slotIndex * 1.7) * 0.24;
+      t.headPitch = Math.sin(idleT * 0.8) * 0.04;
+      t.shLX = 0.36;
+      t.shLY = -0.26;
+      t.shLZ = 0.14;
+      t.elLX = 0.68;
+      t.elLY = 0.22;
+      t.shRX = 0.24;
+      t.shRY = 0.16;
+      t.shRZ = -0.06;
+      t.elRX = 0.66;
+      t.wpnX = -1.10;
+      t.wpnY = -0.24;
+      t.hipLX = 0.08;
+      t.hipLZ = 0.05;
+      t.kneeLX = -0.14;
+      t.ankleLX = 0.06;
+      t.hipRX = -0.06;
+      t.hipRZ = -0.05;
+      t.kneeRX = -0.12;
+      t.ankleRX = 0.18;
+    } else if (baseClip === 'walk_rifle' || baseClip === 'run_rifle') {
+      // Articulated bipedal mechanical gait (hip swing + knee lift + counter-torso twist + weapon carry)
+      const isRun = baseClip === 'run_rifle';
+      const amp = isRun ? 0.68 : 0.44;
+      const s = Math.sin(phase);
+      const c = Math.cos(phase);
+      const bounce = Math.abs(c) * (isRun ? 0.045 : 0.025);
+
+      t.bodyY = (isRun ? 0.91 : 0.945) + bounce;
+      t.torsoPitch = isRun ? -0.22 : -0.10;
+      t.torsoYaw = -s * (isRun ? 0.16 : 0.10);
+      t.headYaw = -t.torsoYaw * 0.65;
+      t.headPitch = isRun ? 0.14 : 0.06;
+
+      // Left leg stride
+      t.hipLX = s * amp;
+      t.kneeLX = -Math.max(0.08, -c * (isRun ? 0.85 : 0.55) + 0.18);
+      t.ankleLX = -t.hipLX * 0.45 - t.kneeLX * 0.4;
+
+      // Right leg opposite phase
+      t.hipRX = -s * amp;
+      t.kneeRX = -Math.max(0.08, c * (isRun ? 0.85 : 0.55) + 0.18);
+      t.ankleRX = -t.hipRX * 0.45 - t.kneeRX * 0.4;
+
+      // Arms carry carbine across torso while pumping slightly with stride
+      const armSway = s * (isRun ? 0.14 : 0.07);
+      t.shRX = (isRun ? 0.42 : 0.34) - armSway;
+      t.shRY = 0.24;
+      t.shRZ = -0.08;
+      t.elRX = isRun ? 0.88 : 0.76;
+      t.wpnX = -(t.shRX + t.elRX) - (isRun ? 0.12 : 0.06);
+      t.wpnY = -0.34;
+      t.wpnZ = -0.10;
+
+      t.shLX = (isRun ? 0.58 : 0.46) + armSway;
+      t.shLY = -0.44;
+      t.shLZ = 0.18;
+      t.elLX = isRun ? 0.92 : 0.78;
+      t.elLY = 0.28;
+    } else if (baseClip === 'aim_rifle' || baseClip === 'fire_rifle') {
+      // Planted firing stance: angled shoulders, carbine leveled dead ahead (-Z), head locked on target
+      const strafeS = bot.speed > 0.15 ? Math.sin(phase) * 0.22 : 0;
+      t.bodyY = 0.91;
+      t.torsoPitch = -0.07;
+      t.torsoYaw = 0.26;
+      t.headYaw = -0.26; // head counter-turns so horizontal visor locks straight onto player!
+      t.headPitch = 0.04;
+
+      // Right arm shoulders pulse carbine dead level along -Z
+      t.shRX = 0.48;
+      t.shRY = 0.08;
+      t.shRZ = -0.08;
+      t.elRX = 0.96;
+      t.elRZ = 0.08;
+      t.wpnX = -(t.shRX + t.elRX);
+      t.wpnY = -0.32;
+      t.wpnZ = 0;
+
+      // Left arm cradles forward shroud
+      t.shLX = 0.86;
+      t.shLY = -0.52;
+      t.shLZ = 0.22;
+      t.elLX = 0.84;
+      t.elLY = 0.32;
+
+      // Wide combat stance legs
+      t.hipLX = 0.22 + strafeS;
+      t.hipLZ = 0.08;
+      t.kneeLX = -0.36;
+      t.ankleLX = 0.14;
+      t.hipRX = -0.18 - strafeS;
+      t.hipRZ = -0.08;
+      t.kneeRX = -0.28;
+      t.ankleRX = 0.42;
+
+      // Punchy mechanical recoil kick during fire_rifle
+      if (baseClip === 'fire_rifle') {
+        const sinceStart = Math.max(0, nowMs - bot.fireAnimStartAt);
+        const kickU = clamp01(1 - sinceStart / FIRE_RECOIL_MS);
+        const kick = Math.sin(kickU * Math.PI);
+        t.torsoPitch += kick * 0.09;
+        t.shRX += kick * 0.20;
+        t.elRX -= kick * 0.08;
+        t.wpnX = -(t.shRX + t.elRX) + kick * 0.14;
+        t.wpnPosZ = -0.02 + kick * 0.065;
+        t.headPitch += kick * 0.04;
+      }
+    } else if (baseClip === 'crouch_rifle') {
+      // Deep tactical crouch + lateral cover shuffle
+      const strafeS = bot.speed > 0.15 ? Math.sin(phase) * 0.32 : 0;
+      t.bodyY = 0.68;
+      t.torsoPitch = -0.20;
+      t.torsoYaw = 0.22;
+      t.headYaw = -0.22;
+      t.headPitch = 0.15;
+
+      t.shRX = 0.56;
+      t.shRY = 0.10;
+      t.shRZ = -0.08;
+      t.elRX = 0.94;
+      t.wpnX = -(t.shRX + t.elRX) + 0.12;
+      t.wpnY = -0.28;
+
+      t.shLX = 0.88;
+      t.shLY = -0.48;
+      t.shLZ = 0.22;
+      t.elLX = 0.86;
+      t.elLY = 0.28;
+
+      t.hipLX = 0.72 + strafeS;
+      t.hipLZ = 0.10;
+      t.kneeLX = -1.12;
+      t.ankleLX = 0.40;
+      t.hipRX = 0.48 - strafeS;
+      t.hipRZ = -0.10;
+      t.kneeRX = -1.04;
+      t.ankleRX = 0.56;
+    } else if (baseClip === 'reload_rifle') {
+      // Articulated 2.2s energy-cell swap animation
+      const elapsed = Math.max(0, nowMs - this.reloadStartMs);
+      const u = clamp01(elapsed / 2200);
+      const dip = Math.sin(u * Math.PI);
+      const magReach = u > 0.18 && u < 0.72 ? Math.sin(((u - 0.18) / 0.54) * Math.PI) : 0;
+
+      t.bodyY = 0.91 - dip * 0.03;
+      t.torsoPitch = -0.14 - dip * 0.08;
+      t.torsoYaw = 0.18;
+      t.headYaw = -0.10;
+      t.headPitch = -0.18 * dip;
+
+      // Right arm tilts weapon inward so magazine well is accessible
+      t.shRX = 0.42;
+      t.shRY = 0.24;
+      t.shRZ = -0.12;
+      t.elRX = 0.92;
+      t.wpnX = -(t.shRX + t.elRX) + 0.22 * dip;
+      t.wpnY = -0.42;
+      t.wpnZ = 0.35 * dip;
+
+      // Left arm drops to hip cell pouch and slaps fresh energy cell into receiver
+      t.shLX = 0.78 - magReach * 0.58;
+      t.shLY = -0.42 + magReach * 0.28;
+      t.shLZ = 0.18 + magReach * 0.12;
+      t.elLX = 0.86 - magReach * 0.32;
+      t.elLY = 0.25;
+
+      t.hipLX = 0.16;
+      t.kneeLX = -0.24;
+      t.ankleLX = 0.08;
+      t.hipRX = -0.12;
+      t.kneeRX = -0.22;
+      t.ankleRX = 0.34;
+    }
+
+    // --- Hit feedback: exact 0.12s armor compression + white visor flash ---
+    const sinceHit = nowMs - bot.lastHitAt;
+    const hitFlashActive = sinceHit >= 0 && sinceHit < HIT_FLASH_MS;
+    this.robot.setHitFlash(hitFlashActive);
+    if (hitFlashActive) {
+      // Sharp initial impact compression easing cleanly back within 120ms
+      const hu = sinceHit / HIT_FLASH_MS;
+      const compress = Math.sin(Math.pow(hu, 0.55) * Math.PI);
+      t.bodyY -= compress * 0.12;
+      t.torsoPitch += compress * 0.22;
+      t.headY -= compress * 0.055;
+      t.headPitch += compress * 0.14;
+      t.shLZ -= compress * 0.18; // pauldrons hunch inward under impact
+      t.shRZ += compress * 0.18;
+      t.kneeLX -= compress * 0.26;
+      t.kneeRX -= compress * 0.26;
+    }
+  }
+
+  /** Synchronize position, yaw, procedural joint animation, hit flash, muzzle flash & death collapse. */
   sync(bot: EnemyBot, dt: number, nowMs: number): void {
     const p = bot.entity.pos;
     this.root.position.set(p.x, p.y, p.z);
 
-    if (!this.loaded) {
-      if (cachedAssets) this.hydrate(cachedAssets);
-      else return;
-    }
-
-    // soldier.glb faces +Z while ai.ts yaw=0 faces -Z -> target model.rotation.y = bot.yaw + PI
-    const targetModelYaw = wrapPi(bot.yaw + Math.PI);
+    // Robot faces -Z in local space matching ai.ts yaw convention directly!
+    const targetModelYaw = wrapPi(bot.yaw);
     if (!this.yawInitialized) {
       this.modelYaw = targetModelYaw;
       this.yawInitialized = true;
     } else if (bot.state !== 'DEAD' && bot.entity.alive) {
       this.modelYaw = turnAngleToward(this.modelYaw, targetModelYaw, BOT_TURN_RATE * dt);
     }
-    if (this.model) {
-      this.model.rotation.y = this.modelYaw;
-    }
+    this.robot.root.rotation.y = this.modelYaw;
 
-    // --- DEAD state: play die to last frame, hold 2.5s, then fade out ---
+    // --- DEAD state ---
     if (bot.state === 'DEAD' || !bot.entity.alive) {
+      this.activeClip = 'die';
+      this.clipsPlayed.add('die');
       this.advanceDeath(dt);
       return;
     }
 
-    // Select clip strictly from AI state machine
-    const desiredClip: EnemyClip = bot.anim;
-    const isNewFire =
-      desiredClip === 'fire_rifle' && bot.fireAnimStartAt !== this.lastFireAnimStartAt;
-    const isNewHit = desiredClip === 'hit' && bot.lastHitAt !== this.lastHitAt;
-    if (isNewFire) this.lastFireAnimStartAt = bot.fireAnimStartAt;
-    if (isNewHit) this.lastHitAt = bot.lastHitAt;
+    this.animTime += dt;
+    this.activeClip = bot.anim;
+    this.clipsPlayed.add(bot.anim);
 
-    this.transitionTo(desiredClip, isNewFire || isNewHit);
-
-    if (this.mixer) {
-      this.mixer.update(dt);
-    }
-    this.updateFootGrounding();
-
-    // Muzzle flash quad visible briefly at the 0.18s shot moment (bot.lastFireAt)
-    if (this.muzzleMesh && this.muzzleMat) {
-      const sinceFire = nowMs - bot.lastFireAt;
-      const flashOn = sinceFire >= 0 && sinceFire < 75;
-      this.muzzleMesh.visible = flashOn;
-      if (flashOn) {
-        this.muzzleMat.opacity = 1 - sinceFire / 75;
-        this.muzzleMesh.rotation.x = (nowMs * 0.11) % (Math.PI * 2);
-        const sc = 0.85 + 0.35 * (1 - sinceFire / 75);
-        this.muzzleMesh.scale.set(sc, sc, 1);
-      }
+    if (bot.anim === 'reload_rifle' && !this.wasReloading) {
+      this.reloadStartMs = nowMs;
+      this.wasReloading = true;
+    } else if (bot.anim !== 'reload_rifle') {
+      this.wasReloading = false;
     }
 
-    // Subtle red emissive hit highlight during 0.25s hit flinch
+    this.computeTargetPose(bot, nowMs);
+
+    // Fast damping on hit compression (38/s) so 0.12s flinch is crisp; smooth 16/s for locomotion/aim
     const sinceHit = nowMs - bot.lastHitAt;
-    const targetFlash = sinceHit >= 0 && sinceHit < 250 ? Math.sin((1 - sinceHit / 250) * Math.PI) : 0;
-    this.hitFlash += (targetFlash - this.hitFlash) * Math.min(1, 20 * dt);
-    for (const mat of this.bodyMaterials) {
-      if (this.hitFlash > 0.01) {
-        mat.emissive.set(PALETTE.accent);
-        mat.emissiveIntensity = this.hitFlash * 0.42;
-      } else if (mat.emissiveIntensity !== 0) {
-        mat.emissiveIntensity = 0;
-      }
+    const dampRate = sinceHit >= 0 && sinceHit < HIT_FLASH_MS + 40 ? 40 : 16;
+    for (const key of Object.keys(this.pose) as (keyof JointTargets)[]) {
+      this.pose[key] = dampVal(this.pose[key], this.targetPose[key], dampRate, dt);
+    }
+    this.applyJointsToRig();
+    this.groundFeet();
+
+    // Muzzle flash quad briefly visible on shot
+    const sinceFire = nowMs - bot.lastFireAt;
+    const flashOn = sinceFire >= 0 && sinceFire < 75;
+    this.robot.muzzleMesh.visible = flashOn;
+    if (flashOn) {
+      this.robot.muzzleMat.opacity = 1 - sinceFire / 75;
+      this.robot.muzzleMesh.rotation.z = (nowMs * 0.13) % (Math.PI * 2);
+      const sc = 0.85 + 0.35 * (1 - sinceFire / 75);
+      this.robot.muzzleMesh.scale.set(sc, sc, 1);
     }
   }
 
-  /** Advance die animation, 2.5s last-frame hold, and 0.6s fade-out (works both while in bots[] and as detached corpse). */
+  /** Articulated robotic collapse, 2.5s deck hold, and 0.6s clean dissolve. */
   advanceDeath(dt: number): void {
-    if (!this.loaded) {
-      this.disposed = true;
-      return;
-    }
     if (!this.deadStarted) {
       this.deadStarted = true;
       this.deadElapsedSec = 0;
-      this.deathStartFootLift = this.currentFootLift;
-      this.transitionTo('die', false);
-      if (this.muzzleMesh) this.muzzleMesh.visible = false;
-      for (const mat of this.bodyMaterials) {
-        mat.emissiveIntensity = 0;
-      }
+      this.deathSideSign = Math.sin(this.modelYaw * 3.1) >= 0 ? 1 : -1;
+      this.robot.muzzleMesh.visible = false;
+      this.robot.setHitFlash(false);
     }
 
     this.deadElapsedSec += dt;
-    if (this.mixer) {
-      this.mixer.update(dt);
-    }
-    if (this.model) {
-      const relaxT = Math.min(1, this.deadElapsedSec / DEATH_LIFT_RELAX_SEC);
-      const baseLift = computeFootLift(this.baseModelMinY);
-      this.currentFootLift = this.deathStartFootLift + (baseLift - this.deathStartFootLift) * relaxT;
-      this.model.position.y = this.currentFootLift;
-    }
+    const u = clamp01(this.deadElapsedSec / DEATH_COLLAPSE_SEC);
+    // Ease-in-out collapse: buckle knees first, then topple chassis onto steel deck
+    const buckle = clamp01(u / 0.35);
+    const fall = clamp01((u - 0.18) / 0.82);
+    const fallEase = fall * fall * (3 - 2 * fall);
 
-    const fadeStartSec = this.dieDurationSec + CORPSE_HOLD_SEC;
+    const p = this.pose;
+    p.bodyY = dampVal(p.bodyY, 0.96 - buckle * 0.28 - fallEase * 0.48, 22, dt);
+    p.bodyPitch = dampVal(p.bodyPitch, fallEase * 1.44, 18, dt); // pitches backwards onto deck
+    p.bodyRoll = dampVal(p.bodyRoll, fallEase * 0.28 * this.deathSideSign, 18, dt);
+    p.torsoPitch = dampVal(p.torsoPitch, 0.12 + fallEase * 0.14, 16, dt);
+    p.torsoYaw = dampVal(p.torsoYaw, 0.15 * this.deathSideSign, 16, dt);
+    // Floating head loses magnetic power and drops onto collar/deck
+    p.headY = dampVal(p.headY, 0.56 - fallEase * 0.11, 20, dt);
+    p.headPitch = dampVal(p.headPitch, -0.35 * fallEase, 16, dt);
+    p.headYaw = dampVal(p.headYaw, 0.45 * this.deathSideSign * fallEase, 16, dt);
+    // Limbs splay out limp
+    p.shLX = dampVal(p.shLX, -0.35 * fallEase, 14, dt);
+    p.shLZ = dampVal(p.shLZ, 0.68 * fallEase, 14, dt);
+    p.elLX = dampVal(p.elLX, 0.25, 14, dt);
+    p.shRX = dampVal(p.shRX, -0.25 * fallEase, 14, dt);
+    p.shRZ = dampVal(p.shRZ, -0.62 * fallEase, 14, dt);
+    p.elRX = dampVal(p.elRX, 0.22, 14, dt);
+    p.hipLX = dampVal(p.hipLX, 0.38 * buckle - 0.25 * fallEase, 16, dt);
+    p.kneeLX = dampVal(p.kneeLX, -0.95 * buckle + 0.55 * fallEase, 16, dt);
+    p.hipRX = dampVal(p.hipRX, 0.22 * buckle - 0.15 * fallEase, 16, dt);
+    p.kneeRX = dampVal(p.kneeRX, -0.75 * buckle + 0.45 * fallEase, 16, dt);
+
+    this.applyJointsToRig();
+    this.robot.root.position.y = dampVal(this.robot.root.position.y, 0, 12, dt);
+
+    const fadeStartSec = DEATH_COLLAPSE_SEC + CORPSE_HOLD_SEC;
     if (this.deadElapsedSec >= fadeStartSec) {
-      if (!this.fadePrepared) {
-        this.fadePrepared = true;
-        for (const mat of this.bodyMaterials) {
-          mat.transparent = true;
-          mat.depthWrite = false;
-          mat.needsUpdate = true;
-        }
-        if (this.eyeMat) {
-          this.eyeMat.transparent = true;
-          this.eyeMat.depthWrite = false;
-          this.eyeMat.needsUpdate = true;
-        }
-      }
-      const u = Math.min(1, (this.deadElapsedSec - fadeStartSec) / CORPSE_FADE_SEC);
-      const opacity = 1 - u;
-      for (const mat of this.bodyMaterials) {
-        mat.opacity = opacity;
-      }
-      if (this.eyeMat) {
-        this.eyeMat.opacity = opacity;
-        this.eyeMat.emissiveIntensity = 2.4 * opacity;
-      }
-      if (this.shadowMat) {
-        this.shadowMat.opacity = CONTACT_SHADOW_OPACITY * opacity;
-      }
-      if (u >= 1) {
-        if (this.shadowMesh) this.shadowMesh.visible = false;
+      const fu = clamp01((this.deadElapsedSec - fadeStartSec) / CORPSE_FADE_SEC);
+      const opacity = 1 - fu;
+      this.robot.setDeathFade(opacity);
+      this.shadowMat.opacity = CONTACT_SHADOW_OPACITY * opacity;
+      if (fu >= 1) {
+        this.shadowMesh.visible = false;
         this.disposed = true;
       }
     }
   }
 
   dispose(): void {
-    this.mixer?.stopAllAction();
-    for (const mat of this.bodyMaterials) mat.dispose();
-    this.bodyMaterials.length = 0;
-    this.eyeMat?.dispose();
-    this.shadowMat?.dispose();
-    this.muzzleMat?.dispose();
-    this.muzzleMesh?.geometry.dispose();
+    this.robot.dispose();
+    this.shadowMat.dispose();
   }
 }
 
 export class EnemyRenderer {
   private readonly scene: THREE.Scene;
   private rigs = new Map<string, EnemyRig>();
-  /** Corpses detached from active bot slots so die + 2.5s hold + fade-out always completes. */
+  /** Corpses detached from active bot slots so collapse + 2.5s hold + dissolve always completes. */
   private dyingCorpses: EnemyRig[] = [];
 
   constructor(scene: THREE.Scene) {
     this.scene = scene;
-    // Start preloading soldier.glb + weapon_rifle.glb immediately on page boot
-    void preloadEnemyModels().then((assets) => {
-      for (const rig of this.rigs.values()) {
-        if (!rig.isLoaded) rig.hydrate(assets);
-      }
-    });
+    void PALETTE.robotArmor; // keep explicit palette link
   }
 
   get isModelLoaded(): boolean {
-    return cachedAssets !== null;
+    return true;
   }
 
   get modelSource(): string {
-    return SOLDIER_MODEL_SOURCE;
+    return ROBOT_MODEL_SOURCE;
   }
 
-  /** Synchronize rendered EnemyRigs with active EnemyBots (creates rigs & preserves fading corpses). */
+  /** Synchronize rendered EnemyRigs with active EnemyBots (creates rigs & preserves dissolving corpses). */
   sync(bots: readonly EnemyBot[], dt: number, nowMs: number, _cameraPos?: THREE.Vector3): void {
     const aliveIds = new Set<string>();
     for (const bot of bots) {
@@ -835,7 +664,7 @@ export class EnemyRenderer {
       }
     }
 
-    // Advance detached dying corpses through last-frame hold & fade-out
+    // Advance detached dying corpses through collapse, hold & dissolve
     for (let i = this.dyingCorpses.length - 1; i >= 0; i--) {
       const c = this.dyingCorpses[i];
       c.advanceDeath(dt);
@@ -847,7 +676,7 @@ export class EnemyRenderer {
     }
   }
 
-  /** Immediately remove all live rigs and fading corpses (menu reset / e2e clearEnemies). */
+  /** Immediately remove all live rigs and dissolving corpses (menu reset / e2e clearEnemies). */
   clearAll(): void {
     for (const rig of this.rigs.values()) {
       this.scene.remove(rig.root);

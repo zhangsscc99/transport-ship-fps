@@ -18,7 +18,7 @@ import {
 } from './render/weapon';
 import { WorldVfx, type VfxTelemetry } from './render/vfx';
 import { easeInOutCubic } from './render/tween';
-import { Hud } from './render/hud';
+import { Hud, readHudButtonState, type HudBtnState } from './render/hud';
 import { Player, MOVE, type Vec3 } from './game/player';
 import { MAP, spawnPoint } from './game/map';
 import { CollisionWorld, PLAYER_RADIUS } from './game/collision';
@@ -124,6 +124,7 @@ declare global {
     }[];
     __vmRect: () => ViewmodelScreenRect;
     __vmCoverage: (rect: { x: number; y: number; w: number; h: number }) => ViewmodelCoverage;
+    __hudBtnState: (id: string) => HudBtnState | null;
     __test: {
       hurt(dmg: number): void;
       teleport(x: number, z: number, yawDeg: number, pitchDeg: number, y?: number): void;
@@ -133,6 +134,7 @@ declare global {
       clearEnemies(): void;
       setDifficulty(diff: DifficultyId): void;
       damageEnemy(id: string, dmg: number): void;
+      setReloadPreview(pct: number | null): void;
     };
     __match: {
       phase: string;
@@ -207,6 +209,7 @@ const SHOT_SFX = { rifle: 'shotRifle', gatling: 'shotGatling' } as const;
 const STEP_STRIDE = 2.1;
 let stepAcc = 0;
 let lastHeartbeatMs = 0;
+let reloadPreviewPct: number | null = null;
 let lastReloadStageSfx = 0;
 /** Accumulated delta-time simulation clock (ms) for frame-rate-independent weapon/reload timers. */
 let simNowMs = 0;
@@ -356,7 +359,7 @@ function aimDir(): Vec3 {
 /**
  * Shared hurt path — real damage events and window.__test.hurt() both go
  * through here: damage → edge flash + direction arc + hurt sfx.
- * `angleRad` is the attacker's screen-relative bearing (0 = ahead).
+ * `angleRad` is the incoming-fire screen-relative bearing (0 = ahead).
  */
 function hurtPlayer(dmg: number, angleRad?: number): void {
   const now = performance.now();
@@ -699,11 +702,15 @@ engine.onFrame = (dt) => {
     (match.phase === 'playing' || match.phase === 'countdown') && !deathPanelShown,
   );
 
+  const reloadSnap = w.reloadSnapshot(simNowMs);
   weaponView.group.visible = playerEnt.alive;
-  weaponView.update(dt, view.bob, w.reloadSnapshot(simNowMs), vfxDbg, {
+  weaponView.update(dt, view.bob, reloadSnap, vfxDbg, {
     spinLevel: w.spinLevel,
     firing: gatlingActivelyFiring,
   });
+  if (reloadPreviewPct === null) {
+    touch.setReloadState(reloadSnap.active, reloadSnap.progress);
+  }
   hud.setSwapBlur(weaponView.swapBlurAmount);
   worldVfx.update(dt, view.camera, vfxDbg);
 
@@ -895,6 +902,7 @@ window.__enemiesFeet = () => {
 window.__vmRect = () => weaponView.screenRect(view.camera, window.innerWidth, window.innerHeight);
 window.__vmCoverage = (rect) =>
   weaponView.screenCoverage(view.camera, window.innerWidth, window.innerHeight, rect);
+window.__hudBtnState = readHudButtonState;
 window.__enemyTags = enemyTags.telemetry;
 window.__test = {
   hurt: (dmg: number) => hurtPlayer(dmg),
@@ -939,6 +947,15 @@ window.__test = {
     if (killed) {
       enemyTags.remove(id);
       onEnemyKilled(performance.now());
+    }
+  },
+  setReloadPreview: (pct: number | null) => {
+    reloadPreviewPct = pct;
+    if (pct === null) {
+      const snap = rack.current.reloadSnapshot(simNowMs);
+      touch.setReloadState(snap.active, snap.progress);
+    } else {
+      touch.setReloadState(true, Math.max(0, Math.min(1, pct / 100)));
     }
   },
 };

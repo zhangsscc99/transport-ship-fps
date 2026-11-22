@@ -34,7 +34,24 @@ export const PALETTE = {
   hpLow: '#ff4655', // 仅低血量/危险使用 Valorant 红
   uiPanel: 'rgba(8,12,18,0.55)',
   uiBtnPanel: 'rgba(14,19,27,0.90)',
+  uiBtnGradTop: 'rgba(188,208,230,0.048)',
+  uiBtnGradMid: 'rgba(14,19,27,0.00)',
+  uiBtnGradBot: 'rgba(2,5,10,0.14)',
+  uiBtnHiTop: 'rgba(255,255,255,0.28)',
+  uiBtnHiInnerBot: 'rgba(0,0,0,0.45)',
+  uiBtnPressedTop: 'rgba(255,255,255,0.24)',
+  uiBtnPressedMid: 'rgba(255,255,255,0.14)',
+  uiBtnPressedBot: 'rgba(255,255,255,0.08)',
+  uiBtnPressedGlow: 'rgba(255,255,255,0.22)',
+  uiBtnActiveTop: 'rgba(255,70,85,0.18)',
+  uiBtnActiveMid: 'rgba(255,70,85,0.12)',
+  uiBtnActiveBot: 'rgba(255,70,85,0.08)',
   uiBtnBorder: 'rgba(236,232,225,0.48)',
+  uiBtnBorderDisabled: 'rgba(154,164,176,0.42)',
+  uiBtnFgDisabled: 'rgba(176,184,194,0.58)',
+  uiBtnFireInnerRing: 'rgba(255,70,85,0.34)',
+  uiBtnReloadTrack: 'rgba(236,232,225,0.18)',
+  uiBtnReloadSweep: 'rgba(255,70,85,0.22)',
   uiBtnShadow: 'rgba(4,7,12,0.58)',
   uiBorder: 'rgba(255,255,255,0.18)',
   uiBorderActive: 'rgba(236,232,225,0.72)',
@@ -51,24 +68,29 @@ export const PALETTE = {
   skinNail: '#e4c2ae', // 指甲盖浅暖色
   tacGlove: '#2d333b', // 战术露指手套主料
   tacKnuckle: '#1d2228', // 手背护骨甲
-  tacSleeve: '#2b3b4e', // 战术服袖子（保卫者海军灰蓝）
+  tacSleeve: '#2b3b4e', // 战术服袖子（海军灰蓝）
   tacCuff: '#212d3b', // 袖口加厚翻边
   tacVelcro: '#171c22', // 袖口魔术贴
   tacStitch: '#6c7c8e', // 袖口双排缝线
-  blSuit: '#1c1f25', // 潜伏者：黑红战术服底色
-  blTeam: '#b3221f', // 潜伏者：TeamColour 暗红染色
-  blRed: '#d4262e', // 潜伏者：战术红甲/肩带/臂章
-  blMask: '#131519', // 潜伏者：黑色战术面罩
-  blEye: '#ff2836', // 潜伏者：红眼灯
-  blTagBg: 'rgba(155, 28, 25, 0.88)', // 潜伏者头顶标签暗红底
-  blTagBorder: 'rgba(255, 92, 86, 0.9)',
-  grSuit: '#213f68', // 保卫者：深蓝战术服
-  grTeam: '#2f6fb0', // 保卫者：TeamColour 战术蓝染色
-  grWhite: '#e6ecf2', // 保卫者：白色防弹胸甲/护肩
-  grHelmet: '#1a2e4a', // 保卫者：蓝色战术头盔
-  grEye: '#2ec4ff', // 保卫者：蓝眼灯
-  grTagBg: 'rgba(35, 90, 148, 0.88)', // 保卫者头顶标签战术蓝底
-  grTagBorder: 'rgba(94, 180, 255, 0.9)',
+  // 赛博朋克机器人（全程序化金属 PBR，阵营仅靠发光色区分）
+  robotArmor: '#23262e', // 深灰金属装甲漆面
+  robotFrame: '#171a21', // 机械骨架与关节暗金属
+  robotGun: '#2b303a', // 机器人脉冲步枪机匣
+  robotEdge: '#5b6678', // 装甲边缘 1px 弱发光亮边
+  robotGlowEnemy: '#ff2d95', // 敌方强发光：品红
+  robotGlowAlly: '#22e0ff', // 我方/AI 友军强发光：青
+  robotHitFlash: '#ffffff', // 受击 0.12s 视带闪白
+  // 敌人头顶距离牌 & 极简血条
+  tagGlassBg: 'rgba(8,12,20,0.62)', // 深色半透明玻璃底
+  tagBorderCyan: 'rgba(120,255,255,0.35)', // 1px 常规冷青内发光描边
+  tagBorderWarm: '#ffb454', // <10m 暖色警示描边与 4px 圆点
+  tagGlowCyan: 'rgba(120,255,255,0.22)', // 常规 1px 内发光
+  tagGlowWarm: 'rgba(255,180,84,0.32)', // <10m 暖色内发光
+  tagText: '#eef4fa', // 距离牌等宽数字色
+  tagHpTrack: 'rgba(255,255,255,0.14)', // 血条轨道底色
+  tagHpHigh: '#22e0ff', // 血量 >60%：青
+  tagHpMid: '#ffd166', // 血量 30%–60%：黄
+  tagHpLow: '#ff4655', // 血量 <=30%：红
   bootDark: '#17191d', // 战术军靴
   brass: '#d8b054', // 弹壳 / 弹匣顶弹 / 加特林弹链黄铜
   gatlingAccent: '#f5b041', // 加特林重武 HUD 琥珀橙
