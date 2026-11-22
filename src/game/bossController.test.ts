@@ -28,23 +28,27 @@ test('selectBossSpawn picks a walkable, box-free point 20-25m from player spawn'
   assert.equal(world.hits(pos.x, pos.y, pos.z, 0.8, BOSS_TARGET_HEIGHT), false, 'boss spawn must not overlap boxes');
 });
 
-test('BossController scales placeholder robot to ~4.0m height and hides ranged weaponMount', () => {
+test('BossController mounts procedural Terminator Boss model at 4.0-4.2m height with feet flush at y=0', () => {
   const scene = new THREE.Scene();
   const boss = new BossController(scene);
   assert.equal(scene.children.includes(boss.mesh), true);
 
   boss.mesh.updateMatrixWorld(true);
-  const robotRoot = boss.mesh.getObjectByName('boss-placeholder-robot')!;
-  assert.ok(robotRoot, 'placeholder robot should exist in mesh');
-  const weapon = robotRoot.getObjectByName('robot-weapon')!;
-  assert.ok(weapon, 'weaponMount node exists on placeholder');
-  assert.equal(weapon.visible, false, 'melee Boss must hide placeholder rifle');
+  const modelRoot = boss.mesh.getObjectByName('boss-terminator-model')!;
+  assert.ok(modelRoot, 'procedural Terminator boss model should exist in mesh');
+  assert.equal(boss.mesh.getObjectByName('boss-placeholder-robot'), undefined, 'placeholder robot must be removed');
+  assert.equal(boss.mesh.getObjectByName('robot-weapon'), undefined, 'melee Boss must have no ranged weapon');
+  assert.ok(boss.triangleCount > 3000 && boss.triangleCount <= 20000, `expected tris <= 20000, got ${boss.triangleCount}`);
 
-  const box = new THREE.Box3().setFromObject(robotRoot);
+  const box = new THREE.Box3().setFromObject(modelRoot);
   const measuredHeight = box.max.y - box.min.y;
   assert.ok(
-    Math.abs(measuredHeight - BOSS_TARGET_HEIGHT) < 0.25,
-    `expected Boss height ~${BOSS_TARGET_HEIGHT}m, got ${measuredHeight.toFixed(2)}m`,
+    measuredHeight >= 4.0 && measuredHeight <= 4.2,
+    `expected Boss height in [4.0, 4.2]m, got ${measuredHeight.toFixed(3)}m`,
+  );
+  assert.ok(
+    Math.abs(boss.height - measuredHeight) < 0.02,
+    `expected boss.height (${boss.height}) to match measured model height (${measuredHeight.toFixed(3)})`,
   );
   assert.ok(Math.abs(box.min.y) < 0.05, `Boss feet should sit flush on deck y=0, got ${box.min.y.toFixed(3)}`);
 
