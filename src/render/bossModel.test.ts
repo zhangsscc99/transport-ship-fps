@@ -20,6 +20,19 @@ function countSceneTriangles(root: THREE.Object3D): number {
   return total;
 }
 
+function collectUniqueMaterials(root: THREE.Object3D): Set<THREE.Material> {
+  const mats = new Set<THREE.Material>();
+  root.traverse((obj) => {
+    if (!(obj instanceof THREE.Mesh)) return;
+    if (Array.isArray(obj.material)) {
+      for (const m of obj.material) mats.add(m);
+    } else if (obj.material) {
+      mats.add(obj.material);
+    }
+  });
+  return mats;
+}
+
 function isUnderRoot(root: THREE.Object3D, node: THREE.Object3D): boolean {
   let cur: THREE.Object3D | null = node;
   while (cur) {
@@ -43,46 +56,83 @@ function getCoreMaterial(core: THREE.Object3D): THREE.MeshStandardMaterial {
   return found;
 }
 
-test('bossModel: triangle budget <= 20000, height in 3.5-4.5m, organic PBR skin bounds', () => {
+// Required verification test #1: triangle count <= 20,000 & material budget <= 6
+test('bossModel: triangle count <= 20000 and material count <= 6 with lava-cracked PBR textures', () => {
   const boss = createBossModel();
   try {
     const tris = countSceneTriangles(boss.parts.root);
-    assert.ok(tris > 2000 && tris <= 20000, `expected tris in (2000, 20000], got ${tris}`);
+    assert.ok(tris > 3000 && tris <= 20000, `expected tris in (3000, 20000], got ${tris}`);
 
-    boss.parts.root.updateMatrixWorld(true);
-    const box = new THREE.Box3().setFromObject(boss.parts.root);
-    const height = box.max.y - box.min.y;
-    assert.ok(
-      height >= 3.5 && height <= 4.5,
-      `expected standing boss height in [3.5, 4.5]m, got ${height.toFixed(3)}m (minY=${box.min.y.toFixed(3)}, maxY=${box.max.y.toFixed(3)})`,
-    );
-    assert.ok(
-      Math.abs(box.min.y) <= 0.12,
-      `expected feet grounded near y=0, got minY=${box.min.y.toFixed(3)}`,
-    );
+    const mats = collectUniqueMaterials(boss.parts.root);
+    assert.ok(mats.size >= 2 && mats.size <= 6, `expected <= 6 materials, got ${mats.size}`);
 
     const torsoSkin = boss.parts.root.getObjectByName('boss-torso-skin') as THREE.Mesh | undefined;
     assert.ok(torsoSkin, 'expected boss-torso-skin mesh');
     const skinMat = torsoSkin.material as THREE.MeshStandardMaterial;
-    assert.ok(
-      skinMat.roughness >= 0.75 && skinMat.roughness <= 0.9,
-      `expected skin roughness in [0.75, 0.9], got ${skinMat.roughness}`,
-    );
-    assert.ok(
-      Math.abs(skinMat.metalness - 0.05) < 1e-6,
-      `expected skin metalness 0.05, got ${skinMat.metalness}`,
-    );
-    assert.equal(skinMat.color.getHex(), new THREE.Color('#3A3F38').getHex());
-    assert.ok(skinMat.map && skinMat.normalMap && skinMat.roughnessMap, 'expected procedural skin textures');
+    assert.ok(skinMat.map && skinMat.emissiveMap && skinMat.normalMap, 'expected procedural lava atlas + emissiveMap + normalMap');
+    assert.ok(skinMat.emissiveIntensity > 0.5, `expected lava fissures to self-glow in Phase 1, got ${skinMat.emissiveIntensity}`);
   } finally {
     boss.dispose();
   }
 });
 
-test('bossModel: all 6 parts exist and belong to root skeleton hierarchy', () => {
+// Required verification test #2: standing height strictly within 4.0-4.2m with soles grounded at y=0
+test('bossModel: standing height is within 4.0-4.2m with soles flush at y=0', () => {
   const boss = createBossModel();
   try {
-    const { root, torso, head, core, leftArm, rightArm } = boss.parts;
+    boss.parts.root.updateMatrixWorld(true);
+    const box = new THREE.Box3().setFromObject(boss.parts.root);
+    const height = box.max.y - box.min.y;
+    assert.ok(
+      height >= 4.0 && height <= 4.2,
+      `expected standing boss height in [4.0, 4.2]m, got ${height.toFixed(3)}m (minY=${box.min.y.toFixed(3)}, maxY=${box.max.y.toFixed(3)})`,
+    );
+    assert.ok(
+      Math.abs(box.min.y) <= 0.02,
+      `expected feet grounded flush at y=0, got minY=${box.min.y.toFixed(4)}`,
+    );
+  } finally {
+    boss.dispose();
+  }
+});
+
+// Required verification test #3: rightArm joint matrix must differ between windup and attack
+test('bossModel: windup and attack produce distinct rightArm joint matrices', () => {
+  const boss = createBossModel();
+  try {
+    for (let i = 0; i < 20; i++) boss.update(0.04, { hpPct: 1, phase: 1, anim: 'windup' });
+    boss.parts.root.updateMatrixWorld(true);
+    const windupLocal = boss.parts.rightArm.matrix.clone();
+    const windupWorld = boss.parts.rightArm.matrixWorld.clone();
+
+    for (let i = 0; i < 10; i++) boss.update(0.02, { hpPct: 1, phase: 1, anim: 'attack' });
+    boss.parts.root.updateMatrixWorld(true);
+    const attackLocal = boss.parts.rightArm.matrix.clone();
+    const attackWorld = boss.parts.rightArm.matrixWorld.clone();
+
+    let maxLocalDiff = 0;
+    let maxWorldDiff = 0;
+    for (let i = 0; i < 16; i++) {
+      maxLocalDiff = Math.max(maxLocalDiff, Math.abs(windupLocal.elements[i] - attackLocal.elements[i]));
+      maxWorldDiff = Math.max(maxWorldDiff, Math.abs(windupWorld.elements[i] - attackWorld.elements[i]));
+    }
+    assert.ok(
+      maxLocalDiff > 0.4,
+      `expected windup vs attack rightArm local matrix to differ significantly, maxDiff=${maxLocalDiff.toFixed(4)}`,
+    );
+    assert.ok(
+      maxWorldDiff > 0.4,
+      `expected windup vs attack rightArm world matrix to differ significantly, maxDiff=${maxWorldDiff.toFixed(4)}`,
+    );
+  } finally {
+    boss.dispose();
+  }
+});
+
+test('bossModel: all required parts + articulated 6-segment tail belong to root skeleton hierarchy', () => {
+  const boss = createBossModel();
+  try {
+    const { root, torso, head, core, leftArm, rightArm, tail } = boss.parts;
     const partEntries: Array<[string, THREE.Object3D | undefined]> = [
       ['root', root],
       ['torso', torso],
@@ -90,8 +140,8 @@ test('bossModel: all 6 parts exist and belong to root skeleton hierarchy', () =>
       ['core', core],
       ['leftArm', leftArm],
       ['rightArm', rightArm],
+      ['tail', tail],
     ];
-    assert.equal(partEntries.length, 6);
     assert.ok(root instanceof THREE.Group, 'root must be a THREE.Group');
     for (const [name, obj] of partEntries) {
       assert.ok(obj instanceof THREE.Object3D, `part "${name}" must exist as THREE.Object3D`);
@@ -101,10 +151,10 @@ test('bossModel: all 6 parts exist and belong to root skeleton hierarchy', () =>
       }
     }
 
-    // Verify full articulated bone hierarchy (arms: shoulder -> elbow -> hand; legs: hips -> thigh -> shin -> foot)
     for (const boneName of [
       'boss-body',
       'boss-torso',
+      'boss-torso-bone',
       'boss-head',
       'boss-core',
       'boss-shoulder-l',
@@ -114,6 +164,13 @@ test('bossModel: all 6 parts exist and belong to root skeleton hierarchy', () =>
       'boss-elbow-r',
       'boss-hand-r',
       'boss-hips',
+      'boss-tail',
+      'boss-tail-seg-0',
+      'boss-tail-seg-1',
+      'boss-tail-seg-2',
+      'boss-tail-seg-3',
+      'boss-tail-seg-4',
+      'boss-tail-seg-5',
       'boss-thigh-l',
       'boss-shin-l',
       'boss-foot-l',
@@ -130,7 +187,7 @@ test('bossModel: all 6 parts exist and belong to root skeleton hierarchy', () =>
   }
 });
 
-test('bossModel: update() animates rightArm.rotation.x across all 6 anim states with expected kinematics', () => {
+test('bossModel: update() animates arms, torso, and counter-phase tail across all 6 anim states', () => {
   const anims: BossAnim[] = ['idle', 'walk', 'windup', 'attack', 'recover', 'charge'];
 
   for (const anim of anims) {
@@ -158,13 +215,13 @@ test('bossModel: update() animates rightArm.rotation.x across all 6 anim states 
     }
   }
 
-  // Targeted kinematic assertions: windup raises rightArm back ~1.2rad & torso back 15°, attack swings down in 0.18s, charge leans forward 25°
+  // Targeted kinematic assertions: windup, attack, charge, and walk tail counter-phase sway
   const boss = createBossModel();
   try {
     const torso = boss.parts.torso!;
     const coreMat = getCoreMaterial(boss.parts.core);
+    const tailSeg2 = boss.parts.root.getObjectByName('boss-tail-seg-2')!;
 
-    // Idle baseline
     for (let i = 0; i < 20; i++) boss.update(0.05, { hpPct: 1, phase: 1, anim: 'idle' });
     const idleCoreEmissive = coreMat.emissiveIntensity;
     assert.ok(
@@ -172,28 +229,36 @@ test('bossModel: update() animates rightArm.rotation.x across all 6 anim states 
       `idle torso breathing scaleY out of range: ${torso.scale.y}`,
     );
 
-    // Windup: rightArm back ~-1.2rad, torso pitched back ~+15° (+0.262rad), core +40% warning glow
+    // Walk: tail segments actively sway counter-phase to arm swing
+    let minTailYaw = Infinity;
+    let maxTailYaw = -Infinity;
+    for (let i = 0; i < 40; i++) {
+      boss.update(0.05, { hpPct: 1, phase: 1, anim: 'walk' });
+      minTailYaw = Math.min(minTailYaw, tailSeg2.rotation.y);
+      maxTailYaw = Math.max(maxTailYaw, tailSeg2.rotation.y);
+    }
+    assert.ok(
+      maxTailYaw - minTailYaw > 0.18,
+      `walk tail should sway noticeably (range=${(maxTailYaw - minTailYaw).toFixed(3)})`,
+    );
+
+    // Windup: rightArm back ~-1.3rad, torso pitched back ~+16°, core warning glow
     for (let i = 0; i < 25; i++) boss.update(0.04, { hpPct: 1, phase: 1, anim: 'windup' });
-    const windupArmX = boss.parts.rightArm.rotation.x;
-    assert.ok(windupArmX < -0.95, `windup rightArm should raise backward (~-1.2rad), got ${windupArmX.toFixed(3)}`);
-    assert.ok(torso.rotation.x > 0.2, `windup torso should lean backward (+15°), got ${torso.rotation.x.toFixed(3)}`);
+    assert.ok(boss.parts.rightArm.rotation.x < -0.95, `windup rightArm should raise backward, got ${boss.parts.rightArm.rotation.x.toFixed(3)}`);
+    assert.ok(torso.rotation.x > 0.2, `windup torso should lean backward, got ${torso.rotation.x.toFixed(3)}`);
     assert.ok(
       coreMat.emissiveIntensity > idleCoreEmissive * 1.2,
-      `windup core should surge (~+40%), idle=${idleCoreEmissive.toFixed(2)}, windup=${coreMat.emissiveIntensity.toFixed(2)}`,
+      `windup core should surge, idle=${idleCoreEmissive.toFixed(2)}, windup=${coreMat.emissiveIntensity.toFixed(2)}`,
     );
 
-    // Attack: explosive downward swing within 0.18s
+    // Attack: explosive downward/forward claw slash within 0.18s
     for (let i = 0; i < 9; i++) boss.update(0.02, { hpPct: 1, phase: 1, anim: 'attack' });
-    const attackArmX = boss.parts.rightArm.rotation.x;
-    assert.ok(
-      attackArmX > 0.85,
-      `attack rightArm should smash forward/down within 0.18s, got ${attackArmX.toFixed(3)}`,
-    );
-    assert.ok(torso.rotation.x < -0.18, `attack torso should pitch forward, got ${torso.rotation.x.toFixed(3)}`);
+    assert.ok(boss.parts.rightArm.rotation.x > 0.85, `attack rightArm should slash forward, got ${boss.parts.rightArm.rotation.x.toFixed(3)}`);
+    assert.ok(torso.rotation.x < -0.18, `attack torso should lunge forward, got ${torso.rotation.x.toFixed(3)}`);
 
-    // Charge: torso forward ~25° (-0.436rad), head lowered, both arms swept back
+    // Charge: deep forward lean, head lowered, both arms swept back
     for (let i = 0; i < 25; i++) boss.update(0.04, { hpPct: 1, phase: 1, anim: 'charge' });
-    assert.ok(torso.rotation.x < -0.35, `charge torso should pitch forward ~25°, got ${torso.rotation.x.toFixed(3)}`);
+    assert.ok(torso.rotation.x < -0.38, `charge torso should pitch forward steeply, got ${torso.rotation.x.toFixed(3)}`);
     assert.ok(boss.parts.head.rotation.x < -0.3, `charge head should drop low, got ${boss.parts.head.rotation.x.toFixed(3)}`);
     assert.ok(boss.parts.leftArm.rotation.x < -0.5, `charge leftArm should sweep back, got ${boss.parts.leftArm.rotation.x.toFixed(3)}`);
     assert.ok(boss.parts.rightArm.rotation.x < -0.5, `charge rightArm should sweep back, got ${boss.parts.rightArm.rotation.x.toFixed(3)}`);
@@ -202,35 +267,47 @@ test('bossModel: update() animates rightArm.rotation.x across all 6 anim states 
   }
 });
 
-test('bossModel: phase 2 increases core emissiveIntensity, enlarges core exposure, and dark-reddens skin', () => {
+test('bossModel: phase 2 (hpPct <= 0.35) heats lava cracks, core, and bone tips without flashing whole skin albedo', () => {
   const boss = createBossModel();
   try {
     const coreMat = getCoreMaterial(boss.parts.core);
     const torsoSkin = boss.parts.root.getObjectByName('boss-torso-skin') as THREE.Mesh;
+    const torsoBone = boss.parts.root.getObjectByName('boss-torso-bone') as THREE.Mesh;
     const skinMat = torsoSkin.material as THREE.MeshStandardMaterial;
+    const boneMat = torsoBone.material as THREE.MeshStandardMaterial;
 
-    for (let i = 0; i < 12; i++) boss.update(0.05, { hpPct: 0.8, phase: 1, anim: 'idle' });
-    const p1Emissive = coreMat.emissiveIntensity;
+    for (let i = 0; i < 15; i++) boss.update(0.05, { hpPct: 0.8, phase: 1, anim: 'idle' });
+    const p1CoreEm = coreMat.emissiveIntensity;
+    const p1SkinEm = skinMat.emissiveIntensity;
+    const p1BoneEm = boneMat.emissiveIntensity;
+    const p1ColorHex = skinMat.color.getHex();
     const p1Scale = boss.parts.core.scale.x;
-    const p1Red = skinMat.color.r;
 
-    for (let i = 0; i < 12; i++) boss.update(0.05, { hpPct: 0.35, phase: 2, anim: 'idle' });
-    const p2Emissive = coreMat.emissiveIntensity;
+    for (let i = 0; i < 20; i++) boss.update(0.05, { hpPct: 0.35, phase: 2, anim: 'idle' });
+    const p2CoreEm = coreMat.emissiveIntensity;
+    const p2SkinEm = skinMat.emissiveIntensity;
+    const p2BoneEm = boneMat.emissiveIntensity;
+    const p2ColorHex = skinMat.color.getHex();
     const p2Scale = boss.parts.core.scale.x;
-    const p2Red = skinMat.color.r;
 
     assert.ok(
-      p2Emissive > p1Emissive,
-      `expected phase 2 core emissiveIntensity (${p2Emissive.toFixed(2)}) > phase 1 (${p1Emissive.toFixed(2)})`,
+      p2CoreEm > p1CoreEm * 1.4,
+      `expected phase 2 core emissiveIntensity (${p2CoreEm.toFixed(2)}) >> phase 1 (${p1CoreEm.toFixed(2)})`,
+    );
+    assert.ok(
+      p2SkinEm > p1SkinEm * 1.6,
+      `expected phase 2 lava crack emissive (${p2SkinEm.toFixed(2)}) >> phase 1 (${p1SkinEm.toFixed(2)})`,
+    );
+    assert.ok(
+      p2BoneEm > p1BoneEm * 5,
+      `expected phase 2 bone-tip translucency glow (${p2BoneEm.toFixed(2)}) >> phase 1 (${p1BoneEm.toFixed(2)})`,
     );
     assert.ok(
       p2Scale > p1Scale + 0.08,
-      `expected phase 2 core to enlarge (p1=${p1Scale.toFixed(3)}, p2=${p2Scale.toFixed(3)})`,
+      `expected phase 2 core exposure to enlarge (p1=${p1Scale.toFixed(3)}, p2=${p2Scale.toFixed(3)})`,
     );
-    assert.ok(
-      p2Red > p1Red,
-      `expected phase 2 skin to shift toward dark crimson (p1R=${p1Red.toFixed(3)}, p2R=${p2Red.toFixed(3)})`,
-    );
+    // Must heat up via lava emissiveMap, NEVER flash the entire skin base color red!
+    assert.equal(p2ColorHex, p1ColorHex, 'skin base albedo must stay steady (no whole-body red alarm flash)');
   } finally {
     boss.dispose();
   }

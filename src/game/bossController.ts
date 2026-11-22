@@ -1,8 +1,8 @@
-// Boss Controller — connects pure-logic BossAI with a 4.0m scaled placeholder
-// procedural robot rig (reusing src/render/robotModel.ts), capsule+head raycast
-// hit detection, part classification (head / core / body), melee state
-// animations (windup / attack / charge / recover / death), and 0.15s hit recoil.
-// Strictly melee-only: zero ranged weapons or projectiles.
+// Boss Controller — connects pure-logic BossAI with the procedural CF Red Terminator
+// Boss model (src/render/bossModel.ts), capsule+head raycast hit detection,
+// dynamically scaled part classification (head / core / body), melee state
+// animations (idle / walk / windup / attack / recover / charge), death collapse,
+// and 0.15s / 0.08m hit recoil. Strictly melee-only: zero ranged weapons or projectiles.
 
 import * as THREE from 'three';
 import {
@@ -18,7 +18,7 @@ import { CollisionWorld } from './collision';
 import { rayBoxT, type Ray } from './damage';
 import { MAP, spawnPoint } from './map';
 import type { Vec3 } from './player';
-import { createRobot, type RobotInstance } from '../render/robotModel';
+import { createBossModel, type BossAnim, type BossModel } from '../render/bossModel';
 
 export const BOSS_TARGET_HEIGHT = 4.0;
 export const BOSS_BODY_RADIUS = 0.68;
@@ -34,7 +34,6 @@ export const BOSS_HIT_RECOIL_MS = 150;
 export const BOSS_HIT_RECOIL_DIST = 0.08;
 
 const EPS = 1e-6;
-const HIT_FLASH_MS = 120;
 const DEATH_COLLAPSE_SEC = 0.85;
 const CORPSE_HOLD_SEC = 2.0;
 const CORPSE_FADE_SEC = 0.7;
@@ -96,6 +95,10 @@ function makeBossShadowTex(): THREE.Texture {
   return tex;
 }
 
+function clamp(v: number, lo: number, hi: number): number {
+  return v < lo ? lo : v > hi ? hi : v;
+}
+
 function clamp01(v: number): number {
   return v < 0 ? 0 : v > 1 ? 1 : v;
 }
@@ -110,6 +113,27 @@ function yawToTarget(fromX: number, fromZ: number, toX: number, toZ: number): nu
   const dz = toZ - fromZ;
   if (Math.hypot(dx, dz) <= EPS) return 0;
   return Math.atan2(-dx, -dz);
+}
+
+function mapStateToAnim(state: BossState): BossAnim {
+  return state === 'chase' ? 'walk' : state;
+}
+
+function countObjectTriangles(root: THREE.Object3D): number {
+  let total = 0;
+  root.traverse((obj) => {
+    if (!(obj instanceof THREE.Mesh)) return;
+    const geo = obj.geometry;
+    if (!geo) return;
+    const idx = geo.getIndex();
+    if (idx) {
+      total += Math.round(idx.count / 3);
+    } else {
+      const pos = geo.getAttribute('position');
+      if (pos) total += Math.round(pos.count / 3);
+    }
+  });
+  return total;
 }
 
 /** Check whether a horizontal sightline from player eye to candidate Boss torso clears all boxes. */
@@ -258,8 +282,8 @@ function rayVerticalCapsuleT(o: Vec3, d: Vec3, pos: Vec3, r: number, height: num
 
 /**
  * Classify a Boss hit point into weakpoints or body:
- *   - hit height > height * 0.82 -> 'head'
- *   - hit inside chest/back core sphere (±0.5m radius) -> 'core'
+ *   - hit height > height * headRatio (default 0.82) -> 'head'
+ *   - hit inside chest/back core sphere (±0.5m radius at height * coreHeightRatio) -> 'core'
  *   - otherwise -> 'body'
  */
 export function classifyBossHitPart(
@@ -267,13 +291,15 @@ export function classifyBossHitPart(
   bossPos: Vec3,
   bossYaw: number,
   height = BOSS_TARGET_HEIGHT,
+  headRatio = BOSS_HEAD_RATIO,
+  coreHeightRatio = BOSS_CORE_HEIGHT_RATIO,
 ): BossHitPart {
   const relY = hitPoint.y - bossPos.y;
-  if (relY > height * BOSS_HEAD_RATIO) {
+  if (relY > height * headRatio) {
     return 'head';
   }
 
-  const coreY = bossPos.y + height * BOSS_CORE_HEIGHT_RATIO;
+  const coreY = bossPos.y + height * coreHeightRatio;
   const fwdX = -Math.sin(bossYaw);
   const fwdZ = -Math.cos(bossYaw);
   const rSq = BOSS_CORE_RADIUS * BOSS_CORE_RADIUS;
@@ -309,11 +335,14 @@ export function raycastBoss(
   bossYaw: number,
   alive: boolean,
   height = BOSS_TARGET_HEIGHT,
+  headRatio = BOSS_HEAD_RATIO,
+  coreHeightRatio = BOSS_CORE_HEIGHT_RATIO,
+  headCenterRatio = 0.90,
 ): BossRayHit | null {
   if (!alive) return null;
 
   const tCapsule = rayVerticalCapsuleT(ray.origin, ray.dir, bossPos, BOSS_BODY_RADIUS, height);
-  const headCenterY = bossPos.y + height * 0.90;
+  const headCenterY = bossPos.y + height * headCenterRatio;
   const tHead = raySphereT(
     ray.origin,
     ray.dir,
@@ -332,82 +361,31 @@ export function raycastBoss(
     z: ray.origin.z + ray.dir.z * bestT,
   };
   const part: BossHitPart =
-    tHead <= tCapsule + EPS && point.y - bossPos.y > height * BOSS_HEAD_RATIO
+    tHead <= tCapsule + EPS && point.y - bossPos.y > height * headRatio
       ? 'head'
-      : classifyBossHitPart(point, bossPos, bossYaw, height);
+      : classifyBossHitPart(point, bossPos, bossYaw, height, headRatio, coreHeightRatio);
 
   return { dist: bestT, point, part };
-}
-
-interface BossPose {
-  bodyY: number;
-  bodyPitch: number;
-  bodyRoll: number;
-  torsoPitch: number;
-  torsoYaw: number;
-  headY: number;
-  headPitch: number;
-  headYaw: number;
-  shLX: number;
-  shLY: number;
-  shLZ: number;
-  elLX: number;
-  shRX: number;
-  shRY: number;
-  shRZ: number;
-  elRX: number;
-  hipLX: number;
-  hipLZ: number;
-  kneeLX: number;
-  ankleLX: number;
-  hipRX: number;
-  hipRZ: number;
-  kneeRX: number;
-  ankleRX: number;
-}
-
-function defaultBossPose(): BossPose {
-  return {
-    bodyY: 0.96,
-    bodyPitch: 0,
-    bodyRoll: 0,
-    torsoPitch: -0.04,
-    torsoYaw: 0,
-    headY: 0.56,
-    headPitch: 0,
-    headYaw: 0,
-    shLX: 0.25,
-    shLY: -0.15,
-    shLZ: 0.22,
-    elLX: 0.45,
-    shRX: 0.25,
-    shRY: 0.15,
-    shRZ: -0.22,
-    elRX: 0.45,
-    hipLX: 0.06,
-    hipLZ: 0.06,
-    kneeLX: -0.12,
-    ankleLX: 0.06,
-    hipRX: -0.06,
-    hipRZ: -0.06,
-    kneeRX: -0.12,
-    ankleRX: 0.14,
-  };
 }
 
 export class BossController {
   readonly mesh: THREE.Group;
   readonly ai: BossAI;
-  readonly height: number = BOSS_TARGET_HEIGHT;
+  readonly height: number;
+  readonly headRatio: number;
+  readonly headCenterRatio: number;
+  readonly coreHeightRatio: number;
   readonly attackRange: number;
   readonly meleeDamage: number;
 
   private readonly scene: THREE.Scene;
   private readonly opts: BossControllerOptions;
-  private robot: RobotInstance;
+  private readonly modelWrap: THREE.Group;
+  private model: BossModel;
+  private cachedTriangleCount = 0;
+  private modelBaseY = 0;
   private readonly shadowMesh: THREE.Mesh;
   private readonly shadowMat: THREE.MeshBasicMaterial;
-  private bossScale = 1;
 
   private origin: Vec3;
   private worldPos: Vec3;
@@ -415,15 +393,7 @@ export class BossController {
   private cachedTick: BossTick;
   private lastEventsArr: BossEvent[] = [];
 
-  private readonly pose: BossPose = defaultBossPose();
-  private readonly targetPose: BossPose = defaultBossPose();
-  private animTime = 0;
-  private walkPhase = 0;
-  private stateElapsedSec = 0;
-  private prevState: BossState = 'idle';
-
   private hitRecoilTimerMs = 0;
-  private hitFlashTimerMs = 0;
   private currentRecoilZ = 0;
   private deadStarted = false;
   private deadElapsedSec = 0;
@@ -434,9 +404,6 @@ export class BossController {
   private _meleeHitsDealt = 0;
   private _lastHitPart: BossHitPart | null = null;
   private _lastReportedPhase: 1 | 2 = 1;
-
-  private readonly tmpSoleL = new THREE.Vector3();
-  private readonly tmpSoleR = new THREE.Vector3();
 
   constructor(scene: THREE.Scene, opts: BossControllerOptions = {}) {
     this.scene = scene;
@@ -460,8 +427,46 @@ export class BossController {
     this.mesh.position.set(this.worldPos.x, this.worldPos.y, this.worldPos.z);
     this.mesh.rotation.y = this.currentYaw;
 
-    this.robot = this.buildPlaceholderRobot();
-    this.mesh.add(this.robot.root);
+    this.modelWrap = new THREE.Group();
+    this.modelWrap.name = 'boss-model-wrap';
+    this.mesh.add(this.modelWrap);
+
+    this.model = this.mountBossModel();
+
+    // Measure actual standing height and weakpoint height ratios directly from the procedural Boss model
+    this.model.parts.root.updateMatrixWorld(true);
+    const rootBox = new THREE.Box3().setFromObject(this.model.parts.root);
+    const measuredH =
+      !rootBox.isEmpty() && Number.isFinite(rootBox.max.y - rootBox.min.y)
+        ? rootBox.max.y - rootBox.min.y
+        : BOSS_TARGET_HEIGHT;
+    this.height = Number(measuredH.toFixed(4));
+    this.modelBaseY = Number.isFinite(rootBox.min.y) ? -rootBox.min.y : 0;
+    this.modelWrap.position.y = this.modelBaseY;
+
+    const headBox = new THREE.Box3().setFromObject(this.model.parts.head);
+    if (!headBox.isEmpty() && this.height > EPS) {
+      this.headRatio = clamp((headBox.min.y - rootBox.min.y) / this.height, 0.72, 0.90);
+      this.headCenterRatio = clamp(
+        ((headBox.min.y + headBox.max.y) * 0.5 - rootBox.min.y) / this.height,
+        0.78,
+        0.96,
+      );
+    } else {
+      this.headRatio = BOSS_HEAD_RATIO;
+      this.headCenterRatio = 0.90;
+    }
+
+    const coreBox = new THREE.Box3().setFromObject(this.model.parts.core);
+    if (!coreBox.isEmpty() && this.height > EPS) {
+      this.coreHeightRatio = clamp(
+        ((coreBox.min.y + coreBox.max.y) * 0.5 - rootBox.min.y) / this.height,
+        0.52,
+        0.82,
+      );
+    } else {
+      this.coreHeightRatio = BOSS_CORE_HEIGHT_RATIO;
+    }
 
     // Contact shadow disc under feet
     if (!sharedBossShadowTex) sharedBossShadowTex = makeBossShadowTex();
@@ -491,24 +496,14 @@ export class BossController {
       { x: pPos.x - this.origin.x, z: pPos.z - this.origin.z },
       Math.hypot(pPos.x - this.worldPos.x, pPos.z - this.worldPos.z),
     );
-    this.applyJoints();
-    this.groundFeet();
   }
 
-  private buildPlaceholderRobot(): RobotInstance {
-    const robot = createRobot('enemy');
-    robot.root.name = 'boss-placeholder-robot';
-    // Pure melee Boss: hide the pulse carbine & muzzle flash on placeholder robot
-    robot.joints.weaponMount.visible = false;
-    robot.muzzleMesh.visible = false;
-
-    // Measure raw standing height and scale uniformly to BOSS_TARGET_HEIGHT (4.0m)
-    robot.root.updateMatrixWorld(true);
-    const box = new THREE.Box3().setFromObject(robot.root);
-    const rawH = !box.isEmpty() && Number.isFinite(box.max.y - box.min.y) ? box.max.y - box.min.y : 1.73;
-    this.bossScale = BOSS_TARGET_HEIGHT / Math.max(0.5, rawH);
-    robot.root.scale.setScalar(this.bossScale);
-    return robot;
+  private mountBossModel(): BossModel {
+    const model = createBossModel();
+    model.parts.root.name = 'boss-terminator-model';
+    this.modelWrap.add(model.parts.root);
+    this.cachedTriangleCount = countObjectTriangles(model.parts.root);
+    return model;
   }
 
   get hp(): number {
@@ -540,7 +535,7 @@ export class BossController {
   }
 
   get triangleCount(): number {
-    return this.robot.triangleCount;
+    return this.cachedTriangleCount;
   }
 
   get lastTick(): BossTick {
@@ -568,7 +563,16 @@ export class BossController {
   }
 
   raycast(ray: Ray): BossRayHit | null {
-    return raycastBoss(ray, this.worldPos, this.currentYaw, this.alive, this.height);
+    return raycastBoss(
+      ray,
+      this.worldPos,
+      this.currentYaw,
+      this.alive,
+      this.height,
+      this.headRatio,
+      this.coreHeightRatio,
+      this.headCenterRatio,
+    );
   }
 
   applyDamage(amount: number, part: BossHitPart): { dealt: number; dead: boolean } {
@@ -580,7 +584,6 @@ export class BossController {
     this._hitsTaken++;
     this._lastHitPart = part;
     this.hitRecoilTimerMs = BOSS_HIT_RECOIL_MS;
-    this.hitFlashTimerMs = HIT_FLASH_MS;
 
     // Pull authoritative hp/phase snapshot (dt=0 has no movement/state side effects)
     const snap = this.ai.update(0, { x: 0, z: 0 }, 0);
@@ -598,7 +601,7 @@ export class BossController {
     return { dealt, dead };
   }
 
-  /** Advance Boss AI + sync mesh transform + drive melee animations & hit recoil. */
+  /** Advance Boss AI + sync mesh transform + drive procedural Terminator animation & hit recoil. */
   update(dtMs: number, player: { x: number; z: number }): void {
     if (this.disposed) return;
     const safeDtMs = Number.isFinite(dtMs) && dtMs > 0 ? dtMs : 0;
@@ -655,12 +658,6 @@ export class BossController {
       }
     }
 
-    // Locomotion phase from actual horizontal travel
-    const moved = Math.hypot(this.worldPos.x - prevX, this.worldPos.z - prevZ);
-    if (moved > 1e-4) {
-      this.walkPhase += moved * (tick.state === 'charge' ? 2.1 : 1.5);
-    }
-
     this.stepAnimation(dtSec, safeDtMs, tick.state, tick.hp <= 0);
   }
 
@@ -691,35 +688,25 @@ export class BossController {
     this.currentYaw = yawToTarget(this.worldPos.x, this.worldPos.z, pPos.x, pPos.z);
 
     if (this.deathFadeApplied) {
-      this.mesh.remove(this.robot.root);
-      this.robot.dispose();
-      this.robot = this.buildPlaceholderRobot();
-      this.mesh.add(this.robot.root);
+      this.modelWrap.remove(this.model.parts.root);
+      this.model.dispose();
+      this.model = this.mountBossModel();
       this.deathFadeApplied = false;
-    } else {
-      this.robot.setHitFlash(false);
     }
 
     this.shadowMesh.visible = true;
     this.shadowMat.opacity = CONTACT_SHADOW_OPACITY;
     this.hitRecoilTimerMs = 0;
-    this.hitFlashTimerMs = 0;
     this.currentRecoilZ = 0;
-    this.robot.root.position.z = 0;
+    this.modelWrap.position.set(0, this.modelBaseY, 0);
+    this.modelWrap.rotation.set(0, 0, 0);
     this.deadStarted = false;
     this.deadElapsedSec = 0;
-    this.animTime = 0;
-    this.walkPhase = 0;
-    this.stateElapsedSec = 0;
-    this.prevState = 'idle';
     this._hitsTaken = 0;
     this._meleeHitsDealt = 0;
     this._lastHitPart = null;
     this._lastReportedPhase = 1;
     this.lastEventsArr = [];
-
-    Object.assign(this.pose, defaultBossPose());
-    Object.assign(this.targetPose, defaultBossPose());
 
     this.mesh.position.set(this.worldPos.x, this.worldPos.y, this.worldPos.z);
     this.mesh.rotation.y = this.currentYaw;
@@ -728,17 +715,16 @@ export class BossController {
       { x: pPos.x - this.origin.x, z: pPos.z - this.origin.z },
       Math.hypot(pPos.x - this.worldPos.x, pPos.z - this.worldPos.z),
     );
-    this.applyJoints();
-    this.groundFeet();
+    this.model.update(0, { hpPct: 1, phase: 1, anim: 'idle' });
   }
 
   setVisible(visible: boolean): void {
-    this.robot.root.visible = visible;
+    this.modelWrap.visible = visible;
   }
 
   getFeetWorldY(): number | null {
     this.mesh.updateMatrixWorld(true);
-    const box = new THREE.Box3().setFromObject(this.robot.root);
+    const box = new THREE.Box3().setFromObject(this.model.parts.root);
     if (box.isEmpty() || !Number.isFinite(box.min.y)) return null;
     return box.min.y;
   }
@@ -749,7 +735,7 @@ export class BossController {
     vh: number,
   ): { x0: number; y0: number; x1: number; y1: number; onScreen: boolean } | null {
     this.mesh.updateMatrixWorld(true);
-    const box = new THREE.Box3().setFromObject(this.robot.root);
+    const box = new THREE.Box3().setFromObject(this.model.parts.root);
     if (box.isEmpty()) return null;
     camera.updateMatrixWorld(true);
     const viewMat = camera.matrixWorldInverse;
@@ -801,14 +787,7 @@ export class BossController {
   }
 
   private stepAnimation(dtSec: number, dtMs: number, state: BossState, isDead: boolean): void {
-    if (state !== this.prevState) {
-      this.prevState = state;
-      this.stateElapsedSec = 0;
-    } else {
-      this.stateElapsedSec += dtSec;
-    }
-
-    // 0.15s hit knockback: mesh shifts +0.08m backward (local +Z) and rebounds cleanly
+    // 0.15s / 0.08m hit knockback: wrapper shifts +0.08m backward (local +Z) and rebounds cleanly
     if (this.hitRecoilTimerMs > 0) {
       this.hitRecoilTimerMs = Math.max(0, this.hitRecoilTimerMs - dtMs);
       if (this.hitRecoilTimerMs <= 0) {
@@ -820,203 +799,47 @@ export class BossController {
     } else {
       this.currentRecoilZ = 0;
     }
-    this.robot.root.position.z = this.currentRecoilZ;
-
-    if (this.hitFlashTimerMs > 0 && !isDead) {
-      this.hitFlashTimerMs = Math.max(0, this.hitFlashTimerMs - dtMs);
-      this.robot.setHitFlash(this.hitFlashTimerMs > 0);
-    } else if (!isDead) {
-      this.robot.setHitFlash(false);
-    }
+    this.modelWrap.position.z = this.currentRecoilZ;
 
     if (isDead) {
       this.advanceDeath(dtSec);
       return;
     }
 
-    this.animTime += dtSec;
-    this.computeTargetPose(state);
+    // Subtle upper-body flinch tilt on hit recoil (rebounds cleanly to 0)
+    const recoilFrac = this.currentRecoilZ / BOSS_HIT_RECOIL_DIST;
+    this.modelWrap.rotation.x = recoilFrac * 0.06;
+    this.modelWrap.rotation.z = 0;
+    this.modelWrap.position.y = this.modelBaseY;
 
-    const dampRate = state === 'attack' ? 32 : this.hitRecoilTimerMs > 0 ? 34 : 15;
-    for (const k of Object.keys(this.pose) as (keyof BossPose)[]) {
-      this.pose[k] = dampVal(this.pose[k], this.targetPose[k], dampRate, dtSec);
-    }
-    this.applyJoints();
-    this.groundFeet();
-  }
-
-  private computeTargetPose(state: BossState): void {
-    const t = this.targetPose;
-    Object.assign(t, defaultBossPose());
-
-    const idleT = this.animTime;
-    const hoverBob = Math.sin(idleT * 2.8) * 0.014;
-    t.headY = 0.56 + hoverBob;
-
-    if (state === 'idle') {
-      const breathe = Math.sin(idleT * 1.8) * 0.016;
-      t.bodyY = 0.96 + breathe;
-      t.torsoPitch = -0.04 + Math.sin(idleT * 1.4) * 0.02;
-      t.shLX = 0.28;
-      t.shLZ = 0.26;
-      t.elLX = 0.52;
-      t.shRX = 0.28;
-      t.shRZ = -0.26;
-      t.elRX = 0.52;
-    } else if (state === 'chase') {
-      // Heavy menacing bipedal march
-      const s = Math.sin(this.walkPhase);
-      const c = Math.cos(this.walkPhase);
-      const p2Boost = this.phase === 2 ? 1.15 : 1.0;
-      t.bodyY = 0.92 + Math.abs(c) * 0.04;
-      t.torsoPitch = -0.15 * p2Boost;
-      t.torsoYaw = -s * 0.15;
-      t.headYaw = -t.torsoYaw * 0.7;
-      t.headPitch = 0.1;
-
-      t.hipLX = s * 0.54;
-      t.kneeLX = -Math.max(0.08, -c * 0.65 + 0.16);
-      t.ankleLX = -t.hipLX * 0.4 - t.kneeLX * 0.35;
-
-      t.hipRX = -s * 0.54;
-      t.kneeRX = -Math.max(0.08, c * 0.65 + 0.16);
-      t.ankleRX = -t.hipRX * 0.4 - t.kneeRX * 0.35;
-
-      // Counter-swinging armored gauntlets
-      t.shLX = 0.35 - s * 0.45;
-      t.shLZ = 0.28;
-      t.elLX = 0.65;
-      t.shRX = 0.35 + s * 0.45;
-      t.shRZ = -0.28;
-      t.elRX = 0.65;
-    } else if (state === 'windup') {
-      // 举臂预警: rear back & raise both massive arms high overhead
-      const u = clamp01(this.stateElapsedSec / 0.55);
-      const raise = 0.4 + 0.6 * u;
-      t.bodyY = 0.92;
-      t.torsoPitch = 0.26 * raise;
-      t.torsoYaw = 0.14 * raise;
-      t.headPitch = -0.14 * raise;
-      t.shLX = 2.55 * raise;
-      t.shLZ = 0.36;
-      t.elLX = 0.42;
-      t.shRX = 2.72 * raise;
-      t.shRZ = -0.36;
-      t.elRX = 0.42;
-      t.hipLX = 0.24;
-      t.hipLZ = 0.12;
-      t.kneeLX = -0.34;
-      t.hipRX = -0.20;
-      t.hipRZ = -0.12;
-      t.kneeRX = -0.28;
-    } else if (state === 'attack') {
-      // 挥击: violent downward/forward cleave slam
-      t.bodyY = 0.86;
-      t.torsoPitch = -0.44;
-      t.torsoYaw = -0.38;
-      t.headPitch = 0.26;
-      t.headYaw = 0.28;
-      t.shRX = 0.42;
-      t.shRY = 0.42;
-      t.shRZ = -0.12;
-      t.elRX = 0.28;
-      t.shLX = 0.62;
-      t.shLY = -0.35;
-      t.shLZ = 0.45;
-      t.elLX = 0.40;
-      t.hipLX = 0.38;
-      t.kneeLX = -0.48;
-      t.hipRX = -0.28;
-      t.kneeRX = -0.24;
-    } else if (state === 'charge') {
-      // 前倾冲锋: deep bull-rush forward lean + driving sprint legs
-      const s = Math.sin(this.walkPhase * 1.25);
-      const c = Math.cos(this.walkPhase * 1.25);
-      t.bodyY = 0.84 + Math.abs(c) * 0.05;
-      t.bodyPitch = -0.12;
-      t.torsoPitch = -0.46;
-      t.torsoYaw = -s * 0.18;
-      t.headPitch = 0.34;
-      t.headYaw = -t.torsoYaw * 0.6;
-      t.shLX = -0.52;
-      t.shLZ = 0.44;
-      t.elLX = 0.72;
-      t.shRX = -0.52;
-      t.shRZ = -0.44;
-      t.elRX = 0.72;
-
-      t.hipLX = s * 0.76;
-      t.kneeLX = -Math.max(0.12, -c * 0.92 + 0.22);
-      t.ankleLX = -t.hipLX * 0.45 - t.kneeLX * 0.35;
-
-      t.hipRX = -s * 0.76;
-      t.kneeRX = -Math.max(0.12, c * 0.92 + 0.22);
-      t.ankleRX = -t.hipRX * 0.45 - t.kneeRX * 0.35;
-    } else if (state === 'recover') {
-      // Stagger / recovery breath after swing or charge
-      const sway = Math.sin(idleT * 3.5) * 0.04;
-      t.bodyY = 0.89;
-      t.torsoPitch = -0.22;
-      t.torsoYaw = sway;
-      t.headPitch = -0.14;
-      t.shLX = 0.12;
-      t.shLZ = 0.32;
-      t.elLX = 0.32;
-      t.shRX = 0.12;
-      t.shRZ = -0.32;
-      t.elRX = 0.32;
-      t.hipLX = 0.18;
-      t.kneeLX = -0.32;
-      t.hipRX = -0.14;
-      t.kneeRX = -0.30;
-    }
-
-    // Overlay hit recoil torso pitch flinch (受击后仰)
-    if (this.currentRecoilZ > 0) {
-      const k = this.currentRecoilZ / BOSS_HIT_RECOIL_DIST;
-      t.torsoPitch += k * 0.22;
-      t.headPitch += k * 0.14;
-      t.bodyY -= k * 0.05;
-    }
+    const hpPct = this.cachedTick.hpMax > 0 ? this.cachedTick.hp / this.cachedTick.hpMax : 0;
+    this.model.update(dtSec, {
+      hpPct,
+      phase: this.cachedTick.phase,
+      anim: mapStateToAnim(state),
+    });
   }
 
   private advanceDeath(dtSec: number): void {
     if (!this.deadStarted) {
       this.deadStarted = true;
       this.deadElapsedSec = 0;
-      this.robot.setHitFlash(false);
     }
     this.deadElapsedSec += dtSec;
     const u = clamp01(this.deadElapsedSec / DEATH_COLLAPSE_SEC);
-    const buckle = clamp01(u / 0.35);
-    const fall = clamp01((u - 0.18) / 0.82);
-    const fallEase = fall * fall * (3 - 2 * fall);
+    const fallEase = u * u * (3 - 2 * u);
 
-    const p = this.pose;
-    p.bodyY = dampVal(p.bodyY, 0.96 - buckle * 0.28 - fallEase * 0.48, 20, dtSec);
-    p.bodyPitch = dampVal(p.bodyPitch, fallEase * 1.44, 16, dtSec);
-    p.bodyRoll = dampVal(p.bodyRoll, fallEase * 0.24, 16, dtSec);
-    p.torsoPitch = dampVal(p.torsoPitch, 0.12 + fallEase * 0.16, 16, dtSec);
-    p.headY = dampVal(p.headY, 0.56 - fallEase * 0.11, 18, dtSec);
-    p.headPitch = dampVal(p.headPitch, -0.32 * fallEase, 16, dtSec);
-    p.shLX = dampVal(p.shLX, -0.32 * fallEase, 14, dtSec);
-    p.shLZ = dampVal(p.shLZ, 0.68 * fallEase, 14, dtSec);
-    p.shRX = dampVal(p.shRX, -0.25 * fallEase, 14, dtSec);
-    p.shRZ = dampVal(p.shRZ, -0.62 * fallEase, 14, dtSec);
-    p.hipLX = dampVal(p.hipLX, 0.38 * buckle - 0.24 * fallEase, 16, dtSec);
-    p.kneeLX = dampVal(p.kneeLX, -0.92 * buckle + 0.52 * fallEase, 16, dtSec);
-    p.hipRX = dampVal(p.hipRX, 0.22 * buckle - 0.15 * fallEase, 16, dtSec);
-    p.kneeRX = dampVal(p.kneeRX, -0.74 * buckle + 0.44 * fallEase, 16, dtSec);
-
-    this.applyJoints();
-    this.robot.root.position.y = dampVal(this.robot.root.position.y, 0, 12, dtSec);
+    this.modelWrap.rotation.x = dampVal(this.modelWrap.rotation.x, fallEase * 1.44, 14, dtSec);
+    this.modelWrap.rotation.z = dampVal(this.modelWrap.rotation.z, fallEase * 0.18, 14, dtSec);
+    this.modelWrap.position.y = dampVal(this.modelWrap.position.y, this.modelBaseY + fallEase * 0.42, 12, dtSec);
+    this.model.update(dtSec, { hpPct: 0, phase: 2, anim: 'recover' });
 
     const fadeStart = DEATH_COLLAPSE_SEC + CORPSE_HOLD_SEC;
     if (this.deadElapsedSec >= fadeStart) {
       const fu = clamp01((this.deadElapsedSec - fadeStart) / CORPSE_FADE_SEC);
       const opacity = 1 - fu;
       this.deathFadeApplied = true;
-      this.robot.setDeathFade(opacity);
+      this.setModelFade(opacity);
       this.shadowMat.opacity = CONTACT_SHADOW_OPACITY * opacity;
       if (fu >= 1) {
         this.shadowMesh.visible = false;
@@ -1024,35 +847,19 @@ export class BossController {
     }
   }
 
-  private applyJoints(): void {
-    const j = this.robot.joints;
-    const p = this.pose;
-    j.bodyPivot.position.set(0, p.bodyY, 0);
-    j.bodyPivot.rotation.set(p.bodyPitch, 0, p.bodyRoll);
-    j.torsoPivot.rotation.set(p.torsoPitch, p.torsoYaw, 0);
-    j.headPivot.position.set(0, p.headY, 0);
-    j.headPivot.rotation.set(p.headPitch, p.headYaw, 0);
-    j.shoulderL.rotation.set(p.shLX, p.shLY, p.shLZ);
-    j.elbowL.rotation.set(p.elLX, 0, 0);
-    j.shoulderR.rotation.set(p.shRX, p.shRY, p.shRZ);
-    j.elbowR.rotation.set(p.elRX, 0, 0);
-    j.hipL.rotation.set(p.hipLX, 0, p.hipLZ);
-    j.kneeL.rotation.set(p.kneeLX, 0, 0);
-    j.ankleL.rotation.set(p.ankleLX, 0, 0);
-    j.hipR.rotation.set(p.hipRX, 0, p.hipRZ);
-    j.kneeR.rotation.set(p.kneeRX, 0, 0);
-    j.ankleR.rotation.set(p.ankleRX, 0, 0);
-  }
-
-  private groundFeet(): void {
-    this.robot.root.position.y = 0;
-    this.mesh.updateMatrixWorld(true);
-    this.robot.soleProbeL.getWorldPosition(this.tmpSoleL);
-    this.robot.soleProbeR.getWorldPosition(this.tmpSoleR);
-    const minWorldY = Math.min(this.tmpSoleL.y, this.tmpSoleR.y);
-    const localMinY = minWorldY - this.mesh.position.y;
-    if (Number.isFinite(localMinY)) {
-      this.robot.root.position.y = -localMinY;
+  private setModelFade(opacity: number): void {
+    const mats = new Set<THREE.Material>();
+    this.model.parts.root.traverse((obj) => {
+      if (!(obj instanceof THREE.Mesh)) return;
+      if (Array.isArray(obj.material)) {
+        for (const m of obj.material) mats.add(m);
+      } else if (obj.material) {
+        mats.add(obj.material);
+      }
+    });
+    for (const m of mats) {
+      m.transparent = true;
+      m.opacity = opacity;
     }
   }
 
@@ -1060,7 +867,7 @@ export class BossController {
     if (this.disposed) return;
     this.disposed = true;
     this.scene.remove(this.mesh);
-    this.robot.dispose();
+    this.model.dispose();
     this.shadowMat.dispose();
   }
 }
