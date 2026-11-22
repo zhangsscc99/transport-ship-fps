@@ -8,12 +8,12 @@
 //        -> chase (cooldown timer before next windup/charge)
 //
 // Long-distance gap closer:
-//   chase + distance > chargeTriggerDist (18m) -> charge (straight-line rush at 2.2x speed,
+//   chase + distance > chargeTriggerDist (18m) -> charge (straight-line rush at 1.85x speed,
 //   yaw locked so player can sidestep; single hit on contact -> recover).
 //
 // Phases:
 //   Phase 1 (hp > 70%): base speed, base cooldown, base windup (>=600ms)
-//   Phase 2 (hp <= 70%): +15% speed, -20% cooldown, -100ms windup (clamped >=600ms), emits 'phase2'
+//   Phase 2 (hp <= 70%): +8% speed, -20% cooldown, -100ms windup (clamped >=600ms), emits 'phase2'
 //   Phase 2 enraged (hp <= 35%): further -10% cooldown (-30% total from base)
 //
 // Defeated (hp <= 0): freezes in 'recover' and emits no attack events.
@@ -31,7 +31,7 @@ export type BossEvent =
 export type BossHitPart = 'body' | 'head' | 'core';
 
 export interface BossAIOptions {
-  moveSpeed?: number;         // 默认 2.6 m/s（二阶段 +15%）
+  moveSpeed?: number;         // 默认 1.75 m/s（二阶段 +8%）
   attackRange?: number;       // 默认 3.2 m
   chargeTriggerDist?: number; // 玩家 >18m 时冲锋
   windupMs?: number;          // 默认 700（必须 ≥600）
@@ -53,7 +53,7 @@ export interface BossTick {
 
 export const BOSS_DEFAULTS = {
   hpMax: 2000,
-  moveSpeed: 2.6,
+  moveSpeed: 1.75,
   attackRange: 3.2,
   chargeTriggerDist: 18,
   windupMs: 700,
@@ -63,13 +63,13 @@ export const BOSS_DEFAULTS = {
   recoverMs: 800,
   minRecoverMs: 800,
   cooldownMs: 900,
-  chargeSpeedMult: 2.2,
+  chargeSpeedMult: 1.85,
   chargeHitRadius: 1.8,
   chargeOvershootDist: 2.5,
   chargeMaxCapDist: 45,
   phase2HpRatio: 0.7,
   phase2EnrageHpRatio: 0.35,
-  phase2SpeedMult: 1.15,
+  phase2SpeedMult: 1.08,
   phase2CooldownMult: 0.8,
   phase2EnrageCooldownMult: 0.7,
   phase2WindupDeltaMs: 100,

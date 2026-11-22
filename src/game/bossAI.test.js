@@ -18,7 +18,7 @@ __export(bossAI_exports, {
 });
 var BOSS_DEFAULTS = {
   hpMax: 2e3,
-  moveSpeed: 2.6,
+  moveSpeed: 1.75,
   attackRange: 3.2,
   chargeTriggerDist: 18,
   windupMs: 700,
@@ -28,13 +28,13 @@ var BOSS_DEFAULTS = {
   recoverMs: 800,
   minRecoverMs: 800,
   cooldownMs: 900,
-  chargeSpeedMult: 2.2,
+  chargeSpeedMult: 1.85,
   chargeHitRadius: 1.8,
   chargeOvershootDist: 2.5,
   chargeMaxCapDist: 45,
   phase2HpRatio: 0.7,
   phase2EnrageHpRatio: 0.35,
-  phase2SpeedMult: 1.15,
+  phase2SpeedMult: 1.08,
   phase2CooldownMult: 0.8,
   phase2EnrageCooldownMult: 0.7,
   phase2WindupDeltaMs: 100
@@ -452,7 +452,7 @@ test("weakpoint multipliers: head = 2.5x, core = 2.0x, body = 1.0x", () => {
   assert.equal(boss.applyDamage(0, "head"), 0);
   assert.equal(boss.applyDamage(-10, "core"), 0);
 });
-test("phase 2 at <=70% HP emits phase2 once, boosts speed +15%, cuts cooldown -20% and -10% more at <=35%", () => {
+test("phase 2 at <=70% HP emits phase2 once, boosts speed by phase2SpeedMult (+8%), cuts cooldown -20% and -10% more at <=35%", () => {
   const boss = new BossAI(1e3);
   const p1Start = boss.update(0, { x: 0, z: 10 }, 10);
   assert.equal(p1Start.state, "idle");
@@ -466,8 +466,8 @@ test("phase 2 at <=70% HP emits phase2 once, boosts speed +15%, cuts cooldown -2
   assert.ok(p2Tick.events.includes("phase2"), "must emit phase2 event on threshold");
   const p2Speed = Math.hypot(p2Tick.pos.x - p1Moved.pos.x, p2Tick.pos.z - p1Moved.pos.z);
   assert.ok(
-    Math.abs(p2Speed - BOSS_DEFAULTS.moveSpeed * 1.15) < 1e-6,
-    `phase 2 speed ${p2Speed} should be ${BOSS_DEFAULTS.moveSpeed * 1.15}`
+    Math.abs(p2Speed - BOSS_DEFAULTS.moveSpeed * BOSS_DEFAULTS.phase2SpeedMult) < 1e-6,
+    `phase 2 speed ${p2Speed} should be ${BOSS_DEFAULTS.moveSpeed * BOSS_DEFAULTS.phase2SpeedMult}`
   );
   const p2Next = boss.update(16, { x: 0, z: 15 }, 10);
   assert.ok(!p2Next.events.includes("phase2"));
@@ -615,4 +615,20 @@ test("pure melee & pure logic: source and exports contain no ranged/projectile o
   }
   assert.equal(/\bfrom\s+['"]three['"]/.test(source), false, "bossAI.ts must not import three.js");
   assert.equal(/\b(window|document)\b/.test(source), false, "bossAI.ts must not touch DOM");
+});
+test("default chase speed: 3s chase displacement stays within 4.5-6.0m", () => {
+  const boss = new BossAI(2e3);
+  const player = { x: 0, z: 15 };
+  let pos = { x: 0, z: 0 };
+  for (let i = 0; i < 150; i++) {
+    const dist = Math.hypot(player.x - pos.x, player.z - pos.z);
+    const tick = boss.update(20, player, dist);
+    assert.equal(tick.state, "chase", `expected chase at step ${i}, got ${tick.state}`);
+    pos = tick.pos;
+  }
+  const displacement = Math.hypot(pos.x, pos.z);
+  assert.ok(
+    displacement >= 4.5 && displacement <= 6,
+    `3s chase displacement should be within [4.5, 6.0]m, got ${displacement.toFixed(3)}m`
+  );
 });
